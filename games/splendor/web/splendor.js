@@ -887,7 +887,7 @@ function gemReturnSteps(steps, prev, next, actor) {
 
 createApp({
   gameId: 'splendor',
-  gameTitle: 'Splendor',
+  gameTitle: '璀璨宝石',
   gameIntro: '拿宝石、买卡、抢贵族，先到15分触发终局',
   players: { min: 2, max: 4 },
   renderBoard,

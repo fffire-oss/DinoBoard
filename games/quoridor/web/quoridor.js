@@ -293,7 +293,7 @@ const wallsExtension = {
 
 createApp({
   gameId: 'quoridor',
-  gameTitle: 'Quoridor',
+  gameTitle: '步步为营',
   gameIntro: '先到达对侧底线获胜，可放墙但必须保留双方通路。',
   players: { min: 2, max: 2 },
   renderBoard,

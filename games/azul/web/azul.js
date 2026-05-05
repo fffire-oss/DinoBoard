@@ -994,7 +994,7 @@ const bagExtension = {
 
 createApp({
   gameId: 'azul',
-  gameTitle: 'Azul 花砖物语',
+  gameTitle: '花砖物语',
   gameIntro: '先选择来源再选择目标行',
   players: { min: 2, max: 4 },
   renderBoard,

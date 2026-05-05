@@ -79,6 +79,7 @@ screenshots/
 # Reference-only projects mounted for inspection (previous DinoBoard version,
 # Mosaic, etc.). Not part of the build or version control.
 参考项目/
+games/*/参考/
 
 # Benchmark snapshots — trained model checkpoints used as opponents for
 # future training runs. Archived outside of runs/ so subsequent trainings

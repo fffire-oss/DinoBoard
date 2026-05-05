@@ -1,6 +1,5 @@
 import { createApp } from '/static/general/app.js';
 
-const CHAR_NAMES = ['Duke', 'Assassin', 'Captain', 'Ambassador', 'Contessa'];
 const CHAR_LABELS = ['公爵', '刺客', '队长', '大使', '伯爵夫人'];
 const CHAR_COLORS = ['#c8a', '#e55', '#58c', '#5a8', '#ea8'];
 
@@ -482,10 +481,6 @@ function buildMyCard(character, revealed, slot, kind) {
   name.className = 'coup-mycard-name';
   name.textContent = CHAR_LABELS[character];
   card.appendChild(name);
-  const enName = document.createElement('div');
-  enName.className = 'coup-mycard-en';
-  enName.textContent = CHAR_NAMES[character];
-  card.appendChild(enName);
   return card;
 }
 
@@ -496,6 +491,17 @@ function wireReturnClick(card, character, legalSet, ctx) {
   card.addEventListener('click', () => ctx.submitAction(returnId));
 }
 
+// Map C++-side English character names (from coup_register.cpp's
+// `claimed` / `character_name` fields) to Chinese for display.
+const CHAR_CN = {
+  'Duke': '公爵',
+  'Assassin': '刺客',
+  'Captain': '队长',
+  'Ambassador': '大使',
+  'Contessa': '伯爵夫人',
+};
+function charCN(name) { return CHAR_CN[name] || name || ''; }
+
 function formatMove(info, actionId) {
   if (!info || !info.type) {
     if (actionId === null || actionId === undefined) return '开局';
@@ -504,18 +510,18 @@ function formatMove(info, actionId) {
   switch (info.type) {
     case 'income': return '收入 (+1💰)';
     case 'foreign_aid': return '外援 (+2💰)';
-    case 'coup': return '政变 -> 玩家' + info.target;
+    case 'coup': return '政变 → 玩家' + info.target;
     case 'tax': return '征税 [公爵] (+3💰)';
-    case 'assassinate': return '暗杀 -> 玩家' + info.target + ' [刺客]';
-    case 'steal': return '偷窃 -> 玩家' + info.target + ' [队长]';
+    case 'assassinate': return '暗杀 → 玩家' + info.target + ' [刺客]';
+    case 'steal': return '偷窃 → 玩家' + info.target + ' [队长]';
     case 'exchange': return '交换 [大使]';
     case 'challenge': return '质疑!';
     case 'allow': return '允许';
-    case 'block': return '反制 [' + (info.claimed || '') + ']';
+    case 'block': return '反制 [' + charCN(info.claimed) + ']';
     case 'allow_no_block': return '不反制';
-    case 'reveal': return '亮牌 slot' + info.slot;
-    case 'lose_influence': return '失去影响力 slot' + info.slot;
-    case 'return_card': return '还 ' + (info.character_name || '');
+    case 'reveal': return '亮牌 第' + (info.slot + 1) + '张';
+    case 'lose_influence': return '失去影响力 第' + (info.slot + 1) + '张';
+    case 'return_card': return '还 ' + charCN(info.character_name);
     default: return '动作 #' + actionId;
   }
 }
@@ -840,7 +846,7 @@ const stageExtension = {
 
 createApp({
   gameId: 'coup',
-  gameTitle: 'Coup',
+  gameTitle: '政变',
   gameIntro: '虚张声势、质疑与暗杀 — 影响力为零即淘汰',
   players: { min: 2, max: 4 },
   renderBoard,

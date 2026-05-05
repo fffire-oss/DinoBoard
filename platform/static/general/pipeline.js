@@ -4,7 +4,7 @@ export function createPipelinePoller() {
   let polling = false;
   let cancelled = false;
 
-  async function poll(sessionId, callbacks) {
+  async function poll(sessionId, humanPlayer, callbacks) {
     polling = true;
     cancelled = false;
     const started = Date.now();
@@ -33,17 +33,25 @@ export function createPipelinePoller() {
           }
           const data = await apiGet(API_BASE + '/' + sessionId);
           if (cancelled) { polling = false; return; }
-          // The C++ NetMctsStats field is best_action_value, but the
-          // pybind export renames it to best_value (see py_engine.cpp
-          // sample dict keys). Don't use the C++ field name here — same
-          // trap bit us in pipeline.py (BUG-020). Always key off the
-          // Python-side name.
-          let aiWinrate = null;
-          if (st.ai_stats && st.ai_stats.best_value !== undefined) {
-            aiWinrate = (st.ai_stats.best_value + 1) / 2;
+          // Prefer root_values[humanPlayer] — the per-seat value MCTS
+          // tracks from the value head's N-dim output. Falls back to the
+          // scalar best_value (AI-POV Q at root) for 2-player zero-sum
+          // legacy nets: human's value = -ai_value so human's winrate is
+          // (1 - best_value)/2.
+          let humanWinrate = null;
+          if (st.ai_stats) {
+            const rv = st.ai_stats.root_values;
+            if (Array.isArray(rv) && humanPlayer >= 0 && humanPlayer < rv.length) {
+              humanWinrate = (rv[humanPlayer] + 1) / 2;
+            } else if (typeof st.ai_stats.best_value === 'number') {
+              humanWinrate = (1 - st.ai_stats.best_value) / 2;
+            }
+            if (humanWinrate !== null) {
+              humanWinrate = Math.max(0, Math.min(1, humanWinrate));
+            }
           }
           polling = false;
-          if (callbacks.onDone) callbacks.onDone(data, aiWinrate, st);
+          if (callbacks.onDone) callbacks.onDone(data, humanWinrate, st);
           return;
         }
 

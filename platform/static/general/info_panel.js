@@ -9,7 +9,7 @@ export function createInfoPanel(infoCol, config) {
   panel.innerHTML = `
     <div class="info-pill" id="info-turn">当前轮到：--</div>
     <div class="info-pill" id="info-opp">对手动作：--</div>
-    <div class="info-pill" id="info-winrate">对手预估胜率：--</div>
+    <div class="info-pill" id="info-winrate">你的预估胜率：--</div>
     <div class="info-pill" id="info-suggest">AI 提示：--</div>
   `;
   infoCol.appendChild(panel);
@@ -40,7 +40,7 @@ export function createInfoPanel(infoCol, config) {
     setMessage(text) {
       els.opp.textContent = '对手动作：' + (text && text.length ? text : '--');
     },
-    setWinrate(wr) { els.winrate.textContent = '对手预估胜率：' + formatWinrate(wr); },
+    setWinrate(wr) { els.winrate.textContent = '你的预估胜率：' + formatWinrate(wr); },
     setSuggest(text) { els.suggest.textContent = 'AI 提示：' + (text || '--'); },
     setVisible(visible) {
       panel.style.display = visible ? '' : 'none';
@@ -58,7 +58,7 @@ export function createInfoPanel(infoCol, config) {
     reset() {
       els.turn.textContent = '当前轮到：--';
       els.opp.textContent = '对手动作：--';
-      els.winrate.textContent = '对手预估胜率：--';
+      els.winrate.textContent = '你的预估胜率：--';
       els.suggest.textContent = 'AI 提示：--';
     },
   };

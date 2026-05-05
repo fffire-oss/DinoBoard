@@ -1,6 +1,5 @@
 import { createApp } from '/static/general/app.js';
 
-const CARD_NAMES = ['', 'Guard', 'Priest', 'Baron', 'Handmaid', 'Prince', 'King', 'Countess', 'Princess'];
 const CARD_LABELS = ['', '侍卫', '牧师', '男爵', '侍女', '王子', '国王', '伯爵夫人', '公主'];
 const CARD_VALUES = ['', '1', '2', '3', '4', '5', '6', '7', '8'];
 const CARD_EFFECTS = [
@@ -11,7 +10,7 @@ const CARD_EFFECTS = [
   '保护自己一轮',
   '迫使弃牌重摸',
   '交换手牌',
-  '持有时必须弃出',
+  '另一张为王子或国王时必须弃置',
   '弃出即淘汰',
 ];
 
@@ -682,7 +681,7 @@ function revealBody(cards, summaryText) {
 
 createApp({
   gameId: 'loveletter',
-  gameTitle: 'Love Letter',
+  gameTitle: '情书',
   gameIntro: '推理对手手牌，猜测、比较、保护，最后存活或手牌最大者获胜',
   players: { min: 2, max: 4 },
   renderBoard,

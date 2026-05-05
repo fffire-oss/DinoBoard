@@ -44,6 +44,9 @@ export function createApp(config) {
   replay.setAlwaysVisible(sidebar.getShowReplayAlways());
 
   modal.onReplay(() => enterReplay());
+  modal.onRestart(() => {
+    startGame(sidebar.getSideMode(), sidebar.getDifficulty(), sidebar.getNumPlayers());
+  });
   replay.onExit(() => exitReplay());
   replay.onRenderFrame(async (frame, allFrames, prevFrame) => {
     if (config.onReplayFrames) config.onReplayFrames(allFrames);
@@ -319,7 +322,7 @@ export function createApp(config) {
     return new Promise(resolve => {
       infoPanel.setTurn('当前轮到：AI 思考中...');
       updateSidebarButtons();
-      poller.poll(state.sessionId, {
+      poller.poll(state.sessionId, state.humanPlayer, {
         onThinking() {
           infoPanel.setTurn('当前轮到：AI 思考中...');
         },
@@ -332,10 +335,10 @@ export function createApp(config) {
             }
           }
         },
-        onDone(data, aiWinrate, pipeStatus) {
+        onDone(data, humanWinrate, pipeStatus) {
           resolve({
             data,
-            aiWinrate,
+            humanWinrate,
             aiAction: pipeStatus ? pipeStatus.ai_action : null,
             aiActionInfo: pipeStatus ? pipeStatus.ai_action_info : null,
           });
@@ -364,6 +367,13 @@ export function createApp(config) {
       if (!result) break;
 
       const prevState = state.gameState;
+      // Update the opponent-action pill BEFORE animation starts so the
+      // player can read what the opponent did while watching the move
+      // animate (instead of discovering it only after the animation
+      // finishes and the state re-renders).
+      if (result.aiActionInfo && config.formatOpponentMove) {
+        infoPanel.setMessage(config.formatOpponentMove(result.aiActionInfo, result.aiAction));
+      }
       await animateTransition(prevState, result.data, result.aiActionInfo, result.aiAction);
 
       state.gameState = result.data;
@@ -374,7 +384,7 @@ export function createApp(config) {
       // pill updates each AI move.
       state.gameState.last_action_info = result.aiActionInfo;
       state.gameState.last_action_id = result.aiAction;
-      if (state.difficulty === 'expert') state.lastAiWinrate = result.aiWinrate;
+      if (state.difficulty === 'expert') state.lastAiWinrate = result.humanWinrate;
       render();
 
       if (state.gameState.is_terminal) break;
