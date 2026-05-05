@@ -410,24 +410,27 @@ function formatMove(info, actionId) {
     if (actionId === null || actionId === undefined) return '开局';
     return '动作 #' + actionId;
   }
-  const cardName = info.card_name || '';
+  // C++ emits English card_name/guess_name — translate at the JS layer
+  // via CARD_LABELS so no English leaks into bubbles or the info panel.
+  const cardName = (info.card && CARD_LABELS[info.card]) || '';
+  const guessName = (typeof info.guess === 'number' && CARD_LABELS[info.guess]) || info.guess;
   switch (info.type) {
     case 'guard':
-      return cardName + ' -> 玩家' + info.target + ' 猜 ' + (info.guess_name || info.guess);
+      return cardName + ' → 玩家' + info.target + ' 猜 ' + guessName;
     case 'priest':
-      return cardName + ' -> 偷看玩家' + info.target;
+      return cardName + ' → 偷看玩家' + info.target;
     case 'baron':
-      return cardName + ' -> 比较玩家' + info.target;
+      return cardName + ' → 比较玩家' + info.target;
     case 'handmaid':
-      return cardName + ' (保护)';
+      return cardName + '（保护）';
     case 'prince':
-      return cardName + ' -> 玩家' + info.target + '弃牌';
+      return cardName + ' → 玩家' + info.target + ' 弃牌';
     case 'king':
-      return cardName + ' -> 交换玩家' + info.target;
+      return cardName + ' → 与玩家' + info.target + ' 交换';
     case 'countess':
-      return cardName + ' (弃出)';
+      return cardName + '（弃出）';
     case 'princess':
-      return cardName + ' (弃出 = 淘汰)';
+      return cardName + '（弃出即淘汰）';
     default:
       return '动作 #' + actionId;
   }
