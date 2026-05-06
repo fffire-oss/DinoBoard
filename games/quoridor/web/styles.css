@@ -25,24 +25,10 @@
   border-radius: 10px;
   background: #ffffff;
   display: grid;
-  /* Use `1fr` for tracks instead of `var(--slot)` and pin total width
-   * explicitly to `calc(var(--slot) * 17)`. This way the 17 tracks are
-   * derived from the actual rendered width (divided exactly by grid
-   * layout) rather than each track being floored independently — which
-   * on mobile caused `var(--slot) * N` position math to drift half a
-   * cell out of sync with the grid tracks and put the legal-action dots
-   * on the wrong row. */
-  grid-template-columns: repeat(17, 1fr);
-  grid-template-rows: repeat(17, 1fr);
-  /* Grid is a square whose size is whichever is smaller: the desired
-   * slot-based size, or the board column's actual width. On desktop the
-   * `--slot`-based max keeps cells at a comfortable 34px; on mobile the
-   * column width wins and 17 `1fr` tracks divide it cleanly — no floor
-   * drift because tracks come from the actual rendered width. */
-  width: min(100%, calc(var(--slot) * 17 + 28px));
-  aspect-ratio: 1 / 1;
-  box-sizing: border-box;
+  grid-template-columns: repeat(17, var(--slot));
+  grid-template-rows: repeat(17, var(--slot));
   gap: 0;
+  width: max-content;
   position: relative;
   isolation: isolate;
 }
@@ -86,13 +72,8 @@
 }
 
 .pawn {
-  /* Scale to the actual cell (percentages of the flex parent) rather than
-   * the theoretical `--slot` — on mobile the grid is driven by `1fr`, so
-   * the real track width can be smaller than `--slot`, and a fixed
-   * slot-based size would overflow the cell. Percentages + aspect-ratio
-   * stay square at every viewport. */
-  width: 82%;
-  aspect-ratio: 1 / 1;
+  width: calc(var(--slot) * 0.82);
+  height: calc(var(--slot) * 0.82);
   border-radius: 999px;
   display: flex;
   align-items: center;

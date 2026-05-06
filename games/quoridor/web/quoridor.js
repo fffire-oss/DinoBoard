@@ -191,6 +191,43 @@ function renderEmptyGrid(boardEl) {
   }
 }
 
+// After a grid renders with a CSS-derived fractional `--slot` (common on
+// mobile: `(100vw - 40px) / 17 ≈ 19.7px`), CSS Grid floors each rendered
+// track to integer device pixels while `var(--slot)` keeps the fractional
+// value. Any downstream `calc(var(--slot) * N)` then drifts out of sync
+// with grid track boundaries — visibly enough on mobile to put legal-move
+// dots on the wrong row. Fix: measure the actual floored track width
+// post-render and write it back as the integer-pixel `--slot`, so
+// `var(--slot)` and rendered tracks agree exactly.
+function alignSlotToRenderedTrack(boardEl) {
+  const firstCell = boardEl.querySelector('.board-cell');
+  if (!firstCell) return;
+  // Clear any previous inline override so the CSS-derived slot applies
+  // at the current viewport. Accessing `offsetWidth` forces a reflow so
+  // the subsequent measurement reads the re-derived track width.
+  boardEl.style.removeProperty('--slot');
+  // eslint-disable-next-line no-unused-expressions
+  boardEl.offsetWidth;
+  const rect = firstCell.getBoundingClientRect();
+  if (rect.width <= 0) return;
+  const px = Math.floor(rect.width);
+  // Only override if the CSS-derived width was fractional; pinning to
+  // an integer makes `var(--slot) * N` and grid tracks agree and stops
+  // subpixel drift from misaligning legal-action highlights on mobile.
+  if (Math.abs(rect.width - px) > 0.01) {
+    boardEl.style.setProperty('--slot', px + 'px');
+  }
+}
+
+let resizeAlignTimer = null;
+window.addEventListener('resize', () => {
+  if (resizeAlignTimer) cancelAnimationFrame(resizeAlignTimer);
+  resizeAlignTimer = requestAnimationFrame(() => {
+    const boardEl = document.querySelector('.quoridor-board-grid');
+    if (boardEl) alignSlotToRenderedTrack(boardEl);
+  });
+});
+
 function renderBoard(container, gameState, ctx) {
   container.innerHTML = '';
 
@@ -204,6 +241,7 @@ function renderBoard(container, gameState, ctx) {
     renderEmptyGrid(boardEl);
     wrapper.appendChild(boardEl);
     container.appendChild(wrapper);
+    requestAnimationFrame(() => alignSlotToRenderedTrack(boardEl));
     return;
   }
 
@@ -225,6 +263,7 @@ function renderBoard(container, gameState, ctx) {
 
   wrapper.appendChild(boardEl);
   container.appendChild(wrapper);
+  requestAnimationFrame(() => alignSlotToRenderedTrack(boardEl));
 
   if (!gs.ply_index && ctx.state.sessionId) {
     refreshWallOwners(ctx.state.sessionId, ctx.state.aiPlayer);
