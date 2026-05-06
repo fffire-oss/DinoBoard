@@ -25,10 +25,19 @@
   border-radius: 10px;
   background: #ffffff;
   display: grid;
-  grid-template-columns: repeat(17, var(--slot));
-  grid-template-rows: repeat(17, var(--slot));
+  /* Use `1fr` for tracks instead of `var(--slot)` and pin total width
+   * explicitly to `calc(var(--slot) * 17)`. This way the 17 tracks are
+   * derived from the actual rendered width (divided exactly by grid
+   * layout) rather than each track being floored independently — which
+   * on mobile caused `var(--slot) * N` position math to drift half a
+   * cell out of sync with the grid tracks and put the legal-action dots
+   * on the wrong row. */
+  grid-template-columns: repeat(17, 1fr);
+  grid-template-rows: repeat(17, 1fr);
+  width: calc(var(--slot) * 17 + 28px);
+  height: calc(var(--slot) * 17 + 28px);
+  box-sizing: border-box;
   gap: 0;
-  width: max-content;
   position: relative;
   isolation: isolate;
 }
