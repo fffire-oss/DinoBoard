@@ -54,11 +54,21 @@ export function createApp(config) {
     // state AFTER action i), so the user can compare their own choice at
     // that vantage point with the AI suggestion in the analysis card.
     // The side panel still describes `frame` itself.
+    //
+    // Special case: the synthetic terminal-display frame appended by the
+    // replay controller is itself a copy of the real last frame — it
+    // displays the post-final-move position (the actual terminal layout
+    // that no other replay step exposes). Skip the "show previous" shift
+    // so it renders the post-state, not the pre-state of itself.
     const idx = allFrames.indexOf(frame);
-    const displayFrame = idx > 0 ? allFrames[idx - 1] : frame;
+    const displayFrame = frame.__terminal_display
+        ? frame
+        : (idx > 0 ? allFrames[idx - 1] : frame);
     const prevIdx = prevFrame ? allFrames.indexOf(prevFrame) : -1;
-    const prevDisplay = prevIdx > 0 ? allFrames[prevIdx - 1]
-        : (prevIdx === 0 ? prevFrame : null);
+    const prevDisplay = prevFrame && prevFrame.__terminal_display
+        ? prevFrame
+        : (prevIdx > 0 ? allFrames[prevIdx - 1]
+            : (prevIdx === 0 ? prevFrame : null));
     // Animate when the displayed positions are exactly one ply apart
     // (sequential playback / next button). The action that connects them
     // is whatever produced `displayFrame` — i.e. the move being analyzed
@@ -180,6 +190,13 @@ export function createApp(config) {
   }
 
   function updateReplayInfo(frame) {
+    if (frame.__terminal_display) {
+      infoPanel.setTurn('录像回放 · 终局画面');
+      infoPanel.setMessage('终局');
+      infoPanel.setWinrate(null);
+      infoPanel.setSuggest(null);
+      return;
+    }
     const actor = resolveActorName(frame.actor);
     infoPanel.setTurn('录像回放 · ' + actor);
 

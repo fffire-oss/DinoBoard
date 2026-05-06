@@ -10,8 +10,23 @@
    * effective "cell" (what the user perceives) is 3*slot ≈ 84px at the
    * 28px figure. Previous 28px cap made the board feel cramped — bump
    * the default to 34px and the viewport-bounded fallback widens along
-   * with it. */
+   * with it.
+   *
+   * IMPORTANT — `floor()` to kill subpixel drift. Viewport-derived values
+   * are fractional on phones (e.g. 19.7px on a 375px viewport). CSS Grid
+   * floors each rendered track to whole device pixels, but `var(--slot)`
+   * keeps the conceptual fractional value, so any downstream
+   * `calc(var(--slot) * N - Xpx)` drifts by 0.x px per track and
+   * accumulates into a visible misalignment between wall pills and grid
+   * lines. Forcing `--slot` to an integer pixel at the source means tracks
+   * and `var(--slot)` agree, and every downstream calc lines up.
+   *
+   * The first declaration is the legacy fallback for browsers without
+   * `floor()` (pre-Safari 16, pre-Chrome 111). The second overrides on
+   * modern browsers — CSS drops declarations with unrecognised functions,
+   * so the cascade falls back automatically. */
   --slot: min(34px, calc((100vh - 120px) / 17), calc((100vw - 360px - 280px) / 17));
+  --slot: floor(min(34px, calc((100vh - 120px) / 17), calc((100vw - 360px - 280px) / 17)));
   padding: 14px;
   border: 1px solid #d1d5db;
   border-radius: 10px;
@@ -142,17 +157,30 @@
 .edge-slot.wall-anchor { z-index: 30; }
 .edge-slot.edge-disabled::after { background: #f3f4f6; }
 
+/* Wall anchors visually span 3 grid tracks (cell + edge + cell). Using
+ * `calc(var(--slot) * 3 - 8px)` looks correct on desktop where --slot is an
+ * integer pixel, but on mobile the viewport-derived --slot is a fractional
+ * value (e.g. 19.7px on a 375px viewport) while CSS Grid floors each rendered
+ * track to whole device pixels. The 0.x px drift accumulates across 3 tracks
+ * and visibly offsets the wall from its grid line.
+ *
+ * Percentages on absolutely-positioned pseudo-elements resolve against the
+ * parent's rendered padding box, which is the actual floored track width — so
+ * `300%` is exactly 3 rendered tracks regardless of subpixel rounding.
+ *
+ * Rule of thumb: any size meant to align with grid lines must be expressed as
+ * `%` or via `grid-column: span N`, NEVER as `calc(var(--slot) * N - …)`. */
 .edge-slot.edge-h.wall-anchor::after {
   left: 4px;
   top: 50%;
-  width: calc(var(--slot) * 3 - 8px);
+  width: calc(300% - 8px);
   transform: translateY(-50%);
 }
 
 .edge-slot.edge-v.wall-anchor::after {
   left: 50%;
   top: 4px;
-  height: calc(var(--slot) * 3 - 8px);
+  height: calc(300% - 8px);
   transform: translateX(-50%);
 }
 
@@ -191,18 +219,21 @@
 @media (max-width: 1200px) {
   .quoridor-board-grid {
     --slot: min(34px, calc((100vh - 120px) / 17), calc((100vw - 280px - 280px - 80px) / 17));
+    --slot: floor(min(34px, calc((100vh - 120px) / 17), calc((100vw - 280px - 280px - 80px) / 17)));
   }
 }
 
 @media (max-width: 900px) {
   .quoridor-board-grid {
     --slot: min(34px, calc((100vw - 280px - 60px) / 17));
+    --slot: floor(min(34px, calc((100vw - 280px - 60px) / 17)));
   }
 }
 
 @media (max-width: 720px) {
   .quoridor-board-grid {
     --slot: min(34px, calc((100vw - 40px) / 17));
+    --slot: floor(min(34px, calc((100vw - 40px) / 17)));
     padding: 8px;
   }
 }

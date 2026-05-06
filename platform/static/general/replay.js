@@ -52,6 +52,15 @@ export function createReplayController(infoCol, config) {
   function frameLines(frame) {
     const total = frames.length;
     const idx = frames.indexOf(frame);
+
+    if (frame.__terminal_display) {
+      return {
+        line1: '帧 ' + (idx + 1) + '/' + total + ' · 终局画面',
+        line2: '—',
+        line3: '—',
+      };
+    }
+
     const actorName = resolveActor ? resolveActor(frame.actor) : frame.actor;
     const actor = frame.actor === 'start' ? '' : actorName;
 
@@ -216,11 +225,41 @@ export function createReplayController(infoCol, config) {
     }
   }
 
+  // Append a synthetic terminal-display frame so the user can scrub past the
+  // last move and actually see the final position. The replay's display
+  // logic (in app.js) renders `frames[idx-1]` as the board state, which means
+  // clicking the original last frame shows the position BEFORE the final
+  // move, with the analysis card describing that move. The terminal layout
+  // (winner reveal, last-card showdown, etc.) never gets a frame of its own.
+  // This wrapper appends one extra entry that points at the real last frame
+  // — when displayed via `displayFrame = allFrames[idx-1]`, it resolves to
+  // the actual terminal state, which is exactly the picture we want to show.
+  function withTerminalFrame(rawFrames) {
+    if (!rawFrames || !rawFrames.length) return rawFrames;
+    const last = rawFrames[rawFrames.length - 1];
+    if (!last || !last.is_terminal) return rawFrames;
+    const tail = {
+      ...last,
+      __terminal_display: true,
+      analysis: null,
+      action_info: null,
+      action_id: null,
+      actor: 'start',
+      ply_index: (typeof last.ply_index === 'number') ? last.ply_index + 1 : last.ply_index,
+    };
+    return rawFrames.concat([tail]);
+  }
+
   return {
     async enter(sessionId) {
       const data = await apiGet(API_BASE + '/' + sessionId + '/replay');
-      frames = data.frames;
-      step = frames.length - 1;
+      frames = withTerminalFrame(data.frames);
+      // Land on the last analyzed move (pre-final-position with analysis),
+      // not the synthetic terminal-only frame appended after it. The user
+      // typically wants to see "your last move's analysis" first; the
+      // terminal picture is one click away via "next".
+      const hasTerminal = frames.length && frames[frames.length - 1].__terminal_display;
+      step = Math.max(0, frames.length - (hasTerminal ? 2 : 1));
       lastRenderedStep = -1;  // no prior animation frame reference
       playing = false;
       panel.hidden = false;
@@ -228,7 +267,7 @@ export function createReplayController(infoCol, config) {
       return data;
     },
     enterWithFrames(framesData) {
-      frames = framesData;
+      frames = withTerminalFrame(framesData);
       step = 0;
       lastRenderedStep = -1;
       playing = false;

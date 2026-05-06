@@ -250,13 +250,25 @@ data-deck="1"              牌堆（tier）
 - 9 个 cell 一路累计，最右边的 highlight pill 看起来跟棋盘线明显错开
 - 桌面端 `--slot` 取到 34px 整数，没 floor 误差，所以你本机上完全看不出来
 
-**正确做法**：
+**正确做法（一劳永逸版）**：在源头就把派生 viewport 的 CSS 变量用 `floor()` 取整，让 grid 渲染像素和变量值保持一致，下游所有 calc 自然对齐。
+
+```css
+/* 兼容老浏览器：先写不带 floor 的版本作为 fallback；
+ * 现代浏览器（Safari 16+/Chrome 111+）会用第二行覆盖。
+ * 不识别 floor() 的引擎会丢弃第二行，cascade 自动降级。 */
+--slot: min(34px, calc((100vw - 40px) / 17));
+--slot: floor(min(34px, calc((100vw - 40px) / 17)));
+```
+
+`floor()` 是 CSS Values 4 加进来的函数，主流浏览器 2023 年起都支持。强制取整后 `var(--slot)` 永远是整数像素，`calc(var(--slot) * 3 - 8px)` 就不会再和 grid track 错开。
+
+**双保险（任何场景都建议加）**：
 
 - **跨单格的子元素用百分比**，让浏览器用真实渲染宽度算：`width: calc(100% - 8px)` 而不是 `calc(var(--slot) - 8px)`
-- **跨多格的子元素**没法用百分比（伪元素的 containing block 是单个 cell），只能继续用 `calc(var(--slot) * N - 8px)`，这种地方手机上会有可见偏移；如果一定要消除，改成 `position: absolute` + `grid-column: span N` 让它跨真实 grid track，而不是手算偏移
-- **一切由 viewport 派生的 CSS 变量都是浮点数**，下游一律假设它会被 floor。`pawn` 这种用 `calc(var(--slot) * 0.82)` 算居中的尺寸没问题（自己 floor 就好），但**绝对位置/边距**别这么算
+- **跨多格的子元素**：伪元素的 containing block 是单个 cell，但**百分比 > 100% 仍然是相对父元素的渲染宽度** — 直接用 `calc(300% - 8px)` 跨三格，比 `calc(var(--slot) * 3 - 8px)` 稳得多。仅当确实需要跨真实 grid track 时（`grid-column: span N`），才用 grid 自己的跨格机制
+- **`pawn` 这种用 `calc(var(--slot) * 0.82)` 算居中的尺寸没问题**（自己内部 floor 一下就好），但**绝对位置/边距/对齐尺寸**优先用百分比
 
-**判断规则**：CSS 变量里只要出现 `vw / vh / 100% / fr` 派生量，写下游 `calc(var(--x) - Npx)` 之前先想一下 — "这个值会不会跟某个 grid track 或父容器的渲染像素需要对齐？" 是 → 改用 `100% - Npx`。
+**判断规则**：CSS 变量里只要出现 `vw / vh / 100% / fr` 派生量，要么在定义处用 `floor()` 取整（推荐，一劳永逸），要么在下游用 `100% - Npx` / `300% - Npx` 替代 `calc(var(--x) * N - Npx)`。两层保险叠加最稳。
 
 ---
 
