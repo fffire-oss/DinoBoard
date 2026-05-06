@@ -38,9 +38,6 @@
 .board-cell {
   width: 100%;
   height: 100%;
-  border: none;
-  padding: 0;
-  margin: 0;
   border-radius: 8px;
   background: #f5f7fb;
   cursor: default;
@@ -49,15 +46,6 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  /* Mobile browsers (notably Chrome on Android) let <button> inherit a
-   * line-height and font metrics that displace the flex content vertically
-   * inside the grid track, pushing the absolute-positioned legal dot above
-   * the geometric center. Pin the box to its own dimensions. */
-  line-height: 1;
-  font: inherit;
-  color: inherit;
-  -webkit-appearance: none;
-          appearance: none;
 }
 
 .board-cell.legal {

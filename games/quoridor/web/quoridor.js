@@ -60,8 +60,14 @@ function renderGridTo(boardEl, st, canPlay, legal, wallOwners) {
       if (gr % 2 === 0 && gc % 2 === 0) {
         const row = gr / 2, col = gc / 2;
         const key = rcKey(row, col);
-        const cell = document.createElement('button');
-        cell.type = 'button';
+        // <div role="button"> instead of <button>: some Android
+        // Chromium webviews give <button> an intrinsic vertical content
+        // offset (a fraction of a pixel from UA baseline metrics) that
+        // no amount of line-height/appearance reset can remove, pushing
+        // any centered child visually below the cell's geometric center.
+        const cell = document.createElement('div');
+        cell.setAttribute('role', 'button');
+        cell.setAttribute('tabindex', '-1');
         cell.className = 'board-cell';
         cell.setAttribute('data-cell', row + '-' + col);
         const actionId = legal.moves.get(key);
@@ -81,8 +87,9 @@ function renderGridTo(boardEl, st, canPlay, legal, wallOwners) {
       } else if (gr % 2 === 1 && gc % 2 === 0) {
         const hr = (gr - 1) / 2, hc = gc / 2;
         const key = rcKey(hr, hc), keyLeft = rcKey(hr, hc - 1);
-        const el = document.createElement('button');
-        el.type = 'button';
+        const el = document.createElement('div');
+        el.setAttribute('role', 'button');
+        el.setAttribute('tabindex', '-1');
         el.className = 'edge-slot edge-h';
         el.setAttribute('data-edge', 'h-' + hr + '-' + hc);
         if (hAnchors.has(key)) {
@@ -108,8 +115,9 @@ function renderGridTo(boardEl, st, canPlay, legal, wallOwners) {
       } else if (gr % 2 === 0 && gc % 2 === 1) {
         const vr = gr / 2, vc = (gc - 1) / 2;
         const key = rcKey(vr, vc), keyUp = rcKey(vr - 1, vc);
-        const el = document.createElement('button');
-        el.type = 'button';
+        const el = document.createElement('div');
+        el.setAttribute('role', 'button');
+        el.setAttribute('tabindex', '-1');
         el.className = 'edge-slot edge-v';
         el.setAttribute('data-edge', 'v-' + vr + '-' + vc);
         if (vAnchors.has(key)) {
