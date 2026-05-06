@@ -61,28 +61,28 @@
 }
 
 .board-cell.legal {
-  background: rgba(59, 130, 246, 0.12);
+  /* Draw the legal-move dot directly in the cell's background via a
+   * radial gradient centered on the cell's padding box. This bypasses
+   * any flex/absolute/::after centering, which on some mobile browsers
+   * (notably Chinese Chromium webviews in desktop mode) picked up a
+   * vertical bias from the <button>'s UA line-height metrics and pushed
+   * the dot off-center. A background gradient is painted at the exact
+   * geometric midpoint of the box and cannot drift. */
+  background-color: rgba(59, 130, 246, 0.12);
+  background-image: radial-gradient(
+    circle,
+    rgba(59, 130, 246, 0.45) 0,
+    rgba(59, 130, 246, 0.45) 6px,
+    transparent 6.5px
+  );
+  background-repeat: no-repeat;
+  background-position: center center;
   outline: 1px solid rgba(59, 130, 246, 0.35);
   cursor: pointer;
 }
 
-.board-cell.legal::after {
-  content: "";
-  display: block;
-  width: 12px;
-  height: 12px;
-  border-radius: 999px;
-  background: rgba(59, 130, 246, 0.45);
-  flex: 0 0 auto;
-  /* Centered by the flex parent (align-items/justify-content: center)
-   * rather than `position: absolute; top: 50%`. Flex centering uses the
-   * box's content-box directly, so it stays aligned even when a mobile
-   * user-agent button stylesheet introduces vertical content offsets
-   * that bias `top: 50%`. */
-}
-
 .board-cell.legal:hover {
-  background: rgba(59, 130, 246, 0.22);
+  background-color: rgba(59, 130, 246, 0.22);
   outline: 2px solid #3b82f6;
 }
 
