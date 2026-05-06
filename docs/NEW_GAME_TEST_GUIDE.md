@@ -538,10 +538,10 @@ def test_randomize_unseen_preserves_deck_size():
 
 `test_randomize_unseen_does_not_peek` 只验证 tracker **不偷看**（随机化结果不和真实 deck 一致）。它不验证 tracker **声称的"已知"信息真的对得上**。两个 tracker 用错误的事件应用逻辑可能同时把"对手手牌 = 牧师"理解错（实际是男爵），互相之间一致但都和真相相悖——`test_api_belief_matches_selfplay` 抓不到这种 bug，因为两边都错得一样。
 
-**标准化验收**：每个有 hidden info 的游戏都要在 `tests/test_tracker_consistent_with_truth.py` 加一个 checker 函数，对每个 ply 把 tracker `serialize()` 里的"声称已知"字段和 GT `get_state_dict()` 里的真实字段比对。规则是 **`claim != UNKNOWN_SENTINEL` ⇒ `claim == truth`**；声称"未知"永远 OK，声称"已知 X" 但实际是 Y 必须失败。
+**标准化验收**：每个有 hidden info 的游戏都要在 `tests/framework/test_tracker_consistent_with_truth.py` 加一个 checker 函数，对每个 ply 把 tracker `serialize()` 里的"声称已知"字段和 GT `get_state_dict()` 里的真实字段比对。规则是 **`claim != UNKNOWN_SENTINEL` ⇒ `claim == truth`**；声称"未知"永远 OK，声称"已知 X" 但实际是 Y 必须失败。
 
 ```python
-# tests/test_tracker_consistent_with_truth.py 里加：
+# tests/framework/test_tracker_consistent_with_truth.py 里加：
 def _check_<game>(state: dict, snap: dict, perspective: int) -> None:
     # 取 tracker 声称的已知信息
     known = snap.get("<your_known_field>")  # e.g. known_hand, known_role
@@ -557,7 +557,7 @@ def _check_<game>(state: dict, snap: dict, perspective: int) -> None:
 _CHECKERS["<game>"] = _check_<game>
 ```
 
-跑 `pytest tests/test_tracker_consistent_with_truth.py -v -k <game_id>`,5 个 seed 都过。
+跑 `pytest tests/framework/test_tracker_consistent_with_truth.py -v -k <game_id>`,5 个 seed 都过。
 
 **为什么这个测试不能省**:tracker 是 AI 决策链路里**最容易悄悄出错**的地方。它不像 do/undo 一致性那样能从结果看出问题——tracker 错了只会让 AI 的局面理解偏移,胜率掉一点,看起来像是模型不够强,排查起来非常痛。这个测试把"tracker 声称的事实和真实事实不符"直接钉死成一个失败,**比任何后期复盘都便宜**。
 
@@ -661,12 +661,13 @@ def test_variant_all_players_get_turns(variant):
 
 ### 10.1 基础 API 测试（所有游戏必做）
 
+在 `tests/<your_game>/test_checklist.py` 里加 API 分离断言(参考 `tests/quoridor/test_checklist.py` 或 `tests/loveletter/test_checklist.py`),然后:
+
 ```bash
-# 把 game_id 加入 tests/conftest.py 的 CANONICAL_GAMES
-# 在 tests/test_ai_api_separation.py 的 _PLY_BUDGET 加一条
-# 确定性游戏还要加入 _DETERMINISTIC_GAMES
-python -m pytest tests/test_ai_api_separation.py -v -k <game_id>
+python -m pytest tests/<your_game>/ -v -k api
 ```
+
+如果你想让框架层 carrier 也覆盖你的游戏(项目维护层面的决定),可在 `tests/framework/test_ai_api_separation.py` 的 `_PLY_BUDGET` 里加一条。但**这不是新游戏接入的硬性要求**——`tests/<your_game>/` 全绿即合格。
 
 此步验证：
 - API 契约干净（无 state 进出）
@@ -681,8 +682,9 @@ python -m pytest tests/test_ai_api_separation.py -v -k <game_id>
 # 实现 public_event_extractor / public_event_applier /
 # initial_observation_extractor / initial_observation_applier 并在 GameBundle 注册
 # 实现 IBeliefTracker::serialize() 输出 canonical 字典
-# 把 game_id 加入 tests/test_api_belief_matches_selfplay.py 的 GAMES_WITH_EVENT_PROTOCOL 和 _PUBLIC_KEYS
-python -m pytest tests/test_api_belief_matches_selfplay.py -v -k <game_id>
+# 在 tests/<your_game>/test_checklist.py 里加 belief / public state / legal actions 三层等价断言
+# (参考 tests/loveletter/test_checklist.py)
+python -m pytest tests/<your_game>/ -v -k belief
 ```
 
 三个断言：

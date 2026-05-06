@@ -62,7 +62,7 @@ pytest tests/ -q 2>&1 | tail -5
 如果你改了某游戏的 encoder（加/减字段），**MUST** 同步更新以下：
 - `games/<name>/config/game.json` 的 `feature_dim`
 - 重新训练并部署模型到 `games/<name>/model/<variant>.onnx`
-- 回归测试 `tests/test_deployed_models_match_encoder.py` 会卡住——**NEVER** skip 它
+- 回归测试 `tests/framework/test_deployed_models_match_encoder.py` 会卡住——**NEVER** skip 它
 
 **教训**：TicTacToe 曾经 encoder 加了 `first_player` 字段没同步 ONNX，UI 显示「AI 思考中」永远不落子。
 
@@ -87,7 +87,7 @@ CLAUDE.md 明令禁止的「silent fallback」。如果 key 可能缺失，用 `
 
 **注册与配置**：
 
-- `tests/conftest.py::CANONICAL_GAMES` 加 game_id
+- 在 `tests/<game>/test_checklist.py` 写一份完整的验收清单(从最相近的现有游戏复制模板,改 `GAME = "..."`)。`pytest tests/<game>/` 一次全绿即合格——**不需要**改 `tests/conftest.py::FRAMEWORK_GAMES`,框架层 carrier(quoridor + azul + loveletter)已经够覆盖框架不变量
 - 多人变体（`{game}_3p` / `{game}_4p`）各需一份独立的部署模型
 - `game.json` 的 `feature_dim` / `action_space` **MUST** 和 `engine.game_metadata(game_id)` 返回的一致（以 C++ 为准，不一致就改 JSON）
 
@@ -134,12 +134,13 @@ pytest tests/ -q                        # 跑全套测试
 >
 > **Step 3 — 填实体 + 对齐测试**
 >    - 照着 `docs/GAME_DEVELOPMENT_GUIDE.md` 的 checklist 实现 state、rules、encoder 的真实逻辑
->    - 把 game_id 加入 `tests/conftest.py::CANONICAL_GAMES`
->    - 小步迭代：写一点 → 跑相关测试 → 再写一点
+>    - 写 `tests/<X>/test_checklist.py`(从最相近的现有游戏复制模板,改 `GAME = "..."`)和空的 `tests/<X>/__init__.py`
+>    - 小步迭代:写一点 → 跑 `pytest tests/<X>/` → 再写一点
 >
 > **Step 4 — 全量验收**
->    - `pytest tests/ -q` 全过
->    - 隐藏信息游戏额外确认 `test_api_belief_matches_selfplay[<X>]` 绿
+>    - `pytest tests/<X>/ -v` 全过(这是「游戏 ready」的明确信号)
+>    - `pytest tests/ -q` 全过(框架不变量没被破坏)
+>    - 隐藏信息游戏的 belief / public state / legal actions 三层等价断言已经在 `tests/<X>/test_checklist.py` 里覆盖
 >
 > **Step 5 — 文档落地**
 >    - 写 `docs/devlog/<today>.md` 记录关键决策（encoder 维度选择、belief tracker 设计等）
@@ -179,7 +180,7 @@ pytest tests/ -q                        # 跑全套测试
 ## 项目当前状态速览
 
 - **6 个完整游戏**：tictactoe / quoridor / splendor / azul / loveletter / coup
-- **大量参数化测试**，所有 canonical game 自动覆盖，0 skip 0 fail
+- **两层测试架构**：`tests/framework/` 在 quoridor + azul + loveletter 三游戏 matrix 上跑框架不变量；`tests/<game>/` 每个游戏自己一份完整验收清单——新游戏 ready 的标志是 `pytest tests/<game>/` 一次全绿
 - **ISMCTS 重构**完成（2026-05-04）：DAG + UCT2 + 结构化 encoder 拆分
 - **Coup 启发式 belief tracker**（手写加权联合采样）作为"诈唬游戏怎么做"的范例
 - **待做**：概率化 belief network（framework 层增强，不急）、训练端 GPU 支持（当前纯 CPU）

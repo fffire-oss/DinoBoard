@@ -1247,7 +1247,7 @@ void LoveLetterState<N>::hash_private_fields(int player, Hasher& h) const {
 
 `state_hash_for_perspective` 自动把 step_count 计入 hash，保证 DAG 结构性 acyclic。**游戏开发者不要在 `hash_public_fields` 里重复 hash step_count**。
 
-**测试建议**：构造两个 state，public + 同 perspective 的 private 完全相同，但 opp private 不同；assert `state_hash_for_perspective(perspective)` 相等。这是 hash 归类正确性的基本检查，`tests/test_encoder_respects_hash_scope.py` 提供模板。
+**测试建议**：构造两个 state，public + 同 perspective 的 private 完全相同，但 opp private 不同；assert `state_hash_for_perspective(perspective)` 相等。这是 hash 归类正确性的基本检查，`tests/framework/test_encoder_respects_hash_scope.py` 提供模板。
 
 ### 11.2 IBeliefTracker
 
@@ -1395,9 +1395,9 @@ ISMCTS 根采样 + encoder 信息屏障在**双人游戏**中完全自洽。多�
 6. **实现 public-event protocol**（`extract_events` / `apply_event` / `extract_initial_observation` / `apply_initial_observation`）——框架用它在 `GameSessionWrapper` 里维护每个 perspective 的 ai_view，同时驱动外部 AI API 的观察流。详见 §17 事件协议章节（或直接参考 `games/loveletter/loveletter_register.cpp`）
 7. 在 `make_<game>` 里注册 `belief_tracker` + `public_event_extractor` + `public_event_applier` + `initial_observation_extractor` + `initial_observation_applier`
 8. **验证测试**：
-   - `tests/test_ai_api_separation.py::test_full_game_via_api[<game>]` 必须过（API 契约）
-   - `tests/test_api_belief_matches_selfplay.py::*[<game>]` 必须过（belief 等价）
-   - `tests/test_encoder_respects_hash_scope.py` 必须过（encoder 不越界读 opp private）
+   - `tests/framework/test_ai_api_separation.py::test_full_game_via_api[<game>]` 必须过（API 契约）
+   - `tests/framework/test_api_belief_matches_selfplay.py::*[<game>]` 必须过（belief 等价）
+   - `tests/framework/test_encoder_respects_hash_scope.py` 必须过（encoder 不越界读 opp private）
    - 建议自己写黑盒统计测试（类似 `TestLoveLetterGuardAccuracy`）：在某个会读隐藏信息的决策点上，验证 AI 的选择分布和无先验情况下的基线一致
    - 建议加 hash 单元测试：两个相同 info set 的 state（公开字段 + 视角玩家 private 字段全同，其他玩家 private 可不同）的 `state_hash_for_perspective(p)` 必须相等
 
@@ -1902,102 +1902,54 @@ window.DinoBoard.showNotStarted();
 
 ## 15. 测试
 
-DinoBoard 有一套完整的参数化测试，自动覆盖所有已注册游戏。新游戏只需加入一个列表，即可获得完整的回归测试保护。
+DinoBoard 采用**两层测试架构**:框架层不变量 + 每个游戏自己完整的验收清单。新游戏 ready 的标志是「`pytest tests/<新游戏>/` 一次全绿」。
 
-### 15.1 运行测试
+### 15.1 两层架构概念
+
+- **`tests/framework/`** — 框架不变量。在固定 3 游戏 matrix carrier(`FRAMEWORK_GAMES = ["quoridor", "azul", "loveletter"]`)上跑——这三个游戏一起最小完备覆盖了框架关心的每个结构特征(确定/对称随机/非对称隐藏、2p/2-4p、tail solver、belief tracker 有无 per-player private 字段、淘汰)。**这是项目维护者改框架时的护栏**,新游戏不需要被加到这层。
+- **`tests/<game>/`** — 每个游戏自己完整的验收清单,**与框架层有意冗余**。你的工作流就是在这一层完成的。
+
+详见 [新游戏验收测试指南 § 测试架构原则](NEW_GAME_TEST_GUIDE.md#测试架构原则两层测试)。
+
+### 15.2 运行测试
 
 ```bash
-# 运行全部测试（约 40 秒）
+# 全部(框架 + 所有游戏)
 python -m pytest tests/ -x -q
 
-# 只跑某个游戏的测试
-python -m pytest tests/ -k quoridor -q
+# 只跑你的游戏(开发期最常用)
+python -m pytest tests/<your_game>/ -v
 
-# 只跑某类测试
-python -m pytest tests/test_do_undo_consistency.py -q
-
-# 详细输出（调试失败时用）
-python -m pytest tests/ -k "your_game" -v --tb=short
+# 只跑框架层
+python -m pytest tests/framework/ -q
 ```
 
-### 15.2 测试覆盖范围
+### 15.3 接入新游戏:写一份独立的验收清单
 
-| 测试文件 | 覆盖内容 | 测试数 |
+**不需要**修改 `tests/framework/` 或 `tests/conftest.py::FRAMEWORK_GAMES`。流程:
+
+1. 从最相近的现有游戏复制一份模板:
+   - 完全公开 → `tests/tictactoe/test_checklist.py` 或 `tests/quoridor/test_checklist.py`
+   - 对称物理随机 → `tests/azul/test_checklist.py`
+   - 非对称隐藏 → `tests/loveletter/test_checklist.py` 或 `tests/coup/test_checklist.py`
+
+2. 改 `GAME = "<your_game>"`、`VARIANTS = [...]`,以及 encoder 字段偏移等游戏特定常量。
+
+3. 创建 `tests/<your_game>/__init__.py`(空文件,pytest 同名 `test_checklist.py` 消歧需要)。
+
+4. `pytest tests/<your_game>/ -v` 迭代到全绿。**全绿就是 ready 的明确信号**。
+
+### 15.4 测试辅助工具
+
+`tests/conftest.py` 提供常用 fixture 和 helper:
+
+| 名称 | 类型 | 说明 |
 |---|---|---|
-| `test_registry_smoke.py` | 注册、available_games、config 加载 | ~14 |
-| `test_game_state_consistency.py` | 初始状态、合法动作、状态变化、终局 | ~25 |
-| `test_game_session.py` | GameSession 创建、走棋、AI 决策 | ~27 |
-| `test_do_undo_consistency.py` | do/undo 完美逆操作、种子确定性 | ~24 |
-| `test_encode_state.py` | encode_state 维度、config 一致性 | ~45 |
-| `test_feature_encoding.py` | 特征逐步变化、BUG-007 回归 | ~35 |
-| `test_selfplay_sample_integrity.py` | 样本结构、visits=sims、z 与 winner 一致 | ~48 |
-| `test_sample_collection.py` | 样本收集流程、policy 格式 | ~61 |
-| `test_mcts_core.py` | MCTS 搜索行为、温度、噪声 | ~22 |
-| `test_onnx_roundtrip.py` | PyTorch → ONNX → C++ selfplay | ~17 |
-| `test_arena.py` | 模型对战、胜率统计 | ~30 |
-| `test_training_pipeline.py` | 训练 tensor、前向/反向传播 | ~17 |
-| `test_pipeline_integration.py` | 端到端 pipeline 流程 | ~30 |
-| `test_config_passthrough.py` | game.json 参数透传到 C++ | ~15 |
-| `test_heuristic_and_eval.py` | 启发式对局、eval 模式 | ~8 |
-| `test_tail_solver.py` | 残局求解 API、统计不变量 | ~4 |
-| `test_score_head.py` | 辅助训练信号 head | ~9 |
-| `test_hidden_info.py` | ISMCTS root 采样、belief tracking、不偷看验证 | ~27 |
-| `test_multiplayer.py` | 多人变体注册、selfplay、z_values | ~57 |
-| `test_game_specific.py` | 各游戏特有组件（heuristic、filter 等） | ~35 |
-
-### 15.3 自动参数化机制
-
-所有通用测试都通过 `conftest.py` 中的 `CANONICAL_GAMES` 列表自动参数化：
-
-```python
-# tests/conftest.py
-CANONICAL_GAMES = ["tictactoe", "quoridor", "splendor", "azul"]
-
-@pytest.fixture(params=CANONICAL_GAMES)
-def game_id(request):
-    return request.param
-```
-
-测试函数只需声明 `game_id` fixture，pytest 就会对每个游戏各跑一次：
-
-```python
-def test_initial_not_terminal(game_id):
-    gs = dinoboard_engine.GameSession(game_id, seed=42)
-    assert not gs.is_terminal
-```
-
-可选组件的测试通过独立列表控制，避免在没有该组件的游戏上报错：
-
-```python
-GAMES_WITH_HEURISTIC = ["quoridor"]
-GAMES_WITH_TAIL_SOLVER = ["quoridor", "splendor"]
-GAMES_WITH_TRAINING_FILTER = ["quoridor"]
-```
-
-### 15.4 接入新游戏
-
-新游戏通过所有手动验证后（见 [NEW_GAME_TEST_GUIDE.md](NEW_GAME_TEST_GUIDE.md)），将其加入自动化测试：
-
-1. **加入 `CANONICAL_GAMES`**：
-
-```python
-CANONICAL_GAMES = ["tictactoe", "quoridor", "splendor", "azul", "your_game"]
-```
-
-2. **加入可选组件列表**（根据你注册的组件）：
-
-```python
-GAMES_WITH_HEURISTIC = ["quoridor", "your_game"]
-GAMES_WITH_TAIL_SOLVER = ["quoridor", "splendor", "your_game"]
-```
-
-3. **运行全量测试确认通过**：
-
-```bash
-python -m pytest tests/ -x -q
-```
-
-之后每次代码变更，所有参数化测试都会自动覆盖你的游戏。
+| `GAME_CONFIGS` | dict | 所有 6 个 canonical game 的 game.json + metadata |
+| `get_test_model(game_id)` | 函数 | 创建/缓存随机初始化 ONNX 模型 |
+| `run_short_selfplay(game_id)` | 函数 | 快速跑一局 selfplay(10 sims, 50 plies) |
+| `run_short_heuristic(game_id)` | 函数 | 快速跑一局 heuristic 对局 |
+| `game_id` | fixture | **仅供框架层使用**——参数化为 `FRAMEWORK_GAMES`。Per-game checklist 自己 hardcode `GAME = "..."`,不用这个 fixture |
 
 ### 15.5 测试辅助工具
 
@@ -2035,12 +1987,13 @@ python -m pytest tests/ -x -q
 - [ ] 实现 `state_serializer`（Web 前端需要）
 - [ ] 实现 `action_descriptor`（Web 前端需要）
 - [ ] 创建 `web/` 前端（玩家游玩 + 验收训练结果的主要界面）
+- [ ] **写 `tests/<name>/test_checklist.py`**——从最相近的现有游戏复制模板,改 `GAME = "..."`。这是「游戏 ready」的明确信号:`pytest tests/<name>/` 一次全绿即合格
+- [ ] 创建 `tests/<name>/__init__.py`(空文件,pytest 同名 `test_checklist.py` 消歧需要)
 - [ ] 通过手动验证：按 [NEW_GAME_TEST_GUIDE.md](NEW_GAME_TEST_GUIDE.md) 逐步验证
-- [ ] 加入自动化测试：将 game_id 加入 `tests/conftest.py` 的 `CANONICAL_GAMES`
 - [ ] 全量测试通过：`python -m pytest tests/ -x -q`
 - [ ] **通过 AI API 分离验收**（强制——证明 AI 不从 ground truth 偷看信息的唯一机制；不过这一步即使其他测试全过也不算合格）：
-  - 所有游戏：`tests/test_ai_api_separation.py::test_full_game_via_api[<name>]` 必须通过
-  - 随机游戏额外：`tests/test_api_belief_matches_selfplay.py` 的三个断言（belief / public state / legal actions 等价）
+  - 所有游戏：API 契约测试在 `tests/<name>/test_checklist.py` 里覆盖
+  - 随机游戏额外：belief 等价(belief / public state / legal actions)在同一份 checklist 里覆盖
   - 详见 §17
 - [ ] 运行首次训练：`python -m training.cli --game <name> --output runs/<name>_001`
 - [ ] 部署模型：将 `runs/<name>_001/models/model_best.onnx` 复制到 `games/<name>/model/<name>_<N>p.onnx`，其中 `<N>p` 是变体标识（2p / 3p / 4p）。同一游戏的所有变体模型共用 `games/<base>/model/`，不再为每个变体建单独目录。例如 Azul 的三个模型并排放在 `games/azul/model/{azul_2p,azul_3p,azul_4p}.onnx`。
@@ -2076,12 +2029,12 @@ python -m pytest tests/ -x -q
 
 两层测试都通过才算合格：
 
-**第一层**：`tests/test_ai_api_separation.py::test_full_game_via_api[<game_id>]`（所有游戏）
+**第一层**：`tests/framework/test_ai_api_separation.py::test_full_game_via_api[<game_id>]`（所有游戏）
 - API 契约干净（没有 state 进，没有 state 出）——由响应字段白名单扫描保证
 - 给定初始设置 + 动作序列，AI 能端到端完成对局
 - AI 返回的动作永远在 ground truth 的合法动作集里
 
-**第二层**：`tests/test_api_belief_matches_selfplay.py`（随机游戏）——这是真正的分离证明
+**第二层**：`tests/framework/test_api_belief_matches_selfplay.py`（随机游戏）——这是真正的分离证明
 - AI 用独立 seed 从零启动
 - 只通过公开事件同步
 - 每步的 belief snapshot 必须与自博弈维护的 belief 完全相等
@@ -2090,22 +2043,20 @@ python -m pytest tests/ -x -q
 
 ### 17.2 新游戏需要做什么
 
+> 注意:`tests/framework/` 在固定 3 游戏 matrix 上跑(见 §15.1),它**不会自动跑你的新游戏**。下面的 "把 game_id 加入 _PLY_BUDGET / _DETERMINISTIC_GAMES / GAMES_WITH_EVENT_PROTOCOL / _PUBLIC_KEYS" 仅当你想让框架层也用你的游戏作为 carrier 时才需要——这是**项目维护层面**的决定,通常新游戏只在 `tests/<game>/test_checklist.py` 里完成验收即可。
+
 **确定性游戏**（无 `belief_tracker`）：
-1. 把 `game_id` 加入 `tests/conftest.py` 的 `CANONICAL_GAMES`
-2. 在 `tests/test_ai_api_separation.py` 的 `_PLY_BUDGET` 里加一条
-3. 同时把 `game_id` 加入 `_DETERMINISTIC_GAMES`（启用独立 seed 测试）
-4. 跑 `pytest tests/test_ai_api_separation.py -v` 全通过
+1. 在 `tests/<your_game>/test_checklist.py` 里覆盖 API 分离场景(参考 `tests/quoridor/test_checklist.py`)
+2. 跑 `pytest tests/<your_game>/ -v` 全通过
 
 **随机或信息不对称游戏**（有 `belief_tracker`）：
-1. 上面确定性游戏的 4 步
+1. 上面 2 步
 2. 实现 `IBeliefTracker::serialize()` — 输出 canonical 可对比字典（sorted set → vector）
 3. 实现 public-event 协议（§17.4），在 GameBundle 注册：
    - `public_event_extractor` — selfplay 侧：state_before + action + state_after → 事件列表
    - `public_event_applier` — API 侧：把事件 apply 到 AI 的 state 上
    - `initial_observation_extractor` / `initial_observation_applier` — 初始设置同步
-4. 把 `game_id` 加入 `tests/test_api_belief_matches_selfplay.py` 的 `GAMES_WITH_EVENT_PROTOCOL`
-5. 在同文件 `_PUBLIC_KEYS` 字典里加游戏的公开字段列表
-6. 跑 `pytest tests/test_api_belief_matches_selfplay.py -v -k <game_id>` 三个断言全通过
+4. 在 `tests/<your_game>/test_checklist.py` 里加 belief 等价测试(参考 `tests/loveletter/test_checklist.py`)
 
 ### 17.3 Public-Event 协议设计
 

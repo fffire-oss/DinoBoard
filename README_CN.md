@@ -18,7 +18,7 @@ DinoBoard 把这条路径一次性打通,变成**可复用的引擎 + 可调用�
 
 - **核心框架 10k+ 行 C++/Python**——MCTS、belief tracker、训练、Web、分析,全套通用
 - **接入一个新游戏只需 ~2000 行**——规则 + 特征编码 + JSON 配置,其余全由框架托管
-- **大量参数化测试自动覆盖**——新游戏加入 `CANONICAL_GAMES` 列表即可继承全部验收
+- **两层测试架构**——框架不变量在 quoridor + azul + loveletter 三游戏 matrix 上跑(最小完备覆盖每个结构特征);**每个新游戏在 `tests/<game>/` 下有自己独立完整的验收清单**,「这个游戏 ready 了」=`pytest tests/<game>/` 一次全绿
 - **已有 6 个游戏,覆盖 4 类范式**——完全信息、对称随机、非对称隐藏、虚张声势
 - **对外的 observation-only REST API**——第三方桌游 app / 网站 / 平台直接调用,不需要共享任何 game state 代码,不需要嵌入 C++ 引擎
 - **从训练到 Web 前端到外部 API 一条链路**——同一份 C++ MCTS 同时服务训练、对战、录像掉分分析、第三方接入,绝无「训练时和生产时逻辑漂移」
@@ -68,7 +68,7 @@ DELETE /ai/sessions/{id}                  → 结束会话
 
 ### 工程纪律
 
-- 大量参数化测试,每个新游戏免费继承
+- 两层测试:框架不变量在固定 3 游戏 matrix 上跑;每个游戏 `tests/<game>/` 下有自己完整的验收清单,新游戏 ready 是单一一次绿测
 - `docs/KNOWN_ISSUES.md` 收录 22 个已解决的 bug 和设计取舍——这是别人接入新游戏时**能跳过的每一个坑**
 - 严格的 no-fallback 纪律(详见 `CLAUDE.md`):静默降级一律拒绝,错误必须抛到表面
 
@@ -80,7 +80,7 @@ DELETE /ai/sessions/{id}                  → 结束会话
 
 1. 对 Claude Code 说「加上 [游戏名]」
 2. AI 读 `docs/GAME_DEVELOPMENT_GUIDE.md` 和 `docs/KNOWN_ISSUES.md`,模仿 Quoridor / Splendor 等范例实现规则
-3. 加入 `tests/conftest.py::CANONICAL_GAMES`,让全量参数化测试自动跑起来
+3. 在 `tests/<新游戏>/` 下放一份 `test_checklist.py`(从最相近的现有游戏复制,改 `GAME = "..."`)——`pytest tests/<新游戏>/` 一次全绿就是「游戏 ready」的明确信号
 4. AI 根据测试失败迭代修复,直到全绿
 5. `python -m training.cli --game <id>` 启动训练
 6. Web 上打开对战界面验收
@@ -196,7 +196,7 @@ open http://localhost:8000
 - **[功能概览](docs/GAME_FEATURES_OVERVIEW.md)** — 框架能力速查
 - **[游戏开发指南](docs/GAME_DEVELOPMENT_GUIDE.md)** — 添加新游戏的单一权威来源
 - **[MCTS 算法](docs/MCTS_ALGORITHM.md)** — ISMCTS 的 DAG 搜索推导
-- **[新游戏验收测试](docs/NEW_GAME_TEST_GUIDE.md)** — 9 步验收流程
+- **[新游戏验收测试](docs/NEW_GAME_TEST_GUIDE.md)** — 9 步验收流程 + 两层测试架构原则
 - **[已知问题与踩坑](docs/KNOWN_ISSUES.md)** — BUG-001~022 postmortem + 设计取舍
 
 ---
@@ -250,7 +250,10 @@ DinoBoard/
 │   ├── game_service/               #   游戏会话、异步管线、录像分析
 │   └── static/                     #   通用前端资源
 │
-├── tests/                          # 参数化测试(所有已注册游戏自动覆盖)
+├── tests/
+│   ├── framework/                  #   框架不变量(3 游戏 matrix carrier)
+│   ├── tictactoe/  quoridor/  splendor/  azul/  loveletter/  coup/
+│   │                               #   每个游戏完整验收清单
 ├── docs/                           # 文档
 └── setup.py · requirements.txt     # 构建
 ```

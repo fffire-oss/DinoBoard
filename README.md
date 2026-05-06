@@ -18,7 +18,7 @@ DinoBoard walks it once and turns the result into **a reusable engine plus a cal
 
 - **10k+ lines of C++/Python core** — MCTS, belief tracker, training, web, analysis, all generic
 - **~2000 lines to add a new game** — rules + feature encoder + JSON config; the framework owns the rest
-- **Massive parametrized test coverage auto-applies** — a new game inherits all acceptance tests by adding it to `CANONICAL_GAMES`
+- **Two-layer test architecture** — framework invariants run on a 3-game matrix carrier (quoridor + azul + loveletter) covering every structural feature minimally; **each new game gets its own self-contained acceptance checklist** under `tests/<game>/`, so "this game is done" is a single green pytest run
 - **6 games covering 4 paradigms** — perfect info, symmetric randomness, asymmetric hidden info, bluffing
 - **Observation-only REST API for third parties** — digital board game apps / platforms / companion apps call the AI directly without sharing any game-state code or embedding the C++ engine
 - **One code path from training to web to external API** — the same C++ MCTS serves self-play, live play, replay analysis, and third-party integration, with zero "training vs. production drift"
@@ -68,7 +68,7 @@ Self-play, evaluation, web play, replay analysis — **all run on the same C++ M
 
 ### Engineering discipline
 
-- Heavy parametrized testing; every new game inherits the full suite for free
+- Two-layer tests: framework invariants on a fixed 3-game matrix; each game has its own complete checklist (`tests/<game>/`), so a new game's readiness is a single self-contained green run
 - `docs/KNOWN_ISSUES.md` documents 22 shipped bugs and design trade-offs — **every pothole the next integrator gets to skip**
 - Strict no-fallback discipline (see `CLAUDE.md`): silent degradation is banned, errors must propagate to the surface
 
@@ -80,7 +80,7 @@ You no longer need to hand-write the game bundle. The typical flow:
 
 1. Tell Claude Code "add [game name]"
 2. The AI reads `docs/GAME_DEVELOPMENT_GUIDE.md` and `docs/KNOWN_ISSUES.md`, and mirrors Quoridor / Splendor / the other existing games
-3. Add the new game to `tests/conftest.py::CANONICAL_GAMES` so the parametrized test suite runs against it automatically
+3. Drop a `tests/<new_game>/test_checklist.py` (copy from the closest existing game; flip `GAME = "..."`) — running `pytest tests/<new_game>/` then becomes the "is the game done?" signal
 4. The AI iterates on test failures until everything is green
 5. `python -m training.cli --game <id>` kicks off training
 6. Open the web UI to accept
@@ -196,7 +196,7 @@ Features: 6 games, three difficulty tiers (Heuristic / Casual / Expert), seat se
 - **[Features overview](docs/GAME_FEATURES_OVERVIEW.md)** — what the framework can do
 - **[Game development guide](docs/GAME_DEVELOPMENT_GUIDE.md)** — single source of truth for adding a new game
 - **[MCTS algorithm](docs/MCTS_ALGORITHM.md)** — the ISMCTS DAG-search derivation
-- **[New game test guide](docs/NEW_GAME_TEST_GUIDE.md)** — 9-step acceptance workflow
+- **[New game test guide](docs/NEW_GAME_TEST_GUIDE.md)** — 10-step acceptance workflow + the two-layer test architecture
 - **[Known issues & trade-offs](docs/KNOWN_ISSUES.md)** — BUG-001 through BUG-022 postmortems plus design decisions
 
 ---
@@ -250,7 +250,10 @@ DinoBoard/
 │   ├── game_service/               #   Game sessions, async pipeline, replay analysis
 │   └── static/                     #   Shared frontend assets
 │
-├── tests/                          # Parametrized tests (cover all registered games)
+├── tests/
+│   ├── framework/                  #   Framework invariants (3-game matrix carrier)
+│   ├── tictactoe/  quoridor/  splendor/  azul/  loveletter/  coup/
+│   │                               #   Per-game complete acceptance checklists
 ├── docs/                           # Documentation
 └── setup.py · requirements.txt     # Build
 ```

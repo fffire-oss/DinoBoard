@@ -86,8 +86,8 @@ Peek 是训练增强手段，用全知状态搜索（跳过 root 采样）帮助
 
 | 层次 | 测试 | 作用 |
 |------|------|------|
-| 1. API 契约 | `tests/test_ai_api_separation.py::test_full_game_via_api[<game>]` | API 边界无 state 泄漏；AI 端到端能完成对局 |
-| 2. Belief 等价（随机游戏） | `tests/test_api_belief_matches_selfplay.py::*[<game>]` | 独立 seed 启动的 AI，belief / 公开 state / legal actions 都和自博弈对齐 |
+| 1. API 契约 | `tests/framework/test_ai_api_separation.py::test_full_game_via_api[<game>]` | API 边界无 state 泄漏；AI 端到端能完成对局 |
+| 2. Belief 等价（随机游戏） | `tests/framework/test_api_belief_matches_selfplay.py::*[<game>]` | 独立 seed 启动的 AI，belief / 公开 state / legal actions 都和自博弈对齐 |
 
 如果 AI 代码有任何对真实 state 的隐藏读取，第二层的三个断言至少会触发一个——所以 **跑通这两层就是信息论层面证明了分离**。新游戏不通过这两层不算验收合格。详见 [Guide §17](GAME_DEVELOPMENT_GUIDE.md#17-ai-api-分离验收--信息泄漏的唯一证明)。
 
@@ -295,9 +295,12 @@ general 层统一实现，游戏前端不需要额外代码：
 
 ## 测试
 
-框架内置大量参数化测试，自动覆盖所有已注册游戏。新游戏只需将 game_id 加入 `tests/conftest.py` 的 `CANONICAL_GAMES` 列表。
+**两层测试架构**:
 
-详见 [Guide §15 测试](GAME_DEVELOPMENT_GUIDE.md#15-测试)。
+- **`tests/framework/`** — 框架不变量测试,在固定 3 游戏 matrix(`FRAMEWORK_GAMES = ["quoridor", "azul", "loveletter"]`)上跑。这三个游戏一起最小完备覆盖了框架关心的每个结构特征(确定/对称随机/非对称隐藏、2p/2-4p、tail solver、belief tracker 有无 per-player private 字段、淘汰)。这是项目维护者改框架时的护栏。
+- **`tests/<game>/`** — 每个游戏自己完整的验收清单,**与框架层有意冗余**。新游戏 ready 的标准就是 `pytest tests/<game>/` 一次全绿。
+
+新游戏接入流程:从最相近的现有游戏复制一份 `tests/<game>/test_checklist.py`,改 `GAME = "..."`,根据测试失败迭代修复。详见 [新游戏验收测试指南](NEW_GAME_TEST_GUIDE.md) 和 [Guide §15 测试](GAME_DEVELOPMENT_GUIDE.md#15-测试)。
 
 ---
 

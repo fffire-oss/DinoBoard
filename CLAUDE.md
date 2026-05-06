@@ -39,11 +39,11 @@ The AI decision pipeline — belief tracking, feature encoding, MCTS search — 
 
 **Validation** (mandatory for every game, enforced in CI):
 
-- `tests/test_ai_api_separation.py::test_full_game_via_api[<game>]` — the API carries no state fields in/out. The AI drives a full game from observations alone.
-- `tests/test_api_belief_matches_selfplay.py::*[<game>]` (stochastic games) — AI session seeded differently from ground truth produces identical belief + public state + legal actions after the same observation stream.
-- `tests/test_api_mcts_policy_invariance.py::*[<game>]` — MCTS visit distribution on the same observation history is identical across selfplay and API paths. If the AI secretly reads truth, distributions diverge.
-- `tests/test_encoder_respects_hash_scope.py::*[<game>]` — encoder output is bit-equal when opp private changes but (public + own private) stays the same.
-- `tests/test_dag_acyclic.py::*[<game>]` — no cycles in the MCTS DAG, asserted via step_count monotonicity.
+- `tests/framework/test_ai_api_separation.py::test_full_game_via_api[<game>]` — the API carries no state fields in/out. The AI drives a full game from observations alone.
+- `tests/framework/test_api_belief_matches_selfplay.py::*[<game>]` (stochastic games) — AI session seeded differently from ground truth produces identical belief + public state + legal actions after the same observation stream.
+- `tests/framework/test_api_mcts_policy_invariance.py::*[<game>]` — MCTS visit distribution on the same observation history is identical across selfplay and API paths. If the AI secretly reads truth, distributions diverge.
+- `tests/framework/test_encoder_respects_hash_scope.py::*[<game>]` — encoder output is bit-equal when opp private changes but (public + own private) stays the same.
+- `tests/framework/test_dag_acyclic.py::*[<game>]` — no cycles in the MCTS DAG, asserted via step_count monotonicity.
 
 **No chance nodes**: physical randomness (deck draws, dice) is handled entirely by root determinization — different simulations sample different worlds, and different observer-visible outcomes automatically produce different hashes → different DAG nodes. No special chance-node machinery (NoPeek / traversal limiter / `chance_outcomes` / afterstate cap / `stochastic_detector`) exists in the framework.
 

@@ -974,9 +974,9 @@ std::vector<std::unique_ptr<OnnxPolicyValueEvaluator>> ai_evaluators_;
 
 ### 回归测试
 
-**统计层**：`tests/test_hidden_info_coup_loveletter.py::TestLoveLetterGuardAccuracy::test_guard_accuracy_not_better_than_bounded_inference`——跑 60 局 vs 随机对手，无先验信息时 Guard 命中率必须 < 40%。BUG-023 时是 76%，当前架构下是 ~20%，留 2 倍以上 headroom。
+**统计层**：`tests/loveletter/test_checklist.py::TestLoveLetterGuardAccuracy::test_guard_accuracy_not_better_than_bounded_inference`——跑 60 局 vs 随机对手，无先验信息时 Guard 命中率必须 < 40%。BUG-023 时是 76%，当前架构下是 ~20%，留 2 倍以上 headroom。
 
-**不变性层**：`tests/test_api_mcts_policy_invariance.py::test_api_mcts_policy_matches_selfplay`——直击"selfplay 猛如虎 / API 变弱"的信息泄漏病症。流程：
+**不变性层**：`tests/framework/test_api_mcts_policy_invariance.py::test_api_mcts_policy_matches_selfplay`——直击"selfplay 猛如虎 / API 变弱"的信息泄漏病症。流程：
 1. 用 seed_gt 跑 selfplay，记录观察历史 + 每个 ply 的 MCTS visit distribution（在 GameSession 真相驱动路径下计算）
 2. 用 seed_api（不同）起 API 会话，replay 同一观察历史
 3. 在 perspective 行动的 ply 上对比两条路径各自 `get_ai_action` 的 argmax：要求偏差率 ≤ 40%（MCTS tie-breaking RNG 下是可容忍噪声；真正的泄漏会让一条路径系统性选"凑巧好"的动作）
@@ -1151,7 +1151,7 @@ if (!rules.validate_action(*sim_state, chosen_action)) {
 
 ### 剩余未做
 
-- `tests/test_dag_hash_collision.py`：构造已知碰撞的状态对（如果能找到）断言 fallback 路径触发且 MCTS 正常完成
+- `tests/framework/test_dag_hash_collision.py`：构造已知碰撞的状态对（如果能找到）断言 fallback 路径触发且 MCTS 正常完成
 - Hasher 升级到 128-bit 或更强混合
 
 ---

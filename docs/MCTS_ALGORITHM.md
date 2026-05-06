@@ -312,7 +312,7 @@ Encoder 接口保留 `encode(state, perspective, legal, features, mask)`——�
 
 Phase 6（计划中，未实现）会把 encoder 拆成 `encode_public + encode_private(p)` 结构化接口，和 hash API 完全并行。在那之前我们靠：
 - 约定 + code review
-- 结构化测试（`tests/test_encoder_respects_hash_scope.py`）
+- 结构化测试（`tests/framework/test_encoder_respects_hash_scope.py`）
 
 ### 8.3 为什么这点必须守
 
@@ -389,7 +389,7 @@ Phase 6（计划中，未实现）会把 encoder 拆成 `encode_public + encode_
 
 排查：
 - 严格检查 `hash_private_fields(int player, ...)` 里有没有 `for p in num_players: ... state.hand[p]` 这种循环——应该只 hash player 自己的那一份
-- 用 `tests/test_encoder_respects_hash_scope.py` 辅助，若它失败说明 hash 或 encoder 泄漏
+- 用 `tests/framework/test_encoder_respects_hash_scope.py` 辅助，若它失败说明 hash 或 encoder 泄漏
 
 ### 11.3 忘记在 `do_action_fast` 里调 `begin_step()`
 
