@@ -175,8 +175,8 @@ void AzulState<NPlayers>::hash_public_fields(Hasher& h) const {
   // Azul is symmetric-random but fully PUBLIC with respect to composition:
   // everyone sees factory contents, center pile, each player's board, and
   // knows the bag composition derivably (bag = all tiles − placed − discarded).
-  // The only thing nobody knows is the future draw ORDER, which is not a
-  // field in state — it's randomness resolved at sample_is_world time.
+  // The only thing nobody knows is the future draw ORDER, so hash bag/box
+  // as multisets rather than vector order.
   h.add(current_player_);
   h.add(first_player_next_round);
   h.add(winner_ + 1);
@@ -189,10 +189,20 @@ void AzulState<NPlayers>::hash_public_fields(Hasher& h) const {
     for (std::uint8_t c : fac) h.add(c);
   }
   for (std::uint8_t c : center) h.add(c);
-  h.add(bag.size());
-  for (std::int8_t t : bag) h.add(t + 1);
-  h.add(box_lid.size());
-  for (std::int8_t t : box_lid) h.add(t + 1);
+  std::array<int, kColors> bag_counts{};
+  for (std::int8_t t : bag) {
+    if (t >= 0 && t < kColors) {
+      ++bag_counts[static_cast<std::size_t>(t)];
+    }
+  }
+  for (int count : bag_counts) h.add(count);
+  std::array<int, kColors> box_counts{};
+  for (std::int8_t t : box_lid) {
+    if (t >= 0 && t < kColors) {
+      ++box_counts[static_cast<std::size_t>(t)];
+    }
+  }
+  for (int count : box_counts) h.add(count);
   for (const auto& p : players) {
     for (std::uint8_t len : p.line_len) h.add(len);
     for (std::int8_t color : p.line_color) h.add(color + 1);

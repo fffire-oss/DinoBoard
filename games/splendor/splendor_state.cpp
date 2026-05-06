@@ -313,7 +313,6 @@ void SplendorState<NPlayers>::hash_public_fields(Hasher& h) const {
   for (int i = 0; i < Cfg::kNobleCount; ++i) {
     h.add(d.nobles[static_cast<size_t>(i)] + 71);
   }
-  h.add(rng_salt);
 }
 
 template <int NPlayers>

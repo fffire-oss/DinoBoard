@@ -28,7 +28,7 @@ def load_game_configs() -> dict:
     for game_dir in sorted(games_dir.iterdir()):
         config_path = game_dir / "config" / "game.json"
         if config_path.exists():
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 cfg = json.load(f)
             configs[cfg["game_id"]] = cfg
     return configs
@@ -42,10 +42,10 @@ def load_web_configs() -> dict:
         web_path = game_dir / "config" / "web.json"
         game_path = game_dir / "config" / "game.json"
         if web_path.exists():
-            with open(web_path) as f:
+            with open(web_path, encoding="utf-8") as f:
                 configs[game_dir.name] = json.load(f)
         elif game_path.exists():
-            with open(game_path) as f:
+            with open(game_path, encoding="utf-8") as f:
                 game_cfg = json.load(f)
             fallback = dict(game_cfg.get("web", {}))
             if game_cfg.get("ai_use_action_filter"):
