@@ -298,7 +298,9 @@ general 层统一实现，游戏前端不需要额外代码：
 **两层测试架构**:
 
 - **`tests/framework/`** — 框架不变量测试,在固定 3 游戏 matrix(`FRAMEWORK_GAMES = ["quoridor", "azul", "loveletter"]`)上跑。这三个游戏一起最小完备覆盖了框架关心的每个结构特征(确定/对称随机/非对称隐藏、2p/2-4p、tail solver、belief tracker 有无 per-player private 字段、淘汰)。这是项目维护者改框架时的护栏。
-- **`tests/<game>/`** — 每个游戏自己完整的验收清单,**与框架层有意冗余**。新游戏 ready 的标准就是 `pytest tests/<game>/` 一次全绿。
+- **`tests/<game>/`** — 每个游戏自己完整的验收清单,**与框架层有意冗余**。包含一个 `TestRuleInvariants` 类,用 `run_random_episode_states` 驱动随机对局并断言**这个游戏自己的守恒律**(token / 卡 / 棋子总量、容量上限、可达性等)。新游戏 ready 的标准就是 `pytest tests/<game>/` 一次全绿。
+
+隐藏信息游戏额外要求两条对 belief tracker 的硬性测试:`tests/framework/test_tracker_consistent_with_truth.py`(tracker 声称的已知信息和 GT 一致)和 `tests/framework/test_ismcts_samples_respect_tracker.py`(`randomize_unseen` 给 MCTS 仿真填充槽位时尊重 tracker 的"已知"声明)。
 
 新游戏接入流程:从最相近的现有游戏复制一份 `tests/<game>/test_checklist.py`,改 `GAME = "..."`,根据测试失败迭代修复。详见 [新游戏验收测试指南](NEW_GAME_TEST_GUIDE.md) 和 [Guide §15 测试](GAME_DEVELOPMENT_GUIDE.md#15-测试)。
 

@@ -1159,13 +1159,26 @@ py::dict test_belief_tracker_py(
   std::vector<int> original_deck = extract_deck_ids(*state);
   std::vector<int> tableau_ids = extract_tableau_ids(*state);
 
+  AnyMap belief_snapshot = bt->serialize();
+  AnyMap original_state_map;
+  if (bundle.state_serializer) {
+    original_state_map = bundle.state_serializer(*state);
+  }
+
   std::vector<std::vector<int>> trial_decks;
+  std::vector<AnyMap> trial_state_maps;
   trial_decks.reserve(static_cast<size_t>(randomize_trials));
+  trial_state_maps.reserve(static_cast<size_t>(randomize_trials));
   for (int t = 0; t < randomize_trials; ++t) {
     auto clone = state->clone_state();
     std::mt19937 trial_rng(static_cast<unsigned>(seed ^ static_cast<std::uint64_t>(t + 1)));
     bt->randomize_unseen(*clone, trial_rng);
     trial_decks.push_back(extract_deck_ids(*clone));
+    if (bundle.state_serializer) {
+      trial_state_maps.push_back(bundle.state_serializer(*clone));
+    } else {
+      trial_state_maps.push_back({});
+    }
   }
 
   py::gil_scoped_acquire acquire;
@@ -1178,6 +1191,22 @@ py::dict test_belief_tracker_py(
     trials.append(py::cast(d));
   }
   out["trial_decks"] = trials;
+
+  py::dict bs;
+  for (const auto& [k, v] : belief_snapshot) bs[py::cast(k)] = any_to_py(v);
+  out["belief_snapshot"] = bs;
+
+  py::dict orig_state;
+  for (const auto& [k, v] : original_state_map) orig_state[py::cast(k)] = any_to_py(v);
+  out["original_state"] = orig_state;
+
+  py::list trial_states;
+  for (const auto& m : trial_state_maps) {
+    py::dict d;
+    for (const auto& [k, v] : m) d[py::cast(k)] = any_to_py(v);
+    trial_states.append(d);
+  }
+  out["trial_states"] = trial_states;
   return out;
 }
 

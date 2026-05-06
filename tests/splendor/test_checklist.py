@@ -14,6 +14,7 @@ from conftest import (
     assert_api_belief_matches_selfplay,
     get_test_model,
     load_game_config,
+    run_random_episode_states,
 )
 
 GAME = "splendor"
@@ -264,3 +265,73 @@ class TestApiBeliefEquivalence:
 
     def test_belief_matches_selfplay_under_independent_seed(self):
         assert_api_belief_matches_selfplay(GAME, self.PUBLIC_KEYS)
+
+
+# ---------------------------------------------------------------------------
+# 10. Rule invariants (game-specific conservation laws)
+# ---------------------------------------------------------------------------
+
+# Per-variant bank stocks: 4 colored gems in 2p, 5 in 3p, 7 in 4p; gold = 5 always.
+_BANK_PER_COLOR = {2: 4, 3: 5, 4: 7}
+_GOLD_TOTAL = 5
+
+
+def _assert_splendor_invariants(state: dict) -> None:
+    n = state["num_players"]
+    bank = state["bank"]
+    assert len(bank) == 6, f"bank must have 6 token types, got {len(bank)}"
+    expected_per_color = _BANK_PER_COLOR[n]
+
+    # Token conservation: bank + sum_p(player_gems) == initial supply.
+    # Splendor never destroys or creates tokens — buys return them to the bank.
+    for color in range(5):
+        in_play = bank[color] + sum(p["gems"][color] for p in state["players"])
+        assert in_play == expected_per_color, (
+            f"color {color} token count broken: bank={bank[color]} "
+            f"players={[p['gems'][color] for p in state['players']]} "
+            f"total={in_play} expected={expected_per_color}")
+    in_play_gold = bank[5] + sum(p["gems"][5] for p in state["players"])
+    assert in_play_gold == _GOLD_TOTAL, \
+        f"gold token count broken: total={in_play_gold} expected={_GOLD_TOTAL}"
+
+    # Per-player limits.
+    for i, p in enumerate(state["players"]):
+        # Reserved slots ≤ 3.
+        assert len(p["reserved"]) <= 3, \
+            f"player {i} has {len(p['reserved'])} reserved cards (max 3)"
+        # gems ≥ 0 each color, gold ≥ 0.
+        for color, g in enumerate(p["gems"]):
+            assert g >= 0, f"player {i} negative gems[{color}] = {g}"
+        # bonuses ≥ 0 and == cards_count summed.
+        for color, b in enumerate(p["bonuses"]):
+            assert b >= 0, f"player {i} negative bonus[{color}] = {b}"
+        bonus_total = sum(p["bonuses"])
+        assert bonus_total == p["cards_count"], (
+            f"player {i} cards_count {p['cards_count']} != sum(bonuses) {bonus_total}")
+        # points ≥ 0.
+        assert p["points"] >= 0, f"player {i} negative points {p['points']}"
+
+    # Tableau width: each tier has at most 4 visible cards.
+    for tier_idx, row in enumerate(state["tableau"]):
+        assert len(row) <= 4, f"tier {tier_idx + 1} has {len(row)} cards (max 4)"
+
+    # Nobles: at most 5 (which is per-rules max for 4p), points always 3 in
+    # bookkeeping (no need to overconstrain — just sanity).
+    assert len(state["nobles"]) <= 5, f"too many nobles: {len(state['nobles'])}"
+
+    # current_player in range when not terminal.
+    if not state["is_terminal"]:
+        assert 0 <= state["current_player"] < n
+
+
+class TestRuleInvariants:
+    """Per-ply assertions on Splendor's conservation laws.
+
+    Catches: token leaks (bank + player gems != initial), reserved slot
+    overflow, bonus / cards_count drift, negative resources.
+    """
+
+    @pytest.mark.parametrize("seed", list(range(10)))
+    def test_invariants_hold_along_random_episode(self, seed):
+        for state in run_random_episode_states(GAME, seed=seed, max_plies=200):
+            _assert_splendor_invariants(state)

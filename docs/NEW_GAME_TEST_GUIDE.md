@@ -561,6 +561,37 @@ _CHECKERS["<game>"] = _check_<game>
 
 **为什么这个测试不能省**:tracker 是 AI 决策链路里**最容易悄悄出错**的地方。它不像 do/undo 一致性那样能从结果看出问题——tracker 错了只会让 AI 的局面理解偏移,胜率掉一点,看起来像是模型不够强,排查起来非常痛。这个测试把"tracker 声称的事实和真实事实不符"直接钉死成一个失败,**比任何后期复盘都便宜**。
 
+#### 8f-ter. ISMCTS 根采样必须尊重 tracker 的"已知"声明（强制）
+
+`8f-bis` 验证的是「tracker 声称的已知信息 == 真实信息」。这一步验证下游的另一根链子：**`belief_tracker.randomize_unseen(state, rng)` 给 MCTS 仿真填充隐藏槽位时,是否尊重 tracker 已经知道的事实**。
+
+具体问题场景:Love Letter 里你用 Priest 看了对手手牌是 Princess——tracker 把 `known_hand[opp]=8` 标记下来。然后 MCTS 每个 sim 都调 `randomize_unseen` 复制一份世界开始搜索。如果这一步**忽略了** tracker 的 `known_hand`,搜索的根节点对手手牌可能是任何牌——AI 的 Guard 出牌策略就完全用不上「我知道是 Princess」这条信息,对应的策略价值估计变成噪声。
+
+测试位置：`tests/framework/test_ismcts_samples_respect_tracker.py`。规则是 **`tracker_claim != UNKNOWN_SENTINEL` ⇒ 任何 sample 的对应字段 == claim**;声称未知时 sample 可以是任何随机抽样结果。
+
+```python
+# tests/framework/test_ismcts_samples_respect_tracker.py 里加：
+def _check_<game>(snap: dict, trial_state: dict) -> None:
+    known = snap.get("<your_known_field>")  # e.g. known_hand
+    if known is None:
+        return
+    for p, claim in enumerate(known):
+        if claim == 0:                              # UNKNOWN sentinel
+            continue
+        sampled = trial_state["players"][p]["<truth_field>"]
+        assert sampled == claim, (
+            f"<game>: tracker says player {p} has {claim} but "
+            f"randomize_unseen sampled {sampled}")
+
+_CHECKERS["<game>"] = _check_<game>
+```
+
+`test_belief_tracker(...)` 已经返回 `belief_snapshot` 和 `trial_states[t]`(每次 `randomize_unseen` 后 serializer 输出的完整 GT-style state dict),不需要新增 binding。
+
+跑 `pytest tests/framework/test_ismcts_samples_respect_tracker.py -v -k <game_id>`,所有种子都过。
+
+**为什么这个和 8f-bis 是分开的两条**:它们覆盖的是同一段代码的两个相邻接口。`8f-bis` 测的是「tracker 通过观察事件得到的认知」是否和 GT 对得上;`8f-ter` 测的是「这个认知有没有被传递给搜索」。任何一个错——观察事件漏了,或者 randomize_unseen 实现里忘了应用 known——都会让 AI 在已经看见信息的情况下表现得像没看见。两条测试都通过,信息流才完整。
+
 ### 8g. web.json 配置（如适用）
 
 如果你的游戏有独立的 web.json 配置（AI 难度覆盖、动作过滤、残局求解等），验证配置加载正确：
@@ -703,6 +734,64 @@ python -m pytest tests/<your_game>/ -v -k belief
 
 ---
 
+## 第 11 步：规则不变量（强制）
+
+**验证什么**:你这个游戏自身的守恒律。前 10 步验证的是「框架对你的游戏的接口契约」——状态合法、特征对齐、AI 不偷看、API 收敛。第 11 步反过来验证「**你写的 rules 真的实现了这个游戏的规则**」。
+
+每个棋牌游戏都有自己的物理守恒律(token / 卡 / 棋子的总量),以及结构约束(图形可达、容量上限、角色配额)。只要随便走几手都能让这些守恒律破掉,说明规则实现里有 bug——而前面 10 步都看不出来,因为框架不在乎你算分对不对、卡是不是凭空出现。
+
+**例子**:
+
+| 游戏 | 守恒律例子 |
+|---|---|
+| Azul | 5 色 × 20 = 100 块瓷砖,任意时刻 `bag + box + factories + center + 玩家所有可见卡槽` ≤ 100;每个图案行 `length ≤ capacity` 且不能放已经在墙上的颜色 |
+| Splendor | 5 色 token 数恒等于初始供应(2p=4, 3p=5, 4p=7),金色 token = 5;玩家保留卡数 ≤ 3;每个 tier 公开卡 ≤ 4 |
+| Love Letter | 16 张卡总量恒定(`deck_size + 所有可见槽 == 16`),每个卡型不超过其总数(Guard×5/Princess×1 等);活着的玩家手牌 ≥ 1,死了的玩家手牌 = 0 |
+| Coup | 5 角色 × 3 = 15 张卡总量恒定;每个玩家硬币 ∈ [0, 12],影响牌槽 = 2;活着的玩家未亮牌数 ≥ 1 |
+| Quoridor | 已放墙 + 剩余墙 = 20;墙坐标合法范围;**两个棋子都仍能 BFS 到自己目标行**(围栏不能完全封死) |
+
+**实现模式**:用 `conftest.run_random_episode_states(game_id, seed, max_plies)` helper 通过随机走子驱动整局,逐步取 `state_dict` 并跑断言。helper 简单可靠——任何不需要 model 的游戏都能用。
+
+```python
+from conftest import run_random_episode_states
+
+def _assert_<game>_invariants(state: dict) -> None:
+    # 所有 token / 卡守恒
+    n = state["num_players"]
+    bank = state["bank"]
+    for color in range(5):
+        in_play = bank[color] + sum(p["gems"][color] for p in state["players"])
+        assert in_play == EXPECTED[n], (
+            f"color {color} broken: bank={bank[color]} "
+            f"players={[p['gems'][color] for p in state['players']]} "
+            f"total={in_play}")
+    # 玩家局部约束
+    for i, p in enumerate(state["players"]):
+        assert len(p["reserved"]) <= 3
+        assert sum(p["bonuses"]) == p["cards_count"]
+    # 终局/非终局一致性
+    if not state["is_terminal"]:
+        assert 0 <= state["current_player"] < n
+
+
+class TestRuleInvariants:
+    @pytest.mark.parametrize("seed", list(range(10)))
+    def test_invariants_hold_along_random_episode(self, seed):
+        for state in run_random_episode_states(GAME, seed=seed, max_plies=200):
+            _assert_<game>_invariants(state)
+```
+
+**写好这一段的关键技巧**:
+
+1. **从守恒律开始**——总数、初始供应、容量上限。这些是最本质、最容易被规则 bug 破坏的属性。
+2. **断言用 `==` 不要轻易放宽到 `<=`**,除非你已经知道有合法的"丢弃路径"(例如 Azul 的 floor 满了之后会静默丢弃,所以总瓷砖数是 `<= 100` 而非 `==`)。**如果你写 `<=`,在注释里说清楚为什么放宽**——否则下次有人引入 bug 时这个测试就抓不住了。
+3. **跨多个 seed 跑**——单 seed 可能正好走不到坏路径。10–20 个 seed 是个好默认值。
+4. **如果某个守恒律需要序列化器暴露当前不暴露的字段**(例如 Azul 的 `box_lid`、Love Letter 的 `set_aside_card`),改 `*_register.cpp` 的 `serialize_<game>()` 把它加进去——同时在 C++ 注释里写明这是**给测试用的可见性**,belief tracker 和 encoder 都不能读它。这样既满足测试,又不破坏 AI 分离原则。
+
+**踩坑参考**:这一步有些坑只有写过测试才会发现——Azul 的 floor 满了会丢瓷砖、Love Letter 的 `drawn_card` 只在当前玩家行动时才设置、Coup 的影响牌槽在 mid-action 阶段会临时变成 -1 等等。这些都是规则的合法行为,断言要相应放松。
+
+---
+
 ## 快速运行
 
 把以上测试保存为 `tests/<your_game>/test_checklist.py`（关于目录结构见下一节），然后运行：
@@ -808,6 +897,9 @@ python -m pytest tests/ -x -q
 | 8d | adjudicator 在超时时判定胜负 | BUG-004 |
 | 8e | auxiliary_score 有限 | DESIGN-001 |
 | 8f | 隐藏信息：高 sim + 确定性 + DAG 复用 + 不偷看 | ISMCTS 正确性 + **BUG-017** |
+| 8f-bis | tracker 已知信息 ↔ ground truth 一致 | tracker 应用事件错位 |
+| 8f-ter | ISMCTS 根采样尊重 tracker 已知信息 | randomize_unseen 漏读 known |
 | 8g | web.json 配置加载 + 难度覆盖 | - |
 | 9 | 多人变体：注册、feature_dim、z_values、轮转 | **通用踩坑 9** |
 | 10 | **AI API 分离测试**：端到端通过 HTTP API 驱动完整对局 | 见下方第 10 步 |
+| 11 | **规则不变量**：游戏自己的守恒律(token / 卡 / 棋子总量、容量上限、可达性) | 规则实现错误的最便宜捕捉点 |

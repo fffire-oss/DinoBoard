@@ -12,7 +12,11 @@ the bag is shuffled but every player sees what's drawn into factories.
 import dinoboard_engine
 import pytest
 
-from conftest import get_test_model, load_game_config
+from conftest import (
+    get_test_model,
+    load_game_config,
+    run_random_episode_states,
+)
 
 GAME = "azul"
 CONFIG = load_game_config(GAME)
@@ -190,3 +194,118 @@ class TestUnsupportedComponents:
                 game_id=GAME, seed=42, perspective_player=0,
                 depth_limit=5, node_budget=10000,
             )
+
+
+# ---------------------------------------------------------------------------
+# 8. Rule invariants (game-specific conservation laws)
+# ---------------------------------------------------------------------------
+
+# Standard Azul has 20 tiles per color * 5 colors = 100 tiles total.
+_TILES_PER_COLOR = 20
+_NUM_COLORS = 5
+_TOTAL_TILES = _TILES_PER_COLOR * _NUM_COLORS
+
+
+def _count_tiles_in_play(state: dict) -> tuple[int, list[int]]:
+    """Count colored tiles currently visible somewhere on the table.
+    Returns (total, per_color_total).
+
+    Sources counted:
+      - bag, box_lid (bag_counts + box_counts)
+      - center, factories
+      - players' pattern_lines (length, with their declared color)
+      - players' wall (each set bit = 1 tile of the wall-column's color)
+      - players' floor (only entries that are colored — first-player marker
+        is encoded as -2 and not a tile)
+
+    The first-player marker is bookkeeping, not a colored tile, so it's
+    excluded from totals. Note: when the floor is full (7 entries), engine
+    silently discards overflow tiles, so the strict equality "in_play ==
+    100" can drift downward — we assert <=, not ==.
+    """
+    per_color = [0] * _NUM_COLORS
+    for c in range(_NUM_COLORS):
+        per_color[c] += state["bag_counts"][c]
+        per_color[c] += state["box_counts"][c]
+        per_color[c] += state["center"][c]
+    for fac in state["factories"]:
+        for c in range(_NUM_COLORS):
+            per_color[c] += fac[c]
+    for p in state["players"]:
+        for ln in p["pattern_lines"]:
+            color = ln["color"]
+            if color >= 0 and ln["length"] > 0:
+                per_color[color] += ln["length"]
+        # Wall: column index inside row r is determined by Azul's color
+        # mapping ((color + row) % 5), so column c of row r holds color
+        # ((c - r) mod 5). Sum bits per color.
+        for r, row in enumerate(p["wall"]):
+            for c, bit in enumerate(row):
+                if bit:
+                    color = (c - r) % _NUM_COLORS
+                    per_color[color] += 1
+        for entry in p["floor"]:
+            if 0 <= entry < _NUM_COLORS:
+                per_color[entry] += 1
+    return sum(per_color), per_color
+
+
+def _assert_azul_invariants(state: dict) -> None:
+    n = state["num_players"]
+    # Tile conservation: total tiles in play <= 100, and per-color <= 20.
+    # Floor overflow discards tiles, so equality may not hold exactly.
+    in_play, per_color = _count_tiles_in_play(state)
+    assert in_play <= _TOTAL_TILES, \
+        f"impossible tile count: {in_play} > {_TOTAL_TILES}"
+    for c, cnt in enumerate(per_color):
+        assert cnt <= _TILES_PER_COLOR, \
+            f"color {c}: {cnt} tiles in play (max {_TILES_PER_COLOR})"
+
+    # Pattern lines: length never exceeds capacity; capacity is row+1.
+    for i, p in enumerate(state["players"]):
+        for r, ln in enumerate(p["pattern_lines"]):
+            assert ln["capacity"] == r + 1
+            assert 0 <= ln["length"] <= ln["capacity"], \
+                f"player {i} row {r}: length {ln['length']} > cap {ln['capacity']}"
+            if ln["length"] > 0:
+                assert ln["color"] >= 0, \
+                    f"player {i} row {r}: nonzero length {ln['length']} with color=-1"
+            else:
+                # color must be -1 when length 0 (no partial commitment).
+                assert ln["color"] == -1, \
+                    f"player {i} row {r}: length 0 but color {ln['color']}"
+            # Wall already has this color in this row → can't keep filling.
+            if ln["color"] >= 0:
+                col = (ln["color"] + r) % _NUM_COLORS
+                assert p["wall"][r][col] == 0, \
+                    f"player {i} row {r}: line color {ln['color']} but wall already has it"
+        # Floor depth ≤ 7.
+        assert p["floor_count"] <= 7, \
+            f"player {i} floor overflow: {p['floor_count']}"
+        # Wall is binary.
+        for row in p["wall"]:
+            for v in row:
+                assert v in (0, 1)
+
+    # Factory width ≤ 4 tiles each.
+    for fi, fac in enumerate(state["factories"]):
+        s = sum(fac)
+        assert s <= 4, f"factory {fi} has {s} tiles (max 4)"
+
+    if not state["is_terminal"]:
+        assert 0 <= state["current_player"] < n
+
+
+class TestRuleInvariants:
+    """Per-ply assertions on Azul's conservation laws.
+
+    Catches: tile leak/duplication, factory overflow, illegal pattern line
+    state (length > capacity, line color collides with already-walled
+    column), floor overflow.
+    """
+
+    @pytest.mark.parametrize("variant", VARIANTS)
+    @pytest.mark.parametrize("seed", list(range(5)))
+    def test_invariants_hold_along_random_episode(self, variant, seed):
+        for state in run_random_episode_states(variant, seed=seed, max_plies=200):
+            _assert_azul_invariants(state)

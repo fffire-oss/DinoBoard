@@ -107,6 +107,39 @@ def run_short_heuristic(game_id: str, seed: int = 42, temperature: float = 1.0) 
     )
 
 
+def run_random_episode_states(
+    game_id: str,
+    *,
+    seed: int = 42,
+    max_plies: int = 200,
+):
+    """Drive a game by uniform-random legal actions and yield the
+    state_dict at every ply (including the initial state and the terminal
+    state). Intended for rule-invariant tests in per-game checklists:
+
+        for state in run_random_episode_states(GAME, seed=s):
+            assert_invariants(state)
+
+    Uses random actions instead of MCTS so the test is fast and exercises
+    rare states (illegal-looking edge cases that an AI would avoid). The
+    underlying engine is the C++ rules implementation, so any rule
+    violation surfaces as a broken invariant.
+    """
+    import random as _random
+    rng = _random.Random(seed)
+    gs = dinoboard_engine.GameSession(
+        game_id, seed=seed, model_path="", use_filter=False)
+    yield gs.get_state_dict()
+    for _ in range(max_plies):
+        if gs.is_terminal:
+            break
+        legal = gs.get_legal_actions()
+        if not legal:
+            break
+        gs.apply_action(rng.choice(legal))
+        yield gs.get_state_dict()
+
+
 def assert_api_belief_matches_selfplay(
     game_id: str,
     public_keys: list[str],

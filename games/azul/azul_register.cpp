@@ -62,6 +62,14 @@ AnyMap serialize_azul(const IGameState& state) {
   m["bag_counts"] = std::any(bag_counts);
   m["bag_total"] = std::any(static_cast<int>(s.bag.size()));
 
+  // Box lid contents (tiles returned from completed pattern rows / floor
+  // overflow). Exposed for tile-conservation invariants in test suites.
+  std::vector<int> box_counts(board_ai::azul::kColors, 0);
+  for (auto tile : s.box_lid) {
+    if (tile >= 0 && tile < board_ai::azul::kColors) box_counts[tile]++;
+  }
+  m["box_counts"] = std::any(box_counts);
+
   std::vector<AnyMap> players;
   for (int p = 0; p < NPlayers; ++p) {
     const auto& ps = s.players[p];

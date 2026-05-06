@@ -68,7 +68,7 @@ Self-play, evaluation, web play, replay analysis — **all run on the same C++ M
 
 ### Engineering discipline
 
-- Two-layer tests: framework invariants on a fixed 3-game matrix; each game has its own complete checklist (`tests/<game>/`), so a new game's readiness is a single self-contained green run
+- Two-layer tests: framework invariants on a fixed 3-game matrix; each game has its own complete checklist (`tests/<game>/`) including game-specific rule conservation laws (token / card / piece totals, capacity bounds, reachability), so a new game's readiness is a single self-contained green run
 - `docs/KNOWN_ISSUES.md` documents 22 shipped bugs and design trade-offs — **every pothole the next integrator gets to skip**
 - Strict no-fallback discipline (see `CLAUDE.md`): silent degradation is banned, errors must propagate to the surface
 

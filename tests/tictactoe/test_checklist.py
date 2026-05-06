@@ -17,7 +17,11 @@ Tic-Tac-Toe is the simplest carrier:
 import dinoboard_engine
 import pytest
 
-from conftest import get_test_model, load_game_config
+from conftest import (
+    get_test_model,
+    load_game_config,
+    run_random_episode_states,
+)
 
 GAME = "tictactoe"
 CONFIG = load_game_config(GAME)
@@ -192,3 +196,55 @@ class TestUnsupportedComponents:
                 game_id=GAME, seed=42, perspective_player=0,
                 depth_limit=12, node_budget=1000000,
             )
+
+
+# ---------------------------------------------------------------------------
+# 8. Rule invariants (game-specific conservation laws)
+# ---------------------------------------------------------------------------
+
+def _assert_tictactoe_invariants(state: dict) -> None:
+    board = state["board"]
+    assert len(board) == 9, f"board must have 9 cells, got {len(board)}"
+    counts = {-1: 0, 0: 0, 1: 0}
+    for cell in board:
+        assert cell in counts, f"illegal cell value {cell}"
+        counts[cell] += 1
+    # X (player 0) plays first; |#X - #O| ∈ {0, 1}.
+    diff = counts[0] - counts[1]
+    assert diff in (0, 1), \
+        f"player 0/1 mark counts violate move ordering: X={counts[0]} O={counts[1]}"
+    # current_player consistent with move counts (when not terminal).
+    if not state["is_terminal"]:
+        expected = 0 if counts[0] == counts[1] else 1
+        assert state["current_player"] == expected, \
+            f"current_player {state['current_player']} inconsistent with board {board}"
+    # move_count == filled cells.
+    filled = 9 - counts[-1]
+    assert state["move_count"] == filled, \
+        f"move_count {state['move_count']} != filled cells {filled}"
+    # At most one winning line.
+    if state["winner"] >= 0:
+        lines = [
+            (0, 1, 2), (3, 4, 5), (6, 7, 8),
+            (0, 3, 6), (1, 4, 7), (2, 5, 8),
+            (0, 4, 8), (2, 4, 6),
+        ]
+        winning = [l for l in lines if board[l[0]] == board[l[1]] == board[l[2]] != -1]
+        assert len(winning) >= 1, f"winner={state['winner']} but no winning line"
+        winners = {board[l[0]] for l in winning}
+        assert winners == {state["winner"]}, \
+            f"winning lines disagree with winner field: lines={winners} winner={state['winner']}"
+
+
+class TestRuleInvariants:
+    """Per-ply assertions on conservation laws specific to Tic-Tac-Toe.
+
+    Drives many random games and checks every state. Catches symbol
+    miscounts, wrong current_player after a move, and bogus winner
+    declarations.
+    """
+
+    @pytest.mark.parametrize("seed", list(range(20)))
+    def test_invariants_hold_along_random_episode(self, seed):
+        for state in run_random_episode_states(GAME, seed=seed, max_plies=20):
+            _assert_tictactoe_invariants(state)

@@ -60,6 +60,13 @@ AnyMap serialize_loveletter(const IGameState& state) {
   for (auto c : d.face_up_removed) face_up.push_back(static_cast<int>(c));
   m["face_up_removed"] = std::any(face_up);
 
+  // The "set-aside" card is the topmost card removed from the deck at game
+  // start (always exactly 1 — Love Letter rule). It's hidden from all
+  // players in normal play but exposed here for tile-conservation
+  // invariants in test suites. Belief tracker / encoder must NOT read it
+  // (they don't — both go through the public API only).
+  m["set_aside_card"] = std::any(static_cast<int>(d.set_aside_card));
+
   return m;
 }
 

@@ -414,7 +414,7 @@ GameBundle 是一个聚合所有游戏组件的结构体。工厂函数返回一
 | 8 | `public_event_applier` | `PublicEventApplier` | 否 | 把事件应用到 state（AI API 侧重放用） |
 | 9 | `initial_observation_extractor` | `InitialObservationExtractor` | 否 | 提取 perspective 的开局可见信息 |
 | 10 | `initial_observation_applier` | `InitialObservationApplier` | 否 | 把 initial observation 填入 state（AI API 侧用） |
-| 11 | `state_serializer` | `StateSerializer` | 否 | 状态序列化为 JSON（Web 前端需要） |
+| 11 | `state_serializer` | `StateSerializer` | 否 | 状态序列化为 JSON（Web 前端需要;**也用于规则不变量测试,详见 §11.4**） |
 | 12 | `action_descriptor` | `ActionDescriptor` | 否 | 动作语义描述（Web 前端需要） |
 | 13 | `heuristic_picker` | `HeuristicPicker` | 否 | 启发式策略（warm start + eval benchmark） |
 | 14 | `tail_solver` | `unique_ptr<ITailSolver>` | 否 | 残局求解器（通常用 `AlphaBetaTailSolver`） |
@@ -1950,8 +1950,36 @@ python -m pytest tests/framework/ -q
 | `get_test_model(game_id)` | 函数 | 创建/缓存随机初始化 ONNX 模型 |
 | `run_short_selfplay(game_id)` | 函数 | 快速跑一局 selfplay(10 sims, 50 plies) |
 | `run_short_heuristic(game_id)` | 函数 | 快速跑一局 heuristic 对局 |
+| `run_random_episode_states(game_id, seed, max_plies)` | 生成器 | 随机走子驱动整局,逐步 yield `state_dict`。给 `TestRuleInvariants` 写每个游戏自己的守恒律断言用,不依赖 model |
 | `assert_api_belief_matches_selfplay(game_id, public_keys, ...)` | 函数 | **隐藏信息游戏的标准三层等价断言** —— belief/public state/legal actions。在 per-game checklist 里调用一次即可,无需重复实现 |
 | `game_id` / `game_config` / `model_path` | fixture | **仅供框架层使用**——参数化为 `FRAMEWORK_GAMES`。Per-game checklist 自己 hardcode `GAME = "..."`,不用这些 fixture |
+
+### 15.5 规则不变量与 `state_serializer` 的"测试可见性"
+
+每个 per-game checklist 都应该包含一个 `TestRuleInvariants` 类——通过 `run_random_episode_states` 驱动随机对局,逐步从 `state_dict` 上断言**这个游戏自己的守恒律**(token 总量、卡总量、容量上限、可达性等)。完整模式与例子见 [新游戏验收测试指南 § 第 11 步](NEW_GAME_TEST_GUIDE.md#第-11-步规则不变量强制)。
+
+实现这一步时常常会发现需要让 `serialize_<game>` 暴露当前不暴露的字段——典型例子:Azul 的 `box_lid`(完成图案行后回收的瓷砖)、Love Letter 的 `set_aside_card`(开局抽走的那张卡)。这些都是隐藏字段,在 AI 决策中**不应该**被读取,但守恒律测试必须看到它们才能完成断言。
+
+**模式**:把它们加进 `state_serializer` 的输出,**并在 C++ 注释里明确说明这是"测试可见性"**——belief tracker 和 encoder 都不能读它,因为它们只走公开 API,结构上就拿不到这些字段。这样既支持守恒律测试,又不破坏 [§AI Pipeline Independence](../CLAUDE.md) 里的隔离保证。
+
+```cpp
+// games/azul/azul_register.cpp
+// Box lid contents (tiles returned from completed pattern rows / floor
+// overflow). Exposed for tile-conservation invariants in test suites.
+// Belief tracker / encoder must NOT read it — they go through the public
+// API only.
+std::vector<int> box_counts(kColors, 0);
+for (auto tile : s.box_lid) {
+  if (tile >= 0 && tile < kColors) box_counts[tile]++;
+}
+m["box_counts"] = std::any(box_counts);
+```
+
+### 15.6 ISMCTS 根采样必须尊重 tracker 已知信息
+
+每个有 `belief_tracker` 的游戏要在 `tests/framework/test_ismcts_samples_respect_tracker.py` 里加一个 checker:`belief_tracker.randomize_unseen` 给 MCTS 仿真填充隐藏槽位时,必须尊重 tracker 已经知道的事实(例如 Love Letter 用 Priest 看过对手手牌后,`known_hand[opp]` 不能在 sample 里被随机覆盖)。
+
+测试通过 `dinoboard_engine.test_belief_tracker(...)` 拿到 `belief_snapshot` 和 `trial_states[t]`(每次 `randomize_unseen` 后的完整 GT-style state dict),逐次比对。具体模式见 [新游戏验收测试指南 § 8f-ter](NEW_GAME_TEST_GUIDE.md#8f-ter-ismcts-根采样必须尊重-tracker-的已知声明强制)。
 
 ---
 

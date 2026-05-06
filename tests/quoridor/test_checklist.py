@@ -17,7 +17,11 @@ quoridor regardless of which features other games adopt.
 import dinoboard_engine
 import pytest
 
-from conftest import get_test_model, load_game_config
+from conftest import (
+    get_test_model,
+    load_game_config,
+    run_random_episode_states,
+)
 
 GAME = "quoridor"
 CONFIG = load_game_config(GAME)
@@ -246,3 +250,117 @@ class TestTrainingFilter:
         u = len(gs_u.get_legal_actions())
         assert f < u, f"filter should reduce actions: {f} vs {u}"
         assert set(gs_f.get_legal_actions()).issubset(set(gs_u.get_legal_actions()))
+
+
+# ---------------------------------------------------------------------------
+# 11. Rule invariants (game-specific conservation laws)
+# ---------------------------------------------------------------------------
+
+def _bfs_reaches(start_row, start_col, goal_row, n, blocked):
+    """Simplified reachability ignoring pawn jumps. Returns True if a path
+    exists from start to any cell on goal_row, blocked according to
+    `blocked(r, c, dr, dc) -> bool` which decides if (r,c)→(r+dr,c+dc) is blocked.
+    Pawn jumps over the opponent are a *bonus* mobility — if we can reach
+    the goal without any jump, the post-wall-placement legality also holds.
+    """
+    from collections import deque
+    seen = {(start_row, start_col)}
+    q = deque([(start_row, start_col)])
+    while q:
+        r, c = q.popleft()
+        if r == goal_row:
+            return True
+        for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            nr, nc = r + dr, c + dc
+            if not (0 <= nr < n and 0 <= nc < n):
+                continue
+            if (nr, nc) in seen:
+                continue
+            if blocked(r, c, dr, dc):
+                continue
+            seen.add((nr, nc))
+            q.append((nr, nc))
+    return False
+
+
+def _make_blocker(h_walls, v_walls, n):
+    """Translate wall lists into an edge-block test.
+    Wall convention (matches engine): horizontal wall at (row, col) blocks
+    (row, col)<->(row+1, col) and (row, col+1)<->(row+1, col+1). Vertical
+    wall at (row, col) blocks (row, col)<->(row, col+1) and (row+1, col)<->
+    (row+1, col+1).
+    """
+    h_set = {(w["row"], w["col"]) for w in h_walls}
+    v_set = {(w["row"], w["col"]) for w in v_walls}
+
+    def blocked(r, c, dr, dc):
+        if dr == 1:  # moving south r->r+1 at col c
+            if (r, c) in h_set or (r, c - 1) in h_set:
+                return True
+        elif dr == -1:  # north
+            if (r - 1, c) in h_set or (r - 1, c - 1) in h_set:
+                return True
+        elif dc == 1:  # east c->c+1
+            if (r, c) in v_set or (r - 1, c) in v_set:
+                return True
+        elif dc == -1:  # west
+            if (r, c - 1) in v_set or (r - 1, c - 1) in v_set:
+                return True
+        return False
+    return blocked
+
+
+def _assert_quoridor_invariants(state: dict) -> None:
+    n = state["board_size"]
+    pawns = state["pawns"]
+    walls_left = state["walls_remaining"]
+    h_walls = state["horizontal_walls"]
+    v_walls = state["vertical_walls"]
+
+    # Two pawns on the board, each in bounds, not stacked.
+    assert len(pawns) == len(walls_left) == 2
+    positions = []
+    for i, p in enumerate(pawns):
+        assert p["player"] == i
+        assert 0 <= p["row"] < n and 0 <= p["col"] < n, \
+            f"pawn {i} off-board: {p}"
+        positions.append((p["row"], p["col"]))
+    if not state["is_terminal"]:
+        assert positions[0] != positions[1], "pawns occupy same cell"
+
+    # Wall counts within [0, 10]; total walls placed + remaining == 20 (per pair).
+    for i, w in enumerate(walls_left):
+        assert 0 <= w <= 10, f"player {i} walls_remaining out of range: {w}"
+    placed = len(h_walls) + len(v_walls)
+    total_remaining = sum(walls_left)
+    assert placed + total_remaining == 20, \
+        f"wall conservation broken: placed={placed} remaining={total_remaining}"
+
+    # Walls in legal coordinate range (groove indices: 0..n-2 for both).
+    for w in h_walls + v_walls:
+        assert 0 <= w["row"] <= n - 2 and 0 <= w["col"] <= n - 2, \
+            f"wall coord out of range: {w}"
+
+    # Both players still have a path to their goal row (Quoridor's
+    # canonical legality invariant — wall placements that would block any
+    # pawn are illegal, so we should never observe a state violating this).
+    if not state["is_terminal"]:
+        block = _make_blocker(h_walls, v_walls, n)
+        for i, p in enumerate(pawns):
+            goal = state["goal_rows"][i]
+            assert _bfs_reaches(p["row"], p["col"], goal, n, block), \
+                f"player {i} has no path to goal row {goal}; walls={h_walls}+{v_walls}"
+
+
+class TestRuleInvariants:
+    """Per-ply assertions on conservation laws specific to Quoridor.
+
+    Catches: wall over-placement, pawn off-board, illegal pawn stacking,
+    and (most importantly) wall placements that would cut off a player —
+    Quoridor's canonical no-fence-imprisonment rule.
+    """
+
+    @pytest.mark.parametrize("seed", list(range(20)))
+    def test_invariants_hold_along_random_episode(self, seed):
+        for state in run_random_episode_states(GAME, seed=seed, max_plies=120):
+            _assert_quoridor_invariants(state)

@@ -22,6 +22,7 @@ from conftest import (
     assert_api_belief_matches_selfplay,
     get_test_model,
     load_game_config,
+    run_random_episode_states,
 )
 
 
@@ -302,3 +303,112 @@ class TestApiBeliefEquivalence:
 
     def test_belief_matches_selfplay_under_independent_seed(self):
         assert_api_belief_matches_selfplay(GAME, self.PUBLIC_KEYS)
+
+
+# ---------------------------------------------------------------------------
+# 10. Rule invariants (game-specific conservation laws)
+# ---------------------------------------------------------------------------
+
+# Coup deck: 5 characters × 3 copies = 15 total cards. Cards flow:
+#   court_deck → influence slot (drawn at game start, drawn during exchange)
+#   influence slot → court_deck (returned during exchange, by Ambassador)
+# Revealed influence cards stay in their slot but are publicly known and
+# do NOT return to the deck. So:
+#   court_deck.size() + sum(influence slots that are not revealed AND not -1)
+#   + sum(exchange_drawn that aren't -1) == 15
+_COUP_TOTAL_CARDS = 15
+_COUP_CHARACTERS = 5
+
+
+def _count_coup_cards(state: dict) -> int:
+    """Sum every card slot regardless of where it sits.
+
+    Counts a card iff its character slot is in [0, 5). Influence character
+    is -1 when a slot is empty (e.g. eliminated player after both reveals,
+    or assassinate-pending state that briefly cleared a slot). Revealed
+    cards are still in the slot — they count.
+    """
+    n = state["deck_size"]
+    for p in state["players"]:
+        for inf in p["influences"]:
+            if 0 <= inf["character"] < _COUP_CHARACTERS:
+                n += 1
+    # exchange_drawn: only populated during ExchangeReturn1/Return2.
+    # Outside those stages it's empty list. -1 means "slot already
+    # returned during Return1".
+    for c in state.get("exchange_drawn", []):
+        if 0 <= c < _COUP_CHARACTERS:
+            n += 1
+    return n
+
+
+def _assert_coup_invariants(state: dict) -> None:
+    n = state["num_players"]
+
+    # Card conservation: total visible cards (deck + influence slots +
+    # exchange_drawn) == 15.
+    total = _count_coup_cards(state)
+    assert total == _COUP_TOTAL_CARDS, (
+        f"coup card count broken: total={total} expected={_COUP_TOTAL_CARDS}, "
+        f"deck_size={state['deck_size']}, exchange_drawn={state.get('exchange_drawn', [])}")
+
+    # Per-player constraints.
+    alive_count = 0
+    for i, p in enumerate(state["players"]):
+        # Coins always non-negative; in standard Coup the cap is 12 (force
+        # coup at >=10, but a player can hold more if no coup target — be
+        # permissive but bounded).
+        assert 0 <= p["coins"] <= 12, (
+            f"player {i} coins out of range: {p['coins']}")
+        # Influences: exactly 2 slots.
+        assert len(p["influences"]) == 2, (
+            f"player {i} has {len(p['influences'])} influence slots (must be 2)")
+
+        revealed = sum(1 for inf in p["influences"] if inf["revealed"])
+
+        if p["alive"]:
+            alive_count += 1
+            # Alive → not both influences revealed. (A slot may transiently
+            # hold character=-1 during mid-action stages, e.g. while
+            # awaiting a reveal/return resolution.)
+            assert revealed < 2, (
+                f"player {i} alive but both influences revealed: {p['influences']}")
+        else:
+            # Dead → both influences revealed.
+            assert revealed == 2, (
+                f"player {i} dead but only {revealed} revealed influences")
+
+    # exchange_drawn only present mid-exchange.
+    ed = state.get("exchange_drawn", [])
+    if ed:
+        # During exchange-return stages, list has 2 entries. Each is either
+        # a valid character (0..4) or -1 (already returned in Return1).
+        assert len(ed) == 2
+        for c in ed:
+            assert c == -1 or 0 <= c < _COUP_CHARACTERS, (
+                f"exchange_drawn invalid value: {c}")
+
+    # current_player in range when not terminal; alive count consistent.
+    if state["is_terminal"]:
+        assert alive_count <= 1, (
+            f"terminal state with {alive_count} alive players (must be ≤1)")
+    else:
+        assert alive_count >= 2, (
+            f"non-terminal state with {alive_count} alive (must be ≥2)")
+        assert 0 <= state["current_player"] < n
+
+
+@coup_skip
+class TestRuleInvariants:
+    """Per-ply assertions on Coup's conservation laws.
+
+    Catches: card duplication / loss across deck ↔ influences ↔ exchange,
+    coin overflow / underflow, alive/influence inconsistency, terminal
+    reached with multiple players still alive.
+    """
+
+    @pytest.mark.parametrize("variant", VARIANTS)
+    @pytest.mark.parametrize("seed", list(range(5)))
+    def test_invariants_hold_along_random_episode(self, variant, seed):
+        for state in run_random_episode_states(variant, seed=seed, max_plies=200):
+            _assert_coup_invariants(state)

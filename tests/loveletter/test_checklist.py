@@ -25,7 +25,7 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "tests"))
 
-from conftest import get_test_model, load_game_config
+from conftest import get_test_model, load_game_config, run_random_episode_states
 
 GAME = "loveletter"
 CONFIG = load_game_config(GAME)
@@ -306,3 +306,108 @@ class TestGuardAccuracy:
             f"exceeds 40% — probable hidden-info leak in MCTS (see BUG-023). "
             f"Random baseline is ~14%."
         )
+
+
+# ---------------------------------------------------------------------------
+# 11. Rule invariants (game-specific conservation laws)
+# ---------------------------------------------------------------------------
+
+# Love Letter has exactly 16 cards (5 Guards, 2 each of Priest/Baron/Handmaid/
+# Prince, 1 each of King/Countess/Princess). The deck never gains or loses
+# cards: tiles flow deck → hand → discard, with at most one "set-aside" card
+# pulled off at game start and (in 2p only) three "face-up removed" cards.
+_KCARD_COUNTS = [0, 5, 2, 2, 2, 2, 1, 1, 1]
+_TOTAL_CARDS = sum(_KCARD_COUNTS)  # 16
+
+
+def _count_loveletter_cards(state: dict) -> tuple[int, list[int]]:
+    """Sum every visible/hidden card slot in the state. Each card has type
+    1..8; type 0 means 'no card here' (slot empty)."""
+    per_type = [0] * 9
+    # Deck: state exposes only deck_size, not contents — but every card in
+    # the deck has SOME type, so count it as one card per slot, type-agnostic.
+    deck_count = state["deck_size"]
+    for p in state["players"]:
+        if p["hand"] >= 1:
+            per_type[p["hand"]] += 1
+        for c in p["discards"]:
+            if 1 <= c <= 8:
+                per_type[c] += 1
+    if state["drawn_card"] >= 1:
+        per_type[state["drawn_card"]] += 1
+    for c in state["face_up_removed"]:
+        if 1 <= c <= 8:
+            per_type[c] += 1
+    if state["set_aside_card"] >= 1:
+        per_type[state["set_aside_card"]] += 1
+    visible_total = sum(per_type)
+    return deck_count + visible_total, per_type
+
+
+def _assert_loveletter_invariants(state: dict) -> None:
+    n = state["num_players"]
+    # Total card conservation: deck + every visible card slot == 16.
+    total, per_type = _count_loveletter_cards(state)
+    assert total == _TOTAL_CARDS, (
+        f"card count broken: total={total} expected={_TOTAL_CARDS}, "
+        f"deck_size={state['deck_size']}, per_type_visible={per_type}")
+
+    # Per-card-type bound: visible counts can't exceed the deck's allotment
+    # (the leftover for any type is whatever is still in the deck).
+    for c in range(1, 9):
+        assert per_type[c] <= _KCARD_COUNTS[c], (
+            f"card type {c}: visible={per_type[c]} exceeds total {_KCARD_COUNTS[c]}")
+
+    # Per-player constraints.
+    alive_count = 0
+    for i, p in enumerate(state["players"]):
+        if p["alive"]:
+            alive_count += 1
+            assert p["hand"] >= 1, (
+                f"player {i} alive but hand=0 (no card)")
+        else:
+            assert p["hand"] == 0, (
+                f"player {i} eliminated but hand={p['hand']} (must be 0)")
+
+    # drawn_card only set when current_player is alive and acting.
+    if state["drawn_card"] >= 1:
+        assert not state["is_terminal"], (
+            "drawn_card set in terminal state")
+        cp = state["current_player"]
+        assert 0 <= cp < n and state["players"][cp]["alive"], (
+            f"drawn_card set but current_player {cp} not alive")
+
+    # face_up_removed: exactly 3 cards in 2p, 0 in 3p/4p (Love Letter rules).
+    fu = len(state["face_up_removed"])
+    if n == 2:
+        assert fu == 3, f"2p face_up_removed must be 3, got {fu}"
+    else:
+        assert fu == 0, f"{n}p face_up_removed must be 0, got {fu}"
+
+    # set_aside_card always present (>=1) until consumed by Prince-on-empty-
+    # deck edge case. Once consumed it's 0; can't reappear.
+    assert 0 <= state["set_aside_card"] <= 8, (
+        f"set_aside_card out of range: {state['set_aside_card']}")
+
+    # Terminal: at most one alive (or all eliminated → draw).
+    if state["is_terminal"]:
+        # On terminal, alive_count<=1 OR deck exhausted (round-end resolution).
+        # (Either condition is allowed; just sanity-check no negatives.)
+        assert alive_count <= n
+    else:
+        assert alive_count >= 1, "non-terminal state with zero alive players"
+        assert 0 <= state["current_player"] < n
+
+
+class TestRuleInvariants:
+    """Per-ply assertions on Love Letter's conservation laws.
+
+    Catches: card duplication / loss, alive/hand inconsistency, face_up
+    miscount, drawn_card lingering past a turn.
+    """
+
+    @pytest.mark.parametrize("variant", VARIANTS)
+    @pytest.mark.parametrize("seed", list(range(5)))
+    def test_invariants_hold_along_random_episode(self, variant, seed):
+        for state in run_random_episode_states(variant, seed=seed, max_plies=200):
+            _assert_loveletter_invariants(state)
