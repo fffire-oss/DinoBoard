@@ -40,6 +40,7 @@
   height: 100%;
   border: none;
   padding: 0;
+  margin: 0;
   border-radius: 8px;
   background: #f5f7fb;
   cursor: default;
@@ -48,6 +49,15 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  /* Mobile browsers (notably Chrome on Android) let <button> inherit a
+   * line-height and font metrics that displace the flex content vertically
+   * inside the grid track, pushing the absolute-positioned legal dot above
+   * the geometric center. Pin the box to its own dimensions. */
+  line-height: 1;
+  font: inherit;
+  color: inherit;
+  -webkit-appearance: none;
+          appearance: none;
 }
 
 .board-cell.legal {
@@ -58,14 +68,17 @@
 
 .board-cell.legal::after {
   content: "";
+  display: block;
   width: 12px;
   height: 12px;
   border-radius: 999px;
   background: rgba(59, 130, 246, 0.45);
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
+  flex: 0 0 auto;
+  /* Centered by the flex parent (align-items/justify-content: center)
+   * rather than `position: absolute; top: 50%`. Flex centering uses the
+   * box's content-box directly, so it stays aligned even when a mobile
+   * user-agent button stylesheet introduces vertical content offsets
+   * that bias `top: 50%`. */
 }
 
 .board-cell.legal:hover {
