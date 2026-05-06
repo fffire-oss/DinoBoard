@@ -6,7 +6,7 @@
 
 **中文版:** [README_CN.md](README_CN.md)
 
-A general-purpose board-game AI engine — **one framework, one engineering investment, unlimited game reuse**. AlphaZero-style MCTS + neural self-play, with first-class support for 2–4 players, hidden information, and bluffing games.
+A general-purpose board-game AI engine — **one framework, one engineering investment, unlimited game reuse**. AlphaZero-style MCTS + neural self-play, supporting 2–4 player games.
 
 ---
 
@@ -16,22 +16,20 @@ AI in digital board games is usually weak — not because the techniques don't e
 
 DinoBoard walks it once and turns the result into **a reusable engine plus a callable API**:
 
-- **~9.4k lines of C++/Python core** — MCTS, belief tracker, training, web, analysis, all generic
+- **10k+ lines of C++/Python core** — MCTS, belief tracker, training, web, analysis, all generic
 - **~2000 lines to add a new game** — rules + feature encoder + JSON config; the framework owns the rest
 - **Massive parametrized test coverage auto-applies** — a new game inherits all acceptance tests by adding it to `CANONICAL_GAMES`
 - **6 games covering 4 paradigms** — perfect info, symmetric randomness, asymmetric hidden info, bluffing
 - **Observation-only REST API for third parties** — digital board game apps / platforms / companion apps call the AI directly without sharing any game-state code or embedding the C++ engine
 - **One code path from training to web to external API** — the same C++ MCTS serves self-play, live play, replay analysis, and third-party integration, with zero "training vs. production drift"
 
-> Context: OpenSpiel has algorithms but no product surface (no web, no ONNX, no API). Commercial board-game apps ship AI that plays near randomly (Splendor / Azul / Coup apps are perennially criticized). This project fills the gap where **research-grade algorithms, production-grade engineering, and an out-of-the-box integration interface** all meet.
-
 ---
 
-## Why it is technically strong
+## Technical introduction
 
-### ISMCTS: chance-node-free DAG search
+### ISMCTS: DAG search for hidden-information games
 
-A ground-up MCTS redesign for hidden-information games. **Root-sampling determinization + per-acting-player info-set keying + UCT2** — each simulation samples a full world from the belief, descent is fully deterministic afterward, and the same info set reached along different paths shares a DAG node. No NoPeek / traversal limiter / chance-outcome machinery required. See [docs/MCTS_ALGORITHM.md](docs/MCTS_ALGORITHM.md).
+A ground-up MCTS redesign for hidden-information games. **Root-sampling determinization + per-acting-player info-set keying + UCT2** — each simulation samples a full world from the belief, descent is fully deterministic afterward, and the same info set reached along different paths shares a DAG node. See [docs/MCTS_ALGORITHM.md](docs/MCTS_ALGORITHM.md).
 
 ### Observation-only AI API: trained once, callable by anyone
 
@@ -73,21 +71,6 @@ Self-play, evaluation, web play, replay analysis — **all run on the same C++ M
 - Heavy parametrized testing; every new game inherits the full suite for free
 - `docs/KNOWN_ISSUES.md` documents 22 shipped bugs and design trade-offs — **every pothole the next integrator gets to skip**
 - Strict no-fallback discipline (see `CLAUDE.md`): silent degradation is banned, errors must propagate to the surface
-
----
-
-## Games already shipped
-
-| Game | Players | Challenge |
-|------|---------|-----------|
-| **TicTacToe** | 2 | Minimal template |
-| **Quoridor** | 2 | Long horizon, highly strategic |
-| **Splendor** | 2–4 | Symmetric randomness + blind reserved cards |
-| **Azul** | 2–4 | Bag draws (symmetric physical randomness) |
-| **Love Letter** | 2–4 | Asymmetric hidden info + player elimination + precise knowledge tracking |
-| **Coup** | 2–4 | Bluffing + 11-phase state machine + heuristic belief |
-
-Every game ships with a web frontend (animations, undo, smart hints, replay with per-move loss analysis).
 
 ---
 
@@ -202,7 +185,7 @@ Features: 6 games, three difficulty tiers (Heuristic / Casual / Expert), seat se
 ## Core concepts
 
 - **GameBundle registration** — each game exposes a factory that returns state + rules + encoder + optional components. See the [game development guide](docs/GAME_DEVELOPMENT_GUIDE.md).
-- **ISMCTS** — root sampling + DAG + UCT2. A native design for hidden-info games, no chance-node machinery needed. See [docs/MCTS_ALGORITHM.md](docs/MCTS_ALGORITHM.md).
+- **ISMCTS** — root sampling + DAG + UCT2. A native design for hidden-info games. See [docs/MCTS_ALGORITHM.md](docs/MCTS_ALGORITHM.md).
 - **AI API** — observation-only REST interface that third-party apps consume directly, without embedding engine code. Doubles as an information-theoretic proof that the AI never cheats. See [game development guide § 17](docs/GAME_DEVELOPMENT_GUIDE.md).
 - **Training pipeline** — self-play → replay buffer → SGD → ONNX export → gating eval (≥60% win rate updates `best`). Includes warm start, heuristic guidance, auxiliary score, training action filter, MCTS schedule.
 

@@ -6,7 +6,7 @@
 >
 > 给 Claude Code 一句话「加上 Azul」,它自己查规则书、写 C++、跑全量测试、训练出超越人类的 AI、生成 Web 前端。你只负责验收。
 
-通用棋盘游戏 AI 引擎——**一套框架、一次工程投入、无限游戏复用**。AlphaZero 风格 MCTS + 神经网络自我对弈,原生支持 2-4 人、隐藏信息、虚张声势类游戏。
+通用棋盘游戏 AI 引擎——**一套框架、一次工程投入、无限游戏复用**。AlphaZero 风格 MCTS + 神经网络自我对弈,支持 2-4 人游戏。
 
 ---
 
@@ -16,22 +16,20 @@
 
 DinoBoard 把这条路径一次性打通,变成**可复用的引擎 + 可调用的 API**:
 
-- **核心框架 9.4k 行 C++/Python**——MCTS、belief tracker、训练、Web、分析,全套通用
+- **核心框架 10k+ 行 C++/Python**——MCTS、belief tracker、训练、Web、分析,全套通用
 - **接入一个新游戏只需 ~2000 行**——规则 + 特征编码 + JSON 配置,其余全由框架托管
 - **大量参数化测试自动覆盖**——新游戏加入 `CANONICAL_GAMES` 列表即可继承全部验收
 - **已有 6 个游戏,覆盖 4 类范式**——完全信息、对称随机、非对称隐藏、虚张声势
 - **对外的 observation-only REST API**——第三方桌游 app / 网站 / 平台直接调用,不需要共享任何 game state 代码,不需要嵌入 C++ 引擎
 - **从训练到 Web 前端到外部 API 一条链路**——同一份 C++ MCTS 同时服务训练、对战、录像掉分分析、第三方接入,绝无「训练时和生产时逻辑漂移」
 
-> 对比:OpenSpiel 有算法没产品化(没 Web、没 ONNX、没 API);商业桌游 app 的 AI 常年接近随机(Splendor/Azul/Coup 的官方 app 都被玩家长期诟病)。这个项目填的是**「有研究级算法,又有产品级工程完备度,还有开箱即用的接入接口」**的空缺。
-
 ---
 
-## 为什么技术上强
+## 技术介绍
 
-### ISMCTS:无 chance node 的 DAG 搜索
+### ISMCTS:面向隐藏信息游戏的 DAG 搜索
 
-针对隐藏信息游戏的原生 MCTS 重构。**Root-sampling determinization + per-acting-player info-set keying + UCT2**——每次 simulation 从 belief 采一个完整世界,之后 descent 完全 deterministic;同一 info set 从不同路径到达共享 DAG 节点;无需 NoPeek / traversal limiter / chance outcomes 等老机制。详见 [docs/MCTS_ALGORITHM.md](docs/MCTS_ALGORITHM.md)。
+针对隐藏信息游戏的原生 MCTS 重构。**Root-sampling determinization + per-acting-player info-set keying + UCT2**——每次 simulation 从 belief 采一个完整世界,之后 descent 完全 deterministic;同一 info set 从不同路径到达共享 DAG 节点。详见 [docs/MCTS_ALGORITHM.md](docs/MCTS_ALGORITHM.md)。
 
 ### Observation-Only AI API:训练完就能被第三方调用
 
@@ -73,21 +71,6 @@ DELETE /ai/sessions/{id}                  → 结束会话
 - 大量参数化测试,每个新游戏免费继承
 - `docs/KNOWN_ISSUES.md` 收录 22 个已解决的 bug 和设计取舍——这是别人接入新游戏时**能跳过的每一个坑**
 - 严格的 no-fallback 纪律(详见 `CLAUDE.md`):静默降级一律拒绝,错误必须抛到表面
-
----
-
-## 已经实现的游戏
-
-| 游戏 | 玩家数 | 难点 |
-|------|------|------|
-| **TicTacToe** | 2 | 最小范例 |
-| **Quoridor** | 2 | 长 horizon、策略性强 |
-| **Splendor** | 2-4 | 对称随机 + 暗牌盲预订 |
-| **Azul** | 2-4 | 袋中抽瓷(对称物理随机) |
-| **Love Letter** | 2-4 | 非对称隐藏 + 玩家淘汰 + 精确知识追踪 |
-| **Coup** | 2-4 | 虚张声势 + 11 阶段状态机 + 启发式 belief |
-
-每个游戏都配有 Web 前端(含动画、悔棋、智能提示、录像掉分分析)。
 
 ---
 
@@ -202,7 +185,7 @@ open http://localhost:8000
 ## 核心概念速记
 
 - **GameBundle 注册** — 每个游戏一个工厂函数,返回 state + rules + encoder + 若干可选组件。详见 [游戏开发指南](docs/GAME_DEVELOPMENT_GUIDE.md)。
-- **ISMCTS** — Root sampling + DAG + UCT2,隐藏信息游戏的原生方案,无需 chance node 机制。详见 [docs/MCTS_ALGORITHM.md](docs/MCTS_ALGORITHM.md)。
+- **ISMCTS** — Root sampling + DAG + UCT2,隐藏信息游戏的原生方案。详见 [docs/MCTS_ALGORITHM.md](docs/MCTS_ALGORITHM.md)。
 - **AI API** — Observation-only REST 接口,第三方桌游 app 直接调用,无需嵌入引擎代码。同时作为 AI 不作弊的信息论证明。详见 [GAME_DEVELOPMENT_GUIDE §17](docs/GAME_DEVELOPMENT_GUIDE.md#17-ai-api-分离验收)。
 - **训练管线** — 自我对弈 → Replay Buffer → SGD → ONNX 导出 → gating eval(≥60% 胜率更新 best)。支持 Warm Start、Heuristic Guidance、Auxiliary Score、Training Action Filter、MCTS Schedule。
 
