@@ -50,24 +50,32 @@ export function createApp(config) {
   replay.onExit(() => exitReplay());
   replay.onRenderFrame(async (frame, allFrames, prevFrame) => {
     if (config.onReplayFrames) config.onReplayFrames(allFrames);
-    // Animate the transition between prevFrame and the new frame — same
-    // describeTransition the live game uses. Only animates when:
-    //  - we have a prev frame (not the initial render)
-    //  - the step advances by 1 (sequential playback or next-button);
-    //    jumps to non-adjacent frames render instantly
-    //  - the new frame has action_info (not the start frame)
-    const prevPly = prevFrame && prevFrame.ply_index;
-    const curPly = frame && frame.ply_index;
-    const adjacent = prevFrame && typeof prevPly === 'number'
+    // Show the position BEFORE the analyzed move (frame[i] stores the
+    // state AFTER action i), so the user can compare their own choice at
+    // that vantage point with the AI suggestion in the analysis card.
+    // The side panel still describes `frame` itself.
+    const idx = allFrames.indexOf(frame);
+    const displayFrame = idx > 0 ? allFrames[idx - 1] : frame;
+    const prevIdx = prevFrame ? allFrames.indexOf(prevFrame) : -1;
+    const prevDisplay = prevIdx > 0 ? allFrames[prevIdx - 1]
+        : (prevIdx === 0 ? prevFrame : null);
+    // Animate when the displayed positions are exactly one ply apart
+    // (sequential playback / next button). The action that connects them
+    // is whatever produced `displayFrame` — i.e. the move being analyzed
+    // on the SOURCE step. So pressing "next" while at step k animates
+    // action k playing out, then lands on step k+1's pre-action position.
+    const prevPly = prevDisplay && prevDisplay.ply_index;
+    const curPly = displayFrame && displayFrame.ply_index;
+    const adjacent = prevDisplay && typeof prevPly === 'number'
         && typeof curPly === 'number' && curPly - prevPly === 1;
-    if (adjacent && frame.action_info && config.describeTransition) {
-      await animateTransition(prevFrame, frame, frame.action_info, frame.action_id);
+    if (adjacent && displayFrame.action_info && config.describeTransition) {
+      await animateTransition(prevDisplay, displayFrame, displayFrame.action_info, displayFrame.action_id);
     }
     if (config.renderBoard) {
-      config.renderBoard(refs.boardCol, frame, ctx);
+      config.renderBoard(refs.boardCol, displayFrame, ctx);
     }
     if (config.renderPlayerArea) {
-      config.renderPlayerArea(refs.playerArea, frame, ctx);
+      config.renderPlayerArea(refs.playerArea, displayFrame, ctx);
     }
     updateReplayInfo(frame);
   });
