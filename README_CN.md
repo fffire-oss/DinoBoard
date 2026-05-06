@@ -196,7 +196,7 @@ open http://localhost:8000
 - **[功能概览](docs/GAME_FEATURES_OVERVIEW.md)** — 框架能力速查
 - **[游戏开发指南](docs/GAME_DEVELOPMENT_GUIDE.md)** — 添加新游戏的单一权威来源
 - **[MCTS 算法](docs/MCTS_ALGORITHM.md)** — ISMCTS 的 DAG 搜索推导
-- **[新游戏验收测试](docs/NEW_GAME_TEST_GUIDE.md)** — 9 步验收流程 + 两层测试架构原则
+- **[新游戏验收测试](docs/NEW_GAME_TEST_GUIDE.md)** — 11 步验收流程 + 两层测试架构原则
 - **[已知问题与踩坑](docs/KNOWN_ISSUES.md)** — BUG-001~022 postmortem + 设计取舍
 
 ---

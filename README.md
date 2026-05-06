@@ -196,7 +196,7 @@ Features: 6 games, three difficulty tiers (Heuristic / Casual / Expert), seat se
 - **[Features overview](docs/GAME_FEATURES_OVERVIEW.md)** — what the framework can do
 - **[Game development guide](docs/GAME_DEVELOPMENT_GUIDE.md)** — single source of truth for adding a new game
 - **[MCTS algorithm](docs/MCTS_ALGORITHM.md)** — the ISMCTS DAG-search derivation
-- **[New game test guide](docs/NEW_GAME_TEST_GUIDE.md)** — 10-step acceptance workflow + the two-layer test architecture
+- **[New game test guide](docs/NEW_GAME_TEST_GUIDE.md)** — 11-step acceptance workflow + the two-layer test architecture
 - **[Known issues & trade-offs](docs/KNOWN_ISSUES.md)** — BUG-001 through BUG-022 postmortems plus design decisions
 
 ---
