@@ -6,7 +6,7 @@ training samples instead of the actual mid-game features from C++ samples.
 import dinoboard_engine
 import pytest
 
-from conftest import GAME_CONFIGS, GAMES_WITH_HEURISTIC, run_short_heuristic, run_short_selfplay
+from conftest import FRAMEWORK_GAMES, load_game_config, run_short_heuristic, run_short_selfplay
 
 
 # ---------------------------------------------------------------------------
@@ -54,14 +54,14 @@ def _first_heuristic_episode_with_min_samples(game_id: str, min_samples: int):
     )
 
 
-@pytest.mark.parametrize("game_id", GAMES_WITH_HEURISTIC)
+@pytest.mark.parametrize("game_id", FRAMEWORK_GAMES)
 def test_heuristic_features_vary_across_plies(game_id):
     _seed, ep = _first_heuristic_episode_with_min_samples(game_id, min_samples=3)
     samples = ep["samples"]
     assert samples[0]["features"] != samples[2]["features"]
 
 
-@pytest.mark.parametrize("game_id", GAMES_WITH_HEURISTIC)
+@pytest.mark.parametrize("game_id", FRAMEWORK_GAMES)
 def test_heuristic_features_differ_from_initial(game_id):
     seed, ep = _first_heuristic_episode_with_min_samples(game_id, min_samples=3)
     initial = dinoboard_engine.encode_state(game_id, seed)["features"]

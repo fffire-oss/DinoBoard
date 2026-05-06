@@ -8,7 +8,7 @@ import math
 import dinoboard_engine
 import pytest
 
-from conftest import GAME_CONFIGS, get_test_model
+from conftest import get_test_model, load_game_config
 
 
 # ---------------------------------------------------------------------------
@@ -443,7 +443,7 @@ def test_mcts_only_visits_legal_actions():
     """All visited actions in MCTS output must be legal moves."""
     for game_id in ["tictactoe", "quoridor"]:
         ep = run_ep(game_id=game_id, seed=42, simulations=100, max_game_plies=30)
-        action_space = GAME_CONFIGS[game_id]["action_space"]
+        action_space = load_game_config(game_id)["action_space"]
         for s in ep["samples"]:
             legal_set = {i for i, m in enumerate(s["legal_mask"]) if m > 0}
             visited = {aid for aid, v in zip(s["policy_action_ids"], s["policy_action_visits"]) if v > 0}

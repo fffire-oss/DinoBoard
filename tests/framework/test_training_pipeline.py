@@ -2,7 +2,7 @@
 import torch
 import pytest
 
-from conftest import GAME_CONFIGS, FRAMEWORK_GAMES
+from conftest import FRAMEWORK_GAMES, load_game_config
 
 from training.pipeline import normalize_policy, compute_schedule_ratio, _get_temperature_key
 from training.model import PVNet, create_model_from_config
@@ -106,7 +106,7 @@ def test_get_temperature_key_default():
 def test_create_model_output_shapes(game_id):
     import dinoboard_engine
     meta = dinoboard_engine.game_metadata(game_id)
-    cfg = dict(GAME_CONFIGS[game_id])
+    cfg = dict(load_game_config(game_id))
     cfg["num_players"] = meta["num_players"]
     cfg["action_space"] = meta["action_space"]
     cfg["feature_dim"] = meta["feature_dim"]

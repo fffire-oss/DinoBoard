@@ -25,11 +25,12 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "tests"))
 
-from conftest import GAME_CONFIGS, get_test_model
+from conftest import get_test_model, load_game_config
 
 GAME = "loveletter"
-ACTION_SPACE = GAME_CONFIGS[GAME]["action_space"]
-FEATURE_DIM = GAME_CONFIGS[GAME]["feature_dim"]
+CONFIG = load_game_config(GAME)
+ACTION_SPACE = CONFIG["action_space"]
+FEATURE_DIM = CONFIG["feature_dim"]
 VARIANTS = ["loveletter", "loveletter_3p", "loveletter_4p"]
 
 

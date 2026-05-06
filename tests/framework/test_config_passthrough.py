@@ -5,7 +5,7 @@ from pathlib import Path
 import dinoboard_engine
 import pytest
 
-from conftest import GAME_CONFIGS, PROJECT_ROOT, run_short_selfplay, get_test_model
+from conftest import PROJECT_ROOT, get_test_model, load_game_config, run_short_selfplay
 
 
 def test_tail_solve_disabled_produces_no_stats_quoridor():
@@ -104,7 +104,7 @@ def test_max_game_plies_limits_episode(game_id, game_config):
 def test_splendor_nested_temperature_schedule_read_by_pipeline():
     """Pipeline reads Splendor's nested temperature_schedule correctly."""
     from training.pipeline import _get_temperature_key
-    cfg = GAME_CONFIGS["splendor"]["training"]
+    cfg = load_game_config("splendor")["training"]
     assert "temperature_schedule" in cfg
     assert cfg.get("temperature_initial") is None, "Splendor uses nested, not flat keys"
     assert _get_temperature_key(cfg, "initial", -1.0) == 1.0

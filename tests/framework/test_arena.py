@@ -2,7 +2,7 @@
 import dinoboard_engine
 import pytest
 
-from conftest import FRAMEWORK_GAMES, GAME_CONFIGS, GAMES_WITH_HEURISTIC, get_test_model
+from conftest import FRAMEWORK_GAMES, load_game_config, get_test_model
 
 
 # ---------------------------------------------------------------------------
@@ -34,7 +34,7 @@ def test_arena_winner_valid_range(game_id):
         simulations_list=[10, 10], temperature=0.0,
     )
     w = r["winner"]
-    num_players = GAME_CONFIGS[game_id]["players"]["max"]
+    num_players = load_game_config(game_id)["players"]["max"]
     assert w == -1 or (0 <= w < num_players), f"invalid winner {w}"
 
 

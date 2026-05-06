@@ -17,11 +17,12 @@ Tic-Tac-Toe is the simplest carrier:
 import dinoboard_engine
 import pytest
 
-from conftest import GAME_CONFIGS, get_test_model
+from conftest import get_test_model, load_game_config
 
 GAME = "tictactoe"
-ACTION_SPACE = GAME_CONFIGS[GAME]["action_space"]
-FEATURE_DIM = GAME_CONFIGS[GAME]["feature_dim"]
+CONFIG = load_game_config(GAME)
+ACTION_SPACE = CONFIG["action_space"]
+FEATURE_DIM = CONFIG["feature_dim"]
 
 
 # ---------------------------------------------------------------------------

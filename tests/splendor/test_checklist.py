@@ -10,11 +10,16 @@ Splendor is a hidden-information game with:
 import dinoboard_engine
 import pytest
 
-from conftest import GAME_CONFIGS, get_test_model
+from conftest import (
+    assert_api_belief_matches_selfplay,
+    get_test_model,
+    load_game_config,
+)
 
 GAME = "splendor"
-ACTION_SPACE = GAME_CONFIGS[GAME]["action_space"]
-FEATURE_DIM = GAME_CONFIGS[GAME]["feature_dim"]
+CONFIG = load_game_config(GAME)
+ACTION_SPACE = CONFIG["action_space"]
+FEATURE_DIM = CONFIG["feature_dim"]
 VARIANTS = ["splendor", "splendor_3p", "splendor_4p"]
 
 
@@ -243,3 +248,19 @@ class TestBeliefTracker:
         r = dinoboard_engine.test_belief_tracker(GAME, seed=55, plies=15, randomize_trials=5)
         for i, td in enumerate(r["trial_decks"]):
             assert len(td) == len(set(td)), f"Trial {i}: duplicate cards {td}"
+
+
+# ---------------------------------------------------------------------------
+# 9. AI API belief / public state / legal actions equivalence
+# (independent-seed API session must match self-play tracker step-by-step)
+# ---------------------------------------------------------------------------
+
+class TestApiBeliefEquivalence:
+
+    PUBLIC_KEYS = [
+        "current_player", "is_terminal", "winner", "num_players",
+        "bank", "tableau", "nobles", "players",
+    ]
+
+    def test_belief_matches_selfplay_under_independent_seed(self):
+        assert_api_belief_matches_selfplay(GAME, self.PUBLIC_KEYS)

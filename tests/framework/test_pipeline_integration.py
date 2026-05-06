@@ -8,7 +8,7 @@ import torch
 import dinoboard_engine
 import pytest
 
-from conftest import FRAMEWORK_GAMES, GAME_CONFIGS, PROJECT_ROOT, get_test_model
+from conftest import FRAMEWORK_GAMES, load_game_config, PROJECT_ROOT, get_test_model
 from training.pipeline import (
     run_selfplay_batch,
     run_eval_batch,
@@ -205,7 +205,7 @@ def test_eval_vs_heuristic_model_alternates_sides():
 
 def test_schedule_ratio_heuristic_guidance():
     """Quoridor uses heuristic_guidance_steps=3000. Step 1 should have high ratio."""
-    train_cfg = GAME_CONFIGS["quoridor"]["training"]
+    train_cfg = load_game_config("quoridor")["training"]
     h_steps = train_cfg.get("heuristic_guidance_steps", 0)
     h_initial = train_cfg.get("heuristic_guidance_initial_ratio",
                                train_cfg.get("heuristic_guidance_ratio", 0.5))
@@ -219,7 +219,7 @@ def test_schedule_ratio_heuristic_guidance():
 
 def test_schedule_ratio_training_filter():
     """Training filter ratio should decay linearly."""
-    train_cfg = GAME_CONFIGS["quoridor"]["training"]
+    train_cfg = load_game_config("quoridor")["training"]
     f_steps = train_cfg.get("training_filter_steps", 0)
     f_initial = train_cfg.get("training_filter_initial_ratio", 1.0)
     if f_steps > 0:
@@ -231,7 +231,7 @@ def test_schedule_ratio_training_filter():
 
 def test_simulation_rampup_formula():
     """Simulation ramp from simulations_start to simulations over 30% of steps."""
-    train_cfg = GAME_CONFIGS["quoridor"]["training"]
+    train_cfg = load_game_config("quoridor")["training"]
     sims_start = train_cfg.get("simulations_start", train_cfg["simulations"])
     sims_full = train_cfg["simulations"]
     steps = train_cfg["steps"]
@@ -262,7 +262,7 @@ def test_warm_start_heuristic_episodes():
         )
         episodes.append(ep)
 
-    cfg = GAME_CONFIGS["quoridor"]
+    cfg = load_game_config("quoridor")
     feature_dim = cfg["feature_dim"]
     action_space = cfg["action_space"]
 
@@ -480,7 +480,7 @@ def test_gating_threshold():
     assert 0.60 >= threshold  # accept
     assert 0.50 < threshold   # reject (but this is just a sanity check)
 
-    cfg = GAME_CONFIGS["quoridor"]["training"]
+    cfg = load_game_config("quoridor")["training"]
     gar = cfg.get("gating_accept_win_rate", 0.6)
     assert 0.0 < gar < 1.0, "gating threshold should be between 0 and 1"
 
@@ -523,7 +523,7 @@ def test_checkpoint_save_load(tmp_path):
 
 def test_splendor_temperature_extracted_correctly():
     """Splendor's nested temperature_schedule should be read by helper."""
-    train_cfg = GAME_CONFIGS["splendor"]["training"]
+    train_cfg = load_game_config("splendor")["training"]
     initial = _get_temperature_key(train_cfg, "initial", -1.0)
     final = _get_temperature_key(train_cfg, "final", -1.0)
     decay = _get_temperature_key(train_cfg, "decay_plies", 0)
@@ -534,7 +534,7 @@ def test_splendor_temperature_extracted_correctly():
 
 def test_quoridor_temperature_extracted_correctly():
     """Quoridor's flat temperature keys should be read directly."""
-    train_cfg = GAME_CONFIGS["quoridor"]["training"]
+    train_cfg = load_game_config("quoridor")["training"]
     initial = _get_temperature_key(train_cfg, "initial", -1.0)
     final = _get_temperature_key(train_cfg, "final", -1.0)
     assert initial == 1.0

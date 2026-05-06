@@ -2,7 +2,7 @@
 import dinoboard_engine
 import pytest
 
-from conftest import GAME_CONFIGS, get_test_model
+from conftest import get_test_model, load_game_config
 
 
 MULTIPLAYER_VARIANTS = [

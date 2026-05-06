@@ -1941,28 +1941,17 @@ python -m pytest tests/framework/ -q
 
 ### 15.4 测试辅助工具
 
-`tests/conftest.py` 提供常用 fixture 和 helper:
+`tests/conftest.py` 严格遵守白名单原则:框架层只认识 `FRAMEWORK_GAMES = ["quoridor", "azul", "loveletter"]` 三个 carrier 游戏,**不存在「所有游戏 metadata 全局表」**。Per-game checklist 通过 `load_game_config(GAME)` 自己加载配置。
 
 | 名称 | 类型 | 说明 |
 |---|---|---|
-| `GAME_CONFIGS` | dict | 所有 6 个 canonical game 的 game.json + metadata |
+| `FRAMEWORK_GAMES` | 常量 | 框架矩阵 carrier 白名单(quoridor + azul + loveletter)。Per-game 测试**不要**改这个 |
+| `load_game_config(game_id)` | 函数 | 加载任意游戏的 game.json + C++ metadata。Per-game checklist 在文件头调用一次 |
 | `get_test_model(game_id)` | 函数 | 创建/缓存随机初始化 ONNX 模型 |
 | `run_short_selfplay(game_id)` | 函数 | 快速跑一局 selfplay(10 sims, 50 plies) |
 | `run_short_heuristic(game_id)` | 函数 | 快速跑一局 heuristic 对局 |
-| `game_id` | fixture | **仅供框架层使用**——参数化为 `FRAMEWORK_GAMES`。Per-game checklist 自己 hardcode `GAME = "..."`,不用这个 fixture |
-
-### 15.5 测试辅助工具
-
-`conftest.py` 提供常用 fixture 和 helper：
-
-| 名称 | 类型 | 说明 |
-|---|---|---|
-| `game_id` | fixture | 当前游戏 ID（自动参数化） |
-| `game_config` | fixture | 当前游戏的 game.json dict |
-| `model_path` | fixture | 随机 ONNX 模型路径（自动缓存） |
-| `get_test_model(game_id)` | 函数 | 创建/缓存一个随机初始化的 ONNX 模型 |
-| `run_short_selfplay(game_id)` | 函数 | 快速跑一局 selfplay（10 sims, 50 plies） |
-| `run_short_heuristic(game_id)` | 函数 | 快速跑一局 heuristic 对局 |
+| `assert_api_belief_matches_selfplay(game_id, public_keys, ...)` | 函数 | **隐藏信息游戏的标准三层等价断言** —— belief/public state/legal actions。在 per-game checklist 里调用一次即可,无需重复实现 |
+| `game_id` / `game_config` / `model_path` | fixture | **仅供框架层使用**——参数化为 `FRAMEWORK_GAMES`。Per-game checklist 自己 hardcode `GAME = "..."`,不用这些 fixture |
 
 ---
 
@@ -2056,7 +2045,7 @@ python -m pytest tests/framework/ -q
    - `public_event_extractor` — selfplay 侧：state_before + action + state_after → 事件列表
    - `public_event_applier` — API 侧：把事件 apply 到 AI 的 state 上
    - `initial_observation_extractor` / `initial_observation_applier` — 初始设置同步
-4. 在 `tests/<your_game>/test_checklist.py` 里加 belief 等价测试(参考 `tests/loveletter/test_checklist.py`)
+4. 在 `tests/<your_game>/test_checklist.py` 里加一个 `TestApiBeliefEquivalence` 类(参考 `tests/loveletter/` / `tests/splendor/` / `tests/coup/test_checklist.py`),调用 `assert_api_belief_matches_selfplay(GAME, PUBLIC_KEYS)` —— 这个 helper 一次完成三层等价断言(belief snapshot 每步一致 / 公开 state 字段终局相等 / perspective 回合 legal actions 相等),不需要重新实现
 
 ### 17.3 Public-Event 协议设计
 

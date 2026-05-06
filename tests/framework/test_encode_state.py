@@ -2,7 +2,7 @@
 import dinoboard_engine
 import pytest
 
-from conftest import FRAMEWORK_GAMES, GAME_CONFIGS
+from conftest import FRAMEWORK_GAMES, load_game_config
 
 
 @pytest.mark.parametrize("game_id", FRAMEWORK_GAMES)
@@ -36,7 +36,7 @@ def test_encode_state_action_space_field_matches_mask_length(game_id):
 @pytest.mark.parametrize("game_id", FRAMEWORK_GAMES)
 def test_encode_state_matches_config(game_id):
     """feature_dim and action_space from encode_state should match game.json."""
-    cfg = GAME_CONFIGS[game_id]
+    cfg = load_game_config(game_id)
     info = dinoboard_engine.encode_state(game_id, seed=42)
     assert info["feature_dim"] == cfg["feature_dim"]
     assert info["action_space"] == cfg["action_space"]
@@ -70,7 +70,7 @@ def test_encode_state_current_player_valid(game_id):
     """current_player should be a valid player index."""
     info = dinoboard_engine.encode_state(game_id, seed=42)
     assert info["current_player"] >= 0
-    num_players = GAME_CONFIGS[game_id]["players"]["max"]
+    num_players = load_game_config(game_id)["players"]["max"]
     assert info["current_player"] < num_players
 
 

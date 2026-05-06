@@ -2,7 +2,7 @@
 import dinoboard_engine
 import pytest
 
-from conftest import GAME_CONFIGS, run_short_selfplay
+from conftest import load_game_config, run_short_selfplay
 
 
 def test_sample_features_correct_length(game_id, game_config):

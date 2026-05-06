@@ -18,7 +18,11 @@ built with Coup. Once the build is restored, all tests should run.
 import dinoboard_engine
 import pytest
 
-from conftest import GAME_CONFIGS, get_test_model
+from conftest import (
+    assert_api_belief_matches_selfplay,
+    get_test_model,
+    load_game_config,
+)
 
 
 def _coup_available() -> bool:
@@ -56,7 +60,7 @@ class TestRegistration:
 
     def test_metadata_matches_config(self):
         meta = dinoboard_engine.game_metadata(GAME)
-        cfg = GAME_CONFIGS[GAME]
+        cfg = load_game_config(GAME)
         assert meta["action_space"] == cfg["action_space"]
         assert meta["feature_dim"] == cfg["feature_dim"]
         assert meta["num_players"] == 2
@@ -80,7 +84,7 @@ class TestGameSession:
     def test_legal_actions_in_range(self):
         gs = dinoboard_engine.GameSession(GAME, seed=42)
         legal = gs.get_legal_actions()
-        action_space = GAME_CONFIGS[GAME]["action_space"]
+        action_space = load_game_config(GAME)["action_space"]
         assert len(legal) > 0
         assert all(0 <= a < action_space for a in legal)
 
@@ -110,7 +114,7 @@ class TestEncoder:
     KNOWN_HAND_SIZE = 5
 
     def test_encode_state_correct_dim(self):
-        cfg = GAME_CONFIGS[GAME]
+        cfg = load_game_config(GAME)
         info = dinoboard_engine.encode_state(GAME, seed=42)
         assert len(info["features"]) == cfg["feature_dim"]
         assert len(info["legal_mask"]) == cfg["action_space"]
@@ -167,7 +171,7 @@ class TestSelfplay:
         assert ep["total_plies"] > 0
 
     def test_sample_integrity(self):
-        cfg = GAME_CONFIGS[GAME]
+        cfg = load_game_config(GAME)
         ep = dinoboard_engine.run_selfplay_episode(
             game_id=GAME, seed=42, model_path=get_test_model(GAME),
             simulations=10, max_game_plies=60,
@@ -280,3 +284,21 @@ class TestUnsupportedComponents:
                 game_id=GAME, seed=42, perspective_player=0,
                 depth_limit=5, node_budget=10000,
             )
+
+
+# ---------------------------------------------------------------------------
+# 9. AI API belief / public state / legal actions equivalence
+# (independent-seed API session must match self-play tracker step-by-step)
+# ---------------------------------------------------------------------------
+
+@coup_skip
+class TestApiBeliefEquivalence:
+
+    PUBLIC_KEYS = [
+        "current_player", "is_terminal", "winner", "num_players",
+        "ply", "stage", "active_player", "declared_action",
+        "action_target", "blocker", "challenger", "deck_size",
+    ]
+
+    def test_belief_matches_selfplay_under_independent_seed(self):
+        assert_api_belief_matches_selfplay(GAME, self.PUBLIC_KEYS)

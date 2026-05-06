@@ -13,7 +13,7 @@ import torch
 import dinoboard_engine
 import pytest
 
-from conftest import GAME_CONFIGS, FRAMEWORK_GAMES, run_short_selfplay, get_test_model
+from conftest import FRAMEWORK_GAMES, load_game_config, run_short_selfplay, get_test_model
 from training.pipeline import normalize_policy, train_step, rotate_z_values
 from training.model import PVNet, create_model_from_config
 
@@ -72,7 +72,7 @@ def process_episode_samples(ep, game_config):
 @pytest.mark.parametrize("game_id", FRAMEWORK_GAMES)
 def test_z_values_match_winner_per_player(game_id):
     """Each sample's z-value must reflect the game outcome from that sample's player's POV."""
-    game_config = GAME_CONFIGS[game_id]
+    game_config = load_game_config(game_id)
     ep = dinoboard_engine.run_selfplay_episode(
         game_id=game_id, seed=42, model_path=get_test_model(game_id), simulations=30,
         max_game_plies=100, dirichlet_alpha=0.0, dirichlet_epsilon=0.0,
@@ -131,7 +131,7 @@ def test_z_values_rotation_correct(game_id):
 @pytest.mark.parametrize("game_id", FRAMEWORK_GAMES)
 def test_policy_targets_sum_to_one(game_id):
     """Normalized policy should sum to 1.0 (within tolerance) for every sample."""
-    game_config = GAME_CONFIGS[game_id]
+    game_config = load_game_config(game_id)
     action_space = game_config["action_space"]
     ep = run_short_selfplay(game_id)
     for s in ep["samples"]:
@@ -149,7 +149,7 @@ def test_policy_targets_sum_to_one(game_id):
 @pytest.mark.parametrize("game_id", FRAMEWORK_GAMES)
 def test_policy_targets_nonnegative(game_id):
     """All policy target values must be >= 0."""
-    game_config = GAME_CONFIGS[game_id]
+    game_config = load_game_config(game_id)
     action_space = game_config["action_space"]
     ep = run_short_selfplay(game_id)
     for s in ep["samples"]:
@@ -162,7 +162,7 @@ def test_policy_targets_nonnegative(game_id):
 @pytest.mark.parametrize("game_id", FRAMEWORK_GAMES)
 def test_policy_nonzero_only_on_legal_actions(game_id):
     """Policy target should be non-zero only for legal (visited) actions."""
-    game_config = GAME_CONFIGS[game_id]
+    game_config = load_game_config(game_id)
     action_space = game_config["action_space"]
     ep = run_short_selfplay(game_id)
     for s in ep["samples"]:
@@ -183,7 +183,7 @@ def test_policy_nonzero_only_on_legal_actions(game_id):
 @pytest.mark.parametrize("game_id", FRAMEWORK_GAMES)
 def test_training_tensors_correct_shapes(game_id):
     """Feature, policy, and value tensors must have correct shapes."""
-    game_config = GAME_CONFIGS[game_id]
+    game_config = load_game_config(game_id)
     meta = dinoboard_engine.game_metadata(game_id)
     num_players = meta["num_players"]
     ep = run_short_selfplay(game_id)
@@ -199,7 +199,7 @@ def test_training_tensors_correct_shapes(game_id):
 @pytest.mark.parametrize("game_id", FRAMEWORK_GAMES)
 def test_training_tensors_finite(game_id):
     """All training tensors must be finite (no NaN or Inf)."""
-    game_config = GAME_CONFIGS[game_id]
+    game_config = load_game_config(game_id)
     ep = run_short_selfplay(game_id)
     data = process_episode_samples(ep, game_config)
     if data is None:
@@ -212,7 +212,7 @@ def test_training_tensors_finite(game_id):
 @pytest.mark.parametrize("game_id", FRAMEWORK_GAMES)
 def test_value_targets_in_range(game_id):
     """Value targets z should be in [-1, 1]."""
-    game_config = GAME_CONFIGS[game_id]
+    game_config = load_game_config(game_id)
     ep = run_short_selfplay(game_id)
     data = process_episode_samples(ep, game_config)
     if data is None:
@@ -228,7 +228,7 @@ def test_value_targets_in_range(game_id):
 @pytest.mark.parametrize("game_id", FRAMEWORK_GAMES)
 def test_forward_backward_no_nan(game_id):
     """A training step on real samples should produce finite loss and gradients."""
-    game_config = GAME_CONFIGS[game_id]
+    game_config = load_game_config(game_id)
     ep = run_short_selfplay(game_id)
     data = process_episode_samples(ep, game_config)
     if data is None:
@@ -252,7 +252,7 @@ def test_forward_backward_no_nan(game_id):
 @pytest.mark.parametrize("game_id", FRAMEWORK_GAMES)
 def test_multiple_train_steps_loss_decreases(game_id):
     """Loss should generally decrease over multiple steps on the same batch."""
-    game_config = GAME_CONFIGS[game_id]
+    game_config = load_game_config(game_id)
     ep = dinoboard_engine.run_selfplay_episode(
         game_id=game_id, seed=42, model_path=get_test_model(game_id), simulations=30,
         max_game_plies=100, dirichlet_alpha=0.0, dirichlet_epsilon=0.0,
@@ -301,7 +301,7 @@ def test_legal_mask_has_at_least_one_legal(game_id):
 
 def test_legal_mask_used_in_training():
     """train_step should mask illegal actions with -1e9 before computing policy loss."""
-    game_config = GAME_CONFIGS["tictactoe"]
+    game_config = load_game_config("tictactoe")
     ep = run_short_selfplay("tictactoe")
     data = process_episode_samples(ep, game_config)
     if data is None:
@@ -327,7 +327,7 @@ def test_legal_mask_used_in_training():
 
 def test_legal_mask_zeros_out_illegal_probability():
     """After masking, softmax should assign ~0 probability to illegal actions."""
-    game_config = GAME_CONFIGS["tictactoe"]
+    game_config = load_game_config("tictactoe")
     net = create_model_from_config(game_config)
     net.eval()
 
@@ -373,7 +373,7 @@ def test_gradient_clipping_in_train_step():
 
 def test_gradient_clipping_actually_clips():
     """With grad_clip_norm, gradient norms should be bounded."""
-    game_config = GAME_CONFIGS["tictactoe"]
+    game_config = load_game_config("tictactoe")
     ep = run_short_selfplay("tictactoe")
     data = process_episode_samples(ep, game_config)
     if data is None:
@@ -407,7 +407,7 @@ def test_heuristic_samples_have_valid_policy_quoridor():
         max_game_plies=30, heuristic_guidance_ratio=1.0, heuristic_temperature=0.0,
         dirichlet_alpha=0.0, dirichlet_epsilon=0.0,
     )
-    action_space = GAME_CONFIGS["quoridor"]["action_space"]
+    action_space = load_game_config("quoridor")["action_space"]
     for s in ep["samples"]:
         policy = normalize_policy(
             s["policy_action_ids"], s["policy_action_visits"], action_space)
@@ -425,7 +425,7 @@ def test_heuristic_samples_have_features_quoridor():
         max_game_plies=30, heuristic_guidance_ratio=1.0, heuristic_temperature=0.0,
         dirichlet_alpha=0.0, dirichlet_epsilon=0.0,
     )
-    feature_dim = GAME_CONFIGS["quoridor"]["feature_dim"]
+    feature_dim = load_game_config("quoridor")["feature_dim"]
     for s in ep["samples"]:
         assert len(s["features"]) == feature_dim, (
             f"ply {s['ply']}: heuristic sample features len={len(s['features'])}"
@@ -471,7 +471,7 @@ def test_adjudicated_z_values_zero_sum():
 @pytest.mark.parametrize("game_id", FRAMEWORK_GAMES)
 def test_full_pipeline_roundtrip(game_id):
     """Full round-trip: selfplay → process samples → train → verify loss is meaningful."""
-    game_config = GAME_CONFIGS[game_id]
+    game_config = load_game_config(game_id)
     ep = dinoboard_engine.run_selfplay_episode(
         game_id=game_id, seed=42, model_path=get_test_model(game_id), simulations=30,
         max_game_plies=100, dirichlet_alpha=0.0, dirichlet_epsilon=0.0,

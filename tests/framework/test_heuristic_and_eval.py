@@ -2,12 +2,12 @@
 import dinoboard_engine
 import pytest
 
-from conftest import GAME_CONFIGS, get_test_model, run_short_heuristic
+from conftest import get_test_model, load_game_config, run_short_heuristic
 
 
 def test_heuristic_episode_valid_samples_quoridor():
     ep = run_short_heuristic("quoridor")
-    cfg = GAME_CONFIGS["quoridor"]
+    cfg = load_game_config("quoridor")
     assert len(ep["samples"]) > 0, "heuristic episode produced no samples"
     for s in ep["samples"]:
         assert len(s["features"]) == cfg["feature_dim"]

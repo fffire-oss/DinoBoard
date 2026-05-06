@@ -7,7 +7,7 @@ import torch
 import dinoboard_engine
 import pytest
 
-from conftest import GAME_CONFIGS, get_test_model
+from conftest import get_test_model, load_game_config
 from training.model import PVNet, create_model_from_config, export_onnx
 from training.pipeline import normalize_policy, train_step
 

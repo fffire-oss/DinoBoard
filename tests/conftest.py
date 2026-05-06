@@ -1,4 +1,11 @@
-"""Shared fixtures and helpers for DinoBoard tests."""
+"""Shared fixtures and helpers for DinoBoard tests.
+
+Architectural principle: this file knows ONLY about the framework matrix
+carrier (quoridor + azul + loveletter). Per-game tests in tests/<game>/
+are responsible for their own assertions and load their own config via
+the load_game_config helper. The framework layer never embeds rules,
+constants, or assertions for any specific game outside the matrix.
+"""
 import json
 from pathlib import Path
 
@@ -8,8 +15,6 @@ import torch
 import dinoboard_engine
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
-CANONICAL_GAMES = ["tictactoe", "quoridor", "splendor", "azul", "loveletter", "coup"]
 
 # Framework matrix — minimal carrier set used by tests/framework/. These
 # three games together cover every structural feature the framework cares
@@ -24,6 +29,8 @@ FRAMEWORK_TAIL_SOLVER_GAMES = ["quoridor"]
 
 
 def load_game_config(game_id: str) -> dict:
+    """Load a game's game.json plus C++-side metadata. Generic helper —
+    works for any registered game, framework or per-game test."""
     import re
     base = re.sub(r"_\d+p$", "", game_id)
     config_path = PROJECT_ROOT / "games" / base / "config" / "game.json"
@@ -35,8 +42,6 @@ def load_game_config(game_id: str) -> dict:
     cfg["num_players"] = meta["num_players"]
     return cfg
 
-
-GAME_CONFIGS = {g: load_game_config(g) for g in CANONICAL_GAMES}
 
 _MODEL_CACHE: dict[str, str] = {}
 
@@ -65,13 +70,13 @@ def model_path(game_id):
     """Fixture providing a random ONNX model path for the current game_id."""
     return get_test_model(game_id)
 
-# Every registered game has a heuristic_picker — "heuristic" difficulty in the
-# web UI requires one, and a uniform-random picker is the no-effort default.
-# Quoridor's picker is a real heuristic (pawn-advance + wall-block); the others
-# are uniform-random fallbacks.
-GAMES_WITH_HEURISTIC = ["tictactoe", "quoridor", "splendor", "azul", "loveletter", "coup"]
-GAMES_WITH_TAIL_SOLVER = ["quoridor", "splendor"]
-GAMES_WITH_TRAINING_FILTER = ["quoridor"]
+
+@pytest.fixture
+def game_config(game_id):
+    """Fixture providing the loaded config for the current game_id. Thin
+    convenience wrapper around load_game_config — works for any game,
+    framework or otherwise."""
+    return load_game_config(game_id)
 
 
 # `game_id` fixture defaults to FRAMEWORK_GAMES (the matrix carrier set).
@@ -81,11 +86,6 @@ GAMES_WITH_TRAINING_FILTER = ["quoridor"]
 @pytest.fixture(params=FRAMEWORK_GAMES)
 def game_id(request):
     return request.param
-
-
-@pytest.fixture
-def game_config(game_id):
-    return GAME_CONFIGS[game_id]
 
 
 def run_short_selfplay(game_id: str, seed: int = 42, **kwargs) -> dict:
@@ -105,3 +105,81 @@ def run_short_heuristic(game_id: str, seed: int = 42, temperature: float = 1.0) 
     return dinoboard_engine.run_heuristic_episode(
         game_id=game_id, seed=seed, temperature=temperature, max_game_plies=50,
     )
+
+
+def assert_api_belief_matches_selfplay(
+    game_id: str,
+    public_keys: list[str],
+    *,
+    perspective: int = 0,
+    seed_gt: int = 42,
+    seed_ai: int = 9999,
+    plies: int = 80,
+    simulations: int = 20,
+) -> None:
+    """Three-layer equivalence assertion between self-play (ground truth)
+    and an independent-seed API session that only sees public events.
+
+    Asserts:
+      1. Belief tracker matches at every ply (initial + post-action)
+      2. Public state fields (named in `public_keys`) match after replay
+      3. Legal-action sets match on perspective-player turns
+
+    Used by per-game checklists for any game with a public_event_extractor.
+    The framework matrix carrier (azul, loveletter) calls this through its
+    own framework test; other games call this directly from their checklist.
+    """
+    import sys as _sys
+    _platform_path = str(PROJECT_ROOT / "platform")
+    if _platform_path not in _sys.path:
+        _sys.path.insert(0, _platform_path)
+
+    model_path = get_test_model(game_id)
+    ep = dinoboard_engine.run_selfplay_episode(
+        game_id=game_id, seed=seed_gt, model_path=model_path,
+        simulations=simulations, max_game_plies=plies,
+        trace_perspective=perspective,
+    )
+    assert ep.get("observation_trace"), \
+        f"[{game_id}] trace empty — extractor missing or episode terminated immediately"
+    trace = ep["observation_trace"]
+
+    api_gs = dinoboard_engine.GameSession(
+        game_id, seed=seed_ai, model_path="", use_filter=False)
+    api_gs.apply_initial_observation(perspective, ep["initial_observation"])
+    assert api_gs.get_belief_snapshot() == ep["initial_belief_snapshot"], \
+        f"[{game_id}] initial belief mismatch"
+
+    for step in trace:
+        api_gs.apply_observation(
+            step["action"], pre_events=step["pre_events"],
+            post_events=step["post_events"])
+        assert api_gs.get_belief_snapshot() == step["belief_snapshot_after"], \
+            f"[{game_id}] belief diverged at ply {step['ply']}"
+
+    api_state = api_gs.get_state_dict()
+    gt_gs = dinoboard_engine.GameSession(
+        game_id, seed=seed_gt, model_path="", use_filter=False)
+    for step in trace:
+        gt_gs.apply_action(step["action"])
+    gt_state = gt_gs.get_state_dict()
+    for key in public_keys:
+        assert api_state[key] == gt_state[key], \
+            f"[{game_id}] public field '{key}' diverged after trace replay"
+
+    api2 = dinoboard_engine.GameSession(
+        game_id, seed=seed_ai + 1, model_path="", use_filter=False)
+    api2.apply_initial_observation(perspective, ep["initial_observation"])
+    gt2 = dinoboard_engine.GameSession(
+        game_id, seed=seed_gt, model_path="", use_filter=False)
+    for step in trace:
+        api2.apply_observation(
+            step["action"], pre_events=step["pre_events"],
+            post_events=step["post_events"])
+        gt2.apply_action(step["action"])
+        if api2.is_terminal or gt2.is_terminal:
+            continue
+        if api2.current_player != perspective or gt2.current_player != perspective:
+            continue
+        assert sorted(api2.get_legal_actions()) == sorted(gt2.get_legal_actions()), \
+            f"[{game_id}] perspective legal_actions diverged at ply {step['ply']}"

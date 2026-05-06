@@ -33,9 +33,13 @@ import dinoboard_engine as engine
 from conftest import get_test_model
 
 
-# Games that have a public_event_extractor registered. Parameterize over
-# these. As more games implement the protocol, add them here.
-GAMES_WITH_EVENT_PROTOCOL = ["azul", "splendor", "loveletter", "coup"]
+# Belief / public-state / legal-action equivalence under independent
+# seeds. The framework matrix carrier (azul + loveletter) covers both
+# uniform sampling (azul) and per-player private state (loveletter).
+# Splendor and Coup get the SAME equivalence assertions in their own
+# tests/<game>/test_checklist.py — that's where game-specific coverage
+# belongs. Don't add new games here.
+GAMES_WITH_EVENT_PROTOCOL = ["azul", "loveletter"]
 
 
 def _apply_trace_step(api_gs, step: dict) -> None:

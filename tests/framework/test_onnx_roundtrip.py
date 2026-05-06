@@ -6,13 +6,13 @@ import torch
 import dinoboard_engine
 import pytest
 
-from conftest import GAME_CONFIGS, FRAMEWORK_GAMES, get_test_model
+from conftest import FRAMEWORK_GAMES, load_game_config, get_test_model
 from training.model import PVNet, create_model_from_config, export_onnx
 
 
 @pytest.mark.parametrize("game_id", FRAMEWORK_GAMES)
 def test_export_creates_file(game_id, tmp_path):
-    cfg = GAME_CONFIGS[game_id]
+    cfg = load_game_config(game_id)
     net = create_model_from_config(cfg)
     onnx_path = tmp_path / f"{game_id}.onnx"
     result = export_onnx(net, onnx_path, cfg["feature_dim"])
@@ -22,7 +22,7 @@ def test_export_creates_file(game_id, tmp_path):
 
 @pytest.mark.parametrize("game_id", FRAMEWORK_GAMES)
 def test_export_with_score_head(game_id, tmp_path):
-    cfg = GAME_CONFIGS[game_id]
+    cfg = load_game_config(game_id)
     net = PVNet(cfg["feature_dim"], cfg["action_space"], [64, 64], auxiliary_score=True)
     onnx_path = tmp_path / f"{game_id}_score.onnx"
     export_onnx(net, onnx_path, cfg["feature_dim"])
@@ -32,7 +32,7 @@ def test_export_with_score_head(game_id, tmp_path):
 @pytest.mark.parametrize("game_id", FRAMEWORK_GAMES)
 def test_onnx_model_usable_in_selfplay(game_id, tmp_path):
     """Exported ONNX model should work as the evaluator in a selfplay episode."""
-    cfg = GAME_CONFIGS[game_id]
+    cfg = load_game_config(game_id)
     net = create_model_from_config(cfg)
     onnx_path = tmp_path / f"{game_id}.onnx"
     export_onnx(net, onnx_path, cfg["feature_dim"])
@@ -48,7 +48,7 @@ def test_onnx_model_usable_in_selfplay(game_id, tmp_path):
 @pytest.mark.parametrize("game_id", FRAMEWORK_GAMES)
 def test_onnx_model_usable_in_game_session(game_id, tmp_path):
     """Exported model should work for GameSession AI actions."""
-    cfg = GAME_CONFIGS[game_id]
+    cfg = load_game_config(game_id)
     net = create_model_from_config(cfg)
     onnx_path = tmp_path / f"{game_id}.onnx"
     export_onnx(net, onnx_path, cfg["feature_dim"])
@@ -61,7 +61,7 @@ def test_onnx_model_usable_in_game_session(game_id, tmp_path):
 
 def test_onnx_selfplay_differs_from_uniform():
     """ONNX model should produce different visit patterns than uniform evaluator."""
-    cfg = GAME_CONFIGS["tictactoe"]
+    cfg = load_game_config("tictactoe")
     net = create_model_from_config(cfg)
     # Train briefly to get non-uniform outputs
     optimizer = torch.optim.Adam(net.parameters(), lr=0.1)
