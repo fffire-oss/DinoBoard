@@ -509,7 +509,7 @@ def test_dag_reuse_active():
 如果你的游戏有**有状态 belief tracker**（如 Splendor 的 `seen_cards` 追踪），还需要验证 tracker 不偷看隐藏状态：
 
 ```python
-def test_belief_tracker_no_peek():
+def test_randomize_unseen_does_not_peek():
     """randomize_unseen 不应读真实 deck 内容。
     如果 tracker 不偷看，随机化后的 deck 组成应与真实 deck 不同
     （因为 unseen pool 来自 全卡池-seen，包含已购买但不在 deck 中的牌）。
@@ -522,7 +522,7 @@ def test_belief_tracker_no_peek():
     diffs = sum(1 for td in r["trial_decks"] if sorted(td) != orig)
     assert diffs > 0, "所有 trial 都和真实 deck 一样——tracker 可能在偷看"
 
-def test_belief_tracker_deck_sizes_preserved():
+def test_randomize_unseen_preserves_deck_size():
     """randomize_unseen 必须保持 deck 大小不变（公开信息）。"""
     r = dinoboard_engine.test_belief_tracker(
         GAME_ID, seed=99, plies=15, randomize_trials=10,
@@ -533,6 +533,33 @@ def test_belief_tracker_deck_sizes_preserved():
 ```
 
 **踩坑参考**：KNOWN_ISSUES §BUG-017（belief tracker 偷看牌堆内容）
+
+#### 8f-bis. tracker 已知信息 vs ground truth 一致性（强制）
+
+`test_randomize_unseen_does_not_peek` 只验证 tracker **不偷看**（随机化结果不和真实 deck 一致）。它不验证 tracker **声称的"已知"信息真的对得上**。两个 tracker 用错误的事件应用逻辑可能同时把"对手手牌 = 牧师"理解错（实际是男爵），互相之间一致但都和真相相悖——`test_api_belief_matches_selfplay` 抓不到这种 bug，因为两边都错得一样。
+
+**标准化验收**：每个有 hidden info 的游戏都要在 `tests/test_tracker_consistent_with_truth.py` 加一个 checker 函数，对每个 ply 把 tracker `serialize()` 里的"声称已知"字段和 GT `get_state_dict()` 里的真实字段比对。规则是 **`claim != UNKNOWN_SENTINEL` ⇒ `claim == truth`**；声称"未知"永远 OK，声称"已知 X" 但实际是 Y 必须失败。
+
+```python
+# tests/test_tracker_consistent_with_truth.py 里加：
+def _check_<game>(state: dict, snap: dict, perspective: int) -> None:
+    # 取 tracker 声称的已知信息
+    known = snap.get("<your_known_field>")  # e.g. known_hand, known_role
+    if known is None:
+        return
+    for p, claim in enumerate(known):
+        if claim == 0:                      # UNKNOWN sentinel
+            continue
+        truth = state["players"][p]["<truth_field>"]
+        assert claim == truth, (
+            f"<game>: tracker claims player {p} has {claim} but truth is {truth}")
+
+_CHECKERS["<game>"] = _check_<game>
+```
+
+跑 `pytest tests/test_tracker_consistent_with_truth.py -v -k <game_id>`,5 个 seed 都过。
+
+**为什么这个测试不能省**:tracker 是 AI 决策链路里**最容易悄悄出错**的地方。它不像 do/undo 一致性那样能从结果看出问题——tracker 错了只会让 AI 的局面理解偏移,胜率掉一点,看起来像是模型不够强,排查起来非常痛。这个测试把"tracker 声称的事实和真实事实不符"直接钉死成一个失败,**比任何后期复盘都便宜**。
 
 ### 8g. web.json 配置（如适用）
 

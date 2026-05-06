@@ -10,7 +10,7 @@ This is the structural enforcement of "no info leak through features":
 - Encoder must produce the SAME feature vector for all worlds in the info set
 - Otherwise the network sees different features across sampled worlds at
   the same tree node, and its prior/value estimates become world-specific
-  rather than info-set-specific → classic Method 2b prior pollution
+  rather than info-set-specific → prior pollution under root sampling
 
 Test method: for each hidden-info game, construct two states that differ
 ONLY in opp private fields. Encoder output must be bit-identical.

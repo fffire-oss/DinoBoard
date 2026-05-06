@@ -20,8 +20,7 @@ namespace board_ai::search {
 //     step_count (DAG acyclicity). Different paths that reach the same
 //     (public, acting-player-private, step_count) triple share a node via
 //     a global hash→node_index table — the tree is a DAG, not a pure tree.
-//   - No chance node machinery (NoPeek / afterstate cap / stochastic
-//     detector): physical randomness resolves at root-sampling time.
+//   - No chance node machinery: physical randomness resolves at root-sampling time.
 struct NetMctsConfig {
   int simulations = 200;
   float c_puct = 1.4f;

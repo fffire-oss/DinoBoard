@@ -316,7 +316,7 @@ Phase 6（计划中，未实现）会把 encoder 拆成 `encode_public + encode_
 
 ### 8.3 为什么这点必须守
 
-观察者 MCTS 在一个 observer-keyed 节点上跑 UCB，看到的 prior 来自网络对此节点的一次 eval。若不同采样世界走到该节点 encoder 给不同特征，网络给出的 prior 也不同——UCB 从第一个到达的 sim 的特定世界看问题，是 Method 2b prior 污染的根源。
+观察者 MCTS 在一个 observer-keyed 节点上跑 UCB，看到的 prior 来自网络对此节点的一次 eval。若不同采样世界走到该节点 encoder 给不同特征，网络给出的 prior 也不同——UCB 就会从第一个到达的 sim 所看到的特定世界视角下决策，导致 prior 被污染。
 
 ---
 
@@ -370,10 +370,7 @@ Phase 6（计划中，未实现）会把 encoder 拆成 `encode_public + encode_
 | `value_clip` | leaf value 裁剪范围 | 1.0 |
 | `root_dirichlet_alpha` / `epsilon` | 根探索噪声 | 训练时 0.3 / 0.25，eval 时 0 |
 | `root_belief_tracker` | 非空 → 启用 root 采样 | 由 game bundle 决定 |
-| `root_observer_perspective` | 保留字段（新 keying 用 `current_player()` 直接） | -1 |
 | `tail_solve_enabled` | 启用 alpha-beta 残局求解 | false / true |
-
-`traversal_limiter` / `full_action_space` / NoPeek 相关——都没了。
 
 ---
 

@@ -8,9 +8,6 @@
   },
   "action_space": 32,
   "feature_dim": 57,
-  "random_node_modes": [
-    "nopeek"
-  ],
   "training": {
     "simulations": 200,
     "c_puct": 1.4,

@@ -137,14 +137,14 @@ ActionId select_action_from_visits(
 //      create new node.
 //   4. On reaching an unexpanded (leaf) node, call evaluator.evaluate(
 //      sim_state, current_player, legal_actions) to get priors + values.
-//      Store priors on edges (one per legal action; no full_action_space).
+//      Store priors on edges (one per legal action).
 //   5. Backup leaf_values up the path: node.visit++, edge.visit++ per step.
 //
 // Invariants:
 //   - DAG is acyclic (guaranteed by state.step_count monotonicity in hash).
 //   - Nodes at the same (public, acting-player-private, step) are shared,
 //     giving info-set statistics aggregation across sampled worlds.
-//   - No chance node / NoPeek / perturb_rng machinery.
+//   - No chance node machinery: physical randomness resolves at root sampling.
 ActionId NetMcts::search_root(
     const IGameState& root,
     const IGameRules& rules,

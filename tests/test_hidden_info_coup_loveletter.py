@@ -1,9 +1,12 @@
 """Tests for hidden-information games: Coup and Love Letter.
 
 Verifies that:
-1. Belief tracker randomize_unseen produces valid determinizations
-2. Feature encoder never leaks opponent hidden info (no peeking)
-3. NoPeek traversal limiter fires during MCTS search
+1. Belief tracker `randomize_unseen` produces valid determinizations
+2. Feature encoder never leaks opponent hidden info (perspective-private
+   blocks must be zero / placeholder for non-perspective seats)
+3. ISMCTS does not exploit hidden state (Guard-accuracy canary, originally
+   added to catch BUG-023 — kept as a behavioural regression detector for
+   any future hidden-info leak in the search path)
 4. Selfplay and arena run correctly with hidden info
 """
 import dinoboard_engine
@@ -109,7 +112,7 @@ class TestCoupHiddenInfo:
 
 
 @coup_skip
-class TestCoupEncoderNoPeek:
+class TestCoupEncoderHidesOpponentHand:
     """Verify that the Coup feature encoder never leaks opponent hidden cards.
 
     The encoder has a 'known_hand' block (5 floats per player) that must be
@@ -242,9 +245,9 @@ class TestLoveLetterHiddenInfo:
         assert ep1["winner"] == ep2["winner"]
 
     def test_selfplay_runs_under_ismcts(self):
-        # ISMCTS: no NoPeek / afterstate cap. traversal_stops always 0.
-        # Info-leak invariance separately covered by test_api_mcts_policy_invariance
-        # and TestLoveLetterGuardAccuracy.
+        # Smoke test: selfplay completes under ISMCTS root-sampling. The
+        # info-leak invariance is covered separately by
+        # test_api_mcts_policy_invariance and TestLoveLetterGuardAccuracy.
         ep = dinoboard_engine.run_selfplay_episode(
             game_id="loveletter", seed=42, model_path=get_test_model("loveletter"),
             simulations=50, max_game_plies=30,
@@ -276,7 +279,7 @@ class TestLoveLetterHiddenInfo:
         assert ep["total_plies"] > 0
 
 
-class TestLoveLetterEncoderNoPeek:
+class TestLoveLetterEncoderHidesOpponentHand:
     """Verify that the Love Letter feature encoder doesn't leak opponent hand."""
 
     def test_opponent_hand_features_are_zero_or_placeholder(self):
@@ -298,21 +301,25 @@ class TestLoveLetterEncoderNoPeek:
 
 
 class TestLoveLetterGuardAccuracy:
-    """Regression for BUG-023: Love Letter MCTS was leaking opponent's true
-    hand when Guard correctly guessed → terminal → no draw → nonce unchanged
-    → NoPeek never fired → MCTS saw the Q=1.0 win from the true state.
+    """Hidden-info leak detector for Love Letter MCTS.
 
-    This test plays many games vs. a random opponent and measures the AI's
-    Guard-guess accuracy in positions where the belief tracker has no
-    reveal-based knowledge of the target. Expected behaviour: accuracy is
-    statistically consistent with random guessing over the unknown pool
-    (≈14% for uniform, a bit higher if the tracker uses discard counts to
-    narrow the pool). Under the bug, accuracy exceeded 75%.
+    Plays many games vs. a random opponent and measures the AI's Guard-guess
+    accuracy in positions where the belief tracker has no reveal-based
+    knowledge of the target. Expected behaviour: accuracy is statistically
+    consistent with random guessing over the unknown pool (≈14% for uniform,
+    a bit higher if the tracker narrows via public discard counts).
 
-    The bound is loose on purpose — tracker CAN narrow the pool from the
-    public discard pile, so the true no-cheat rate is somewhat above 1/7.
-    The test catches any egregious leak that pushes accuracy into the
-    40%+ range.
+    Historical context: BUG-023 produced 76% accuracy because the legacy
+    chance-detection layer missed terminal-by-elimination — MCTS evaluated
+    Guard children on the true opp hand. The current ISMCTS architecture
+    (root sampling on every simulation, no chance-detection layer) makes
+    that specific bug structurally impossible, but this test stays as a
+    behavioural canary: any future regression that lets MCTS see the true
+    hand will push the rate well above the bounded-inference baseline.
+
+    The bound is loose on purpose — the tracker CAN narrow the pool from
+    the public discard pile, so the no-cheat rate is somewhat above 1/7.
+    The test catches any egregious leak that pushes accuracy into 40%+.
     """
 
     def test_guard_accuracy_not_better_than_bounded_inference(self):

@@ -240,7 +240,7 @@ py::dict run_selfplay_episode_py(
     double heuristic_guidance_ratio,
     double heuristic_temperature,
     double training_filter_ratio,
-    bool nopeek_enabled,
+    bool ismcts_enabled,
     int trace_perspective) {
   py::gil_scoped_release release;
 
@@ -307,12 +307,12 @@ py::dict run_selfplay_episode_py(
   }
 
   IBeliefTracker* bt = bundle.belief_tracker.get();
-  // nopeek_enabled is the legacy selfplay peek-disable flag. In ISMCTS
-  // the "peek" semantics moves to: when nopeek_enabled is FALSE, skip
-  // root-sampling entirely (MCTS sees truth). Peek is useful as a training-
-  // early-stage enhancement where value head learns from omniscient rollouts.
-  if (!nopeek_enabled) {
-    bt = nullptr;  // let MCTS see truth without root-sampling
+  // When ismcts_enabled is FALSE, skip root-sampling entirely (MCTS sees
+  // truth). Useful in early training so the value head can learn from
+  // omniscient rollouts before switching to ISMCTS for proper hidden-info
+  // play. Only affects selfplay; arena/eval always use ISMCTS.
+  if (!ismcts_enabled) {
+    bt = nullptr;
   }
 
   auto result = runtime::run_selfplay_episode(
@@ -1208,7 +1208,7 @@ PYBIND11_MODULE(dinoboard_engine, m) {
       py::arg("heuristic_guidance_ratio") = 0.0,
       py::arg("heuristic_temperature") = 0.0,
       py::arg("training_filter_ratio") = 1.0,
-      py::arg("nopeek_enabled") = true,
+      py::arg("ismcts_enabled") = true,
       py::arg("trace_perspective") = -1);
 
   m.def("run_arena_match", &run_arena_match_py,

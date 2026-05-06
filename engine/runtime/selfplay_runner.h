@@ -152,7 +152,7 @@ SelfplayEpisodeResult run_selfplay_episode(
     // >= 0 enables recording; -1 disables (default, zero overhead).
     // IMPORTANT: trace_belief_tracker must be a SEPARATE tracker instance
     // dedicated to the trace_perspective — the primary belief_tracker is
-    // re-init'd to current_player each ply (for MCTS NoPeek), which clobbers
+    // re-init'd to current_player each ply for MCTS root sampling, which clobbers
     // any perspective-stable belief. The caller is responsible for creating
     // this second instance via the game's factory.
     int trace_perspective = -1,

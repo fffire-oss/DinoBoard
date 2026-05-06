@@ -1,8 +1,12 @@
-"""Tests for hidden-information games: NoPeek, belief tracking, stochastic detection.
+"""Tests for hidden-information games: belief tracking + selfplay/arena
+integration on Splendor and Azul.
 
-Splendor and Azul both have hidden info (tile bag). The NoPeek system prevents
-MCTS from "peeking" at hidden state by stopping traversal at stochastic
-transitions and using belief-tracker-based determinizations.
+Both games have hidden info (decks / tile bag). ISMCTS handles this via
+root-sampling determinization — every simulation samples a full world from
+the belief, then descends deterministically. These tests verify the
+plumbing works (selfplay completes, samples are valid) and that the
+belief tracker's `randomize_unseen` is sound (doesn't peek, preserves
+public structure, has variance).
 """
 import dinoboard_engine
 import pytest
@@ -11,7 +15,7 @@ from conftest import GAME_CONFIGS, get_test_model
 
 
 # ---------------------------------------------------------------------------
-# Splendor: full NoPeek support (chance sampling enabled)
+# Splendor: hidden-info selfplay/arena smoke tests
 # ---------------------------------------------------------------------------
 
 class TestSplendorHiddenInfo:
@@ -75,7 +79,8 @@ class TestSplendorHiddenInfo:
         assert all(0 <= a < action_space for a in legal)
 
     def test_high_simulation_count_no_crash(self):
-        """High sim count exercises NoPeek chance pool more heavily."""
+        """Higher sim counts exercise root-sampling determinization more
+        heavily (more simulations, more belief samples)."""
         ep = dinoboard_engine.run_selfplay_episode(
             game_id="splendor", seed=42, model_path=get_test_model("splendor"), simulations=100,
             max_game_plies=30,
@@ -210,10 +215,10 @@ class TestSplendorBeliefTracker:
 
 # ---------------------------------------------------------------------------
 # MCTS hidden-info handling — ISMCTS routes belief-tracker games through
-# root sampling; there's no NoPeek / traversal_limiter mechanism. These tests
-# just check that selfplay/arena completes on hidden-info games. The "does
-# MCTS actually hide opponent info" invariant is covered by
-# TestLoveLetterGuardAccuracy in tests/test_hidden_info_coup_loveletter.py.
+# root-sampling determinization. These tests just verify that selfplay /
+# arena completes on hidden-info games. The stronger "MCTS actually hides
+# opponent info" invariant is covered by TestLoveLetterGuardAccuracy in
+# tests/test_hidden_info_coup_loveletter.py.
 # ---------------------------------------------------------------------------
 
 class TestHiddenInfoSelfplay:

@@ -785,7 +785,7 @@ Selfplay 始终使用 latest 模型。Gating 只影响 best 模型的保存。�
 |------|------|--------|------|
 | `peek_steps` | int | 0 | 前 N 个训练步用 peek 模式（跳过 root 采样，MCTS 看真相），之后切回 ISMCTS。0 表示始终 ISMCTS |
 
-Peek 模式下 `nopeek_enabled=False`，selfplay 调 `run_selfplay_episode` 时 belief_tracker 传 `nullptr`——MCTS 不调 `randomize_unseen`，直接在 truth state 上搜索。适合训练早期让 value head 先学到基本策略结构，再切到 ISMCTS 学习在信息不完全下决策。仅影响 selfplay，arena/eval 始终使用 ISMCTS。
+Peek 模式下 `ismcts_enabled=False`，selfplay 调 `run_selfplay_episode` 时 belief_tracker 传 `nullptr`——MCTS 不调 `randomize_unseen`，直接在 truth state 上搜索。适合训练早期让 value head 先学到基本策略结构，再切到 ISMCTS 学习在信息不完全下决策。仅影响 selfplay，arena/eval 始终使用 ISMCTS。
 
 #### Auxiliary Score 参数
 
@@ -1137,7 +1137,7 @@ b.episode_stats_extractor = [](const IGameState&,
 
 物理随机性指翻牌、抽卡、掷骰等改变游戏状态的随机事件。确定性游戏（TicTacToe、Quoridor）不涉及此节。
 
-**ISMCTS 下的处理**：物理随机和信息不对称被**统一**——不再有 chance node 专门机制（NoPeek / traversal_limiter / stochastic_detector 全部删除）。关键点：
+**ISMCTS 下的处理**：物理随机和信息不对称被**统一**——没有 chance node 专门机制。关键点：
 
 - Root 采样通过 `belief_tracker->randomize_unseen(sim_state, rng)` 一次性固定当前 sim 的"全部未来随机"（deck 顺序、未来翻牌结果等）
 - Descent 里 `do_action_fast` 照常从状态中读取随机源（如 `d.deck.top()` 或 `splitmix64(d.draw_nonce)`），每次 sim 拿到的值由 root 采样决定
@@ -1149,7 +1149,6 @@ b.episode_stats_extractor = [](const IGameState&,
 1. 在 `IGameState` 中实现 `rng_nonce()`（默认实现 `return draw_nonce` 等）
 2. `do_action_fast` 里用 `splitmix64(state.draw_nonce)` 或类似 PRNG 驱动随机抽取。保持 state 里的 deck 等随机源字段明确
 3. 实现 `IBeliefTracker::randomize_unseen(state, rng)` —— 把 state 里的隐藏字段（deck 内容 + 对手 hidden）按 belief 一次性采样填入
-4. **不要** 调用任何 `stochastic_detector` 相关 API——这些都已删除
 
 对**对称物理随机但无非对称 hidden info** 的游戏（如 Azul）：仍然要注册 `belief_tracker`，但 `hash_private_fields` 可空。`randomize_unseen` 只洗袋子。
 
