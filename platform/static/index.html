@@ -7,18 +7,33 @@
 <link rel="stylesheet" href="/static/common.css">
 <style>
 .home-stage {
-  padding: 40px 20px;
+  padding: 60px 20px 40px;
+  min-height: 100vh;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
 }
 .home-stage h2 {
-  font-size: 28px;
+  font-size: 32px;
   font-weight: 800;
   color: #0f3554;
   margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
 }
+.dino-logo {
+  width: 56px;
+  height: 56px;
+  display: block;
+}
+.dino-logo .body { fill: #2f9e7e; }
+.dino-logo .belly { fill: #b8e0c2; }
+.dino-logo .spike { fill: #f5c430; }
+.dino-logo .eye { fill: #0f3554; }
+.dino-logo .eye-shine { fill: #ffffff; }
+.dino-logo .mouth { fill: none; stroke: #0f3554; stroke-width: 2; stroke-linecap: round; }
 .home-subtitle {
   color: #64748b;
   margin-bottom: 32px;
@@ -74,19 +89,29 @@
 </style>
 </head>
 <body>
-<main class="layout">
-  <aside class="sidebar">
-    <h1>DinoBoard</h1>
-    <div class="card">
-      <h2>选择游戏</h2>
-      <div class="muted">点击右侧游戏卡片进入对局</div>
-    </div>
-  </aside>
-  <section class="home-stage">
-    <h2>DinoBoard</h2>
-    <div class="home-subtitle">通用桌游 AI 平台</div>
-    <div id="games" class="game-grid"></div>
-  </section>
+<main class="home-stage">
+  <h2>
+    <svg class="dino-logo" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <polygon class="body" points="4,32 22,24 22,40"/>
+      <rect class="body" x="18" y="24" width="28" height="18" rx="4"/>
+      <rect class="body" x="38" y="12" width="20" height="18" rx="6"/>
+      <polygon class="spike" points="44,12 48,5 52,12"/>
+      <polygon class="spike" points="22,24 26,17 30,24"/>
+      <polygon class="spike" points="30,24 34,17 38,24"/>
+      <rect class="body" x="22" y="40" width="6" height="6" rx="2"/>
+      <rect class="body" x="34" y="40" width="6" height="6" rx="2"/>
+      <rect class="body" x="20" y="44" width="10" height="4" rx="2"/>
+      <rect class="body" x="32" y="44" width="10" height="4" rx="2"/>
+      <rect class="body" x="42" y="30" width="3" height="6" rx="1"/>
+      <ellipse class="belly" cx="32" cy="35" rx="10" ry="5"/>
+      <circle class="eye" cx="50" cy="19" r="2.2"/>
+      <circle class="eye-shine" cx="50.8" cy="18.2" r="0.7"/>
+      <path class="mouth" d="M52 24 Q 55 25.5 57 23.5"/>
+    </svg>
+    DinoBoard
+  </h2>
+  <div class="home-subtitle">通用桌游 AI 平台</div>
+  <div id="games" class="game-grid"></div>
 </main>
 
 <script>
