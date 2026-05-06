@@ -130,7 +130,7 @@ Full directory tree at the bottom of this file.
 
 The core is C++; Python is glue. You need:
 
-- **A C++17 compiler** — Mac: `xcode-select --install`; Linux: `apt install build-essential`; Windows: [Visual Studio 2022 Build Tools](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022) (select "Desktop development with C++").
+- **A C++17 compiler** — Mac: `xcode-select --install`; Linux: `apt install build-essential`; Windows: [Visual Studio 2022 Build Tools](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022) (the standalone compiler-only installer, **not the full Visual Studio IDE** — a few hundred MB, no IDE installed). In the installer, tick **"Desktop development with C++"** and click Install.
 - **Python ≥ 3.9** with `pybind11` and `torch` (for training)
 - **ONNX Runtime** — web play, self-play, and evaluation **all load `.onnx` models for the AI to move**; this is required, not optional.
   - **Linux x64**: already bundled at `third_party/onnxruntime-linux-x64-1.17.3/` — `git clone` is enough, no download needed.
@@ -158,7 +158,7 @@ python -c "import dinoboard_engine; print(dinoboard_engine.available_games())"
 
 ### Build (Windows)
 
-Open **"x64 Native Tools Command Prompt for VS 2022"** (so MSVC `cl.exe` is on PATH), then:
+After the Build Tools install finishes, open the Start Menu and search for **"x64 Native Tools Command Prompt for VS 2022"** — it's a regular command prompt that the installer pre-configures with MSVC's `cl.exe` on PATH. Open it, `cd` to the cloned repo, then:
 
 ```bat
 pip install pybind11 torch
@@ -169,6 +169,8 @@ pip install -e .
 REM Verify
 python -c "import dinoboard_engine; print(dinoboard_engine.available_games())"
 ```
+
+> Why this prompt instead of regular `cmd` / PowerShell? MSVC needs a batch of environment variables (`INCLUDE`, `LIB`, `PATH` entries) set before `cl.exe` works. The shortcut runs `vcvars64.bat` for you. Plain `cmd` will fail with "cl is not recognized".
 
 The build copies `onnxruntime.dll` next to the compiled extension so it loads at import time without touching `PATH`.
 

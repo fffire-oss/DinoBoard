@@ -130,7 +130,7 @@ DELETE /ai/sessions/{id}                  → 结束会话
 
 本项目核心是 C++ 引擎,Python 只是胶水。需要:
 
-- **C++17 编译器** — Mac: `xcode-select --install`;Linux: `apt install build-essential`;Windows: [Visual Studio 2022 Build Tools](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022)(安装时勾选"使用 C++ 的桌面开发")。
+- **C++17 编译器** — Mac: `xcode-select --install`;Linux: `apt install build-essential`;Windows: [Visual Studio 2022 Build Tools](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022)(这是单独的命令行编译器安装包,**不是完整 Visual Studio IDE** —— 几百 MB,不会装 IDE 进来)。安装器里勾选 **"使用 C++ 的桌面开发"** 然后点 Install 即可。
 - **Python ≥ 3.9** + `pybind11` + `torch`(训练用)
 - **ONNX Runtime** — Web 对战 / 自我对弈 / 评估**都要加载 `.onnx` 模型让 AI 出棋**,这是刚需不是可选。
   - **Linux x64**:已随仓库自带在 `third_party/onnxruntime-linux-x64-1.17.3/`,`git clone` 就能用,无需下载。
@@ -158,7 +158,7 @@ python -c "import dinoboard_engine; print(dinoboard_engine.available_games())"
 
 ### 构建(Windows)
 
-打开 **"x64 Native Tools Command Prompt for VS 2022"**(确保 MSVC `cl.exe` 在 PATH 上),然后:
+Build Tools 装完后,在开始菜单搜 **"x64 Native Tools Command Prompt for VS 2022"** —— 这是装 Build Tools 时自动创建的快捷方式,本质上就是个普通命令行,只不过预先把 MSVC `cl.exe` 加进了 PATH。打开它,`cd` 到 clone 下来的仓库目录,然后:
 
 ```bat
 pip install pybind11 torch
@@ -169,6 +169,8 @@ pip install -e .
 REM 验证
 python -c "import dinoboard_engine; print(dinoboard_engine.available_games())"
 ```
+
+> 为什么要用这个命令行而不是普通 `cmd` / PowerShell?MSVC 编译时需要一组环境变量(`INCLUDE`、`LIB`、`PATH` 里的工具链路径)预先设好才能找到 `cl.exe`。这个快捷方式背后会先跑 `vcvars64.bat` 帮你配好。直接用普通 `cmd` 会报 "cl 不是内部或外部命令"。
 
 构建会自动把 `onnxruntime.dll` 复制到编译好的扩展旁边,`import` 时直接加载,无需改 `PATH`。
 
