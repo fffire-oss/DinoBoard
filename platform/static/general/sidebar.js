@@ -14,6 +14,22 @@ function saveShowReplayAlways(flag) {
   try { localStorage.setItem(SHOW_REPLAY_KEY, flag ? '1' : '0'); } catch (e) {}
 }
 
+function showWinrateKey(gameId) {
+  return 'dinoboard.showWinrate.' + (gameId || 'default');
+}
+
+function loadShowWinrate(gameId, defaultFlag) {
+  try {
+    const v = localStorage.getItem(showWinrateKey(gameId));
+    if (v === null) return defaultFlag;
+    return v !== '0';
+  } catch (e) { return defaultFlag; }
+}
+
+function saveShowWinrate(gameId, flag) {
+  try { localStorage.setItem(showWinrateKey(gameId), flag ? '1' : '0'); } catch (e) {}
+}
+
 export function createSidebar(sidebarEl, config, callbacks) {
   const difficulties = config.difficulties || ['heuristic', 'casual', 'expert'];
   const defaultDiff = config.defaultDifficulty || 'expert';
@@ -65,6 +81,10 @@ export function createSidebar(sidebarEl, config, callbacks) {
       <label class="side-toggle">
         <input type="checkbox" id="toggle-show-replay">
         <span>对局中显示录像栏</span>
+      </label>
+      <label class="side-toggle">
+        <input type="checkbox" id="toggle-show-winrate">
+        <span>显示胜率预估</span>
       </label>
       <div id="ops-msg" class="muted"></div>
     </div>
@@ -122,11 +142,28 @@ export function createSidebar(sidebarEl, config, callbacks) {
     callbacks.onStart(sideMode, difficulty, numPlayers);
   });
   sidebarEl.querySelector('#btn-undo').addEventListener('click', () => callbacks.onUndo());
-  sidebarEl.querySelector('#btn-force').addEventListener('click', () => callbacks.onForce());
+  // #btn-force may be removed entirely on games that disable the feature
+  // (rebuildForceButtons clears the section when config.disableForce).
+  // Bind it here only for the default 2p layout — multiplayer rebuilds
+  // re-bind from inside rebuildForceButtons.
+  if (!config.disableForce) {
+    sidebarEl.querySelector('#btn-force').addEventListener('click', () => callbacks.onForce());
+  } else {
+    const forceSection = sidebarEl.querySelector('#force-section');
+    if (forceSection) forceSection.innerHTML = '';
+  }
   sidebarEl.querySelector('#btn-hint').addEventListener('click', () => callbacks.onHint());
 
   function rebuildForceButtons(aiPlayers) {
     const section = sidebarEl.querySelector('#force-section');
+    // Per-game opt-out: hidden-info games like Love Letter / Coup can't
+    // expose "play for opponent" — the human doesn't see the opponent's
+    // hand so any move they pick would either reveal hidden info to the
+    // engine on submission or be a guess.
+    if (config.disableForce) {
+      section.innerHTML = '';
+      return;
+    }
     if (!aiPlayers || aiPlayers.length <= 1) {
       section.innerHTML = '<button id="btn-force">替对手落子</button>';
     } else {
@@ -184,6 +221,22 @@ export function createSidebar(sidebarEl, config, callbacks) {
     });
   }
 
+  // Win-rate display toggle. Hidden-info games (loveletter, coup) default
+  // to OFF because the displayed value reads root_values[humanPlayer]
+  // straight from the AI's MCTS root — which was searched from truth
+  // including the human's own dealt hand, so sharp swings would let the
+  // user infer cards. Per-game default comes from config.showWinrateDefault.
+  const showWinrateToggle = sidebarEl.querySelector('#toggle-show-winrate');
+  let showWinrateHandler = null;
+  const winrateDefault = config.showWinrateDefault !== false;
+  if (showWinrateToggle) {
+    showWinrateToggle.checked = loadShowWinrate(config.gameId, winrateDefault);
+    showWinrateToggle.addEventListener('change', () => {
+      saveShowWinrate(config.gameId, showWinrateToggle.checked);
+      if (showWinrateHandler) showWinrateHandler(showWinrateToggle.checked);
+    });
+  }
+
   // Enable / disable the operate-during-human-turn buttons. Called by the
   // app whenever the game state changes — AI thinking, AI's turn, busy,
   // replay mode, terminal — all of these should lock out undo / force /
@@ -211,6 +264,12 @@ export function createSidebar(sidebarEl, config, callbacks) {
       return showReplayToggle ? showReplayToggle.checked : loadShowReplayAlways();
     },
     onShowReplayToggle(fn) { showReplayHandler = fn; },
+    getShowWinrate() {
+      return showWinrateToggle
+        ? showWinrateToggle.checked
+        : loadShowWinrate(config.gameId, winrateDefault);
+    },
+    onShowWinrateToggle(fn) { showWinrateHandler = fn; },
     rebuildForceButtons,
     setHumanCanAct,
   };

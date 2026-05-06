@@ -847,7 +847,7 @@ const stageExtension = {
 createApp({
   gameId: 'coup',
   gameTitle: '政变',
-  gameIntro: '虚张声势、质疑与暗杀 — 影响力为零即淘汰',
+  gameIntro: '点动作面板宣告操作；阻挡/质疑会自动进入对应阶段',
   players: { min: 2, max: 4 },
   renderBoard,
   renderPlayerArea,
@@ -858,6 +858,11 @@ createApp({
   difficulties: ['heuristic', 'casual', 'expert'],
   defaultDifficulty: 'expert',
   extensions: [stageExtension],
+  // Hidden-info game (opponent's influence cards are face-down): can't
+  // play for them, and AI 胜率 reads MCTS root values seeded with the
+  // human's true cards, so its swings would leak the player's roles.
+  disableForce: true,
+  showWinrateDefault: false,
   onActionSubmitted: () => { resetPending(); },
   onGameStart: () => { resetPending(); },
   onUndo: () => { resetPending(); },

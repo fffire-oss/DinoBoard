@@ -812,7 +812,7 @@ const showdownExtension = {
 createApp({
   gameId: 'loveletter',
   gameTitle: '情书',
-  gameIntro: '推理对手手牌，猜测、比较、保护，最后存活或手牌最大者获胜',
+  gameIntro: '点你的手牌或抽到的牌出牌；卫兵/王子/国王等需要先选目标对手再确认',
   players: { min: 2, max: 4 },
   renderBoard,
   renderPlayerArea,
@@ -823,6 +823,12 @@ createApp({
   extensions: [showdownExtension],
   difficulties: ['heuristic', 'casual', 'expert'],
   defaultDifficulty: 'expert',
+  // Hidden-info game: 替对手落子 makes no sense — you don't see opp's
+  // hand. AI 胜率 also leaks: it's computed from MCTS that knows the
+  // human's true hand, so it swings sharply when the human draws a
+  // strong card and lets the user infer it.
+  disableForce: true,
+  showWinrateDefault: false,
   onActionSubmitted: () => { resetPending(); },
   onGameStart: () => { resetPending(); },
   onUndo: () => { resetPending(); },

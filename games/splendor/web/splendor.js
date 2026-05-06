@@ -541,6 +541,10 @@ function renderPlayerArea(container, gameState, ctx) {
         continue;
       }
       if (!item.visible && !isHuman) {
+        // Face-down reserve (drawn from deck) — kept hidden even when
+        // playing for the AI seat via 替对手落子, since we mustn't reveal
+        // its identity. Buy_reserved on a hidden slot is therefore not
+        // exposed; the human can still play other actions for the AI.
         const hidden = document.createElement('div');
         hidden.className = 'reserve-hidden';
         hidden.dataset.reserved = p + '-' + ri;
@@ -549,7 +553,12 @@ function renderPlayerArea(container, gameState, ctx) {
         continue;
       }
       const buyResAid = BUY_RESERVED + ri;
-      const canBuy = isHuman && playing && legalSet.has(buyResAid);
+      // canBuy: own seat normally, OR AI seat during 替对手落子 (force mode
+      // makes ctx.canPlay true while current_player is the AI seat).
+      // The visibility gate above already ensures we never offer a buy
+      // for a face-down reserve.
+      const isActingSeat = playing && p === cp;
+      const canBuy = isActingSeat && legalSet.has(buyResAid);
       const actions = canBuy ? [{ label: '购买保留', onClick: () => ctx.submitAction(buyResAid) }] : [];
       const resCardEl = renderDevCard(item, actions);
       resCardEl.dataset.reserved = p + '-' + ri;

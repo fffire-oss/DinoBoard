@@ -43,6 +43,10 @@ export function createApp(config) {
   sidebar.onShowReplayToggle((flag) => { replay.setAlwaysVisible(flag); });
   replay.setAlwaysVisible(sidebar.getShowReplayAlways());
 
+  // Win-rate visibility — re-render so the pill flips immediately when
+  // the user toggles the checkbox mid-game (no need to wait for next move).
+  sidebar.onShowWinrateToggle(() => { render(); });
+
   modal.onReplay(() => enterReplay());
   modal.onRestart(() => {
     startGame(sidebar.getSideMode(), sidebar.getDifficulty(), sidebar.getNumPlayers());
@@ -167,7 +171,7 @@ export function createApp(config) {
       else if (state.aiPlayers.includes(gs.winner)) resultText = '结果：AI 获胜';
       else resultText = '结果：你赢了！';
       sidebar.setOpsMsg(resultText);
-      infoPanel.setWinrate(state.lastAiWinrate);
+      infoPanel.setWinrate(sidebar.getShowWinrate() ? state.lastAiWinrate : null);
       showGameOverModal();
       return;
     }
@@ -186,7 +190,7 @@ export function createApp(config) {
       infoPanel.setMessage(config.formatOpponentMove(gs.last_action_info, gs.last_action_id));
     }
 
-    infoPanel.setWinrate(state.lastAiWinrate);
+    infoPanel.setWinrate(sidebar.getShowWinrate() ? state.lastAiWinrate : null);
   }
 
   function updateReplayInfo(frame) {
@@ -262,6 +266,13 @@ export function createApp(config) {
     state.busy = false;
     poller.cancel();
 
+    // Reset the info panel up-front so a previous game's "对手动作 / 提示
+    // / 胜率" pills don't bleed into the new game. updateInfoPanel won't
+    // re-clear them later because gameState is non-null after the create
+    // call, so we have to do it here. The gameIntro then becomes the
+    // initial guidance until the opponent's first move arrives.
+    infoPanel.reset();
+
     try {
       const data = await apiPost(API_BASE, {
         game_id: config.gameId,
@@ -281,7 +292,10 @@ export function createApp(config) {
       const diffLabels = { heuristic: '启发式', casual: '体验', expert: '专家' };
       const seatLabel = config.getPlayerSymbol ? config.getPlayerSymbol(humanPlayer) : '玩家' + humanPlayer;
       sidebar.setStartMsg('已开局（' + numPlayers + '人），你是' + seatLabel + '，难度=' + (diffLabels[difficulty] || difficulty));
-      sidebar.setOpsMsg('');
+      // Brief operation hint shown until the opponent makes the first
+      // move — gives a fresh restart some context instead of a blank pill.
+      // Cleared on the first opp action / undo / force.
+      sidebar.setOpsMsg(config.gameIntro || '');
 
       render();
 
@@ -352,7 +366,11 @@ export function createApp(config) {
           infoPanel.setTurn('当前轮到：AI 思考中...');
         },
         onAnalysis(analysis) {
-          if (analysis && state.difficulty === 'expert') {
+          // Drop-score warnings are derived from the same root_values
+          // that drive the win-rate pill — both leak hidden info on
+          // games where the opponent's hand changes the AI's value
+          // estimate sharply. Gate them behind the same toggle.
+          if (analysis && state.difficulty === 'expert' && sidebar.getShowWinrate()) {
             const drop = analysis.drop_score;
             if (drop !== undefined && drop !== null && drop >= 5) {
               const label = drop >= 10 ? '严重失误' : '失误';
@@ -410,6 +428,10 @@ export function createApp(config) {
       state.gameState.last_action_info = result.aiActionInfo;
       state.gameState.last_action_id = result.aiAction;
       if (state.difficulty === 'expert') state.lastAiWinrate = result.humanWinrate;
+      // Clear the start-of-game intro once the opponent has moved —
+      // info panel "对手动作" pill now carries the live message and
+      // the ops-msg slot is free for transient prompts (失误, etc).
+      sidebar.setOpsMsg('');
       render();
 
       if (state.gameState.is_terminal) break;
@@ -493,7 +515,9 @@ export function createApp(config) {
         state.busy = false;
         render();
         const name = config.getPlayerSymbol ? config.getPlayerSymbol(cp) : '玩家' + cp;
-        sidebar.setOpsMsg('请替' + name + '落子');
+        // Brief flow hint — user already clicked the button, so just
+        // tell them what's expected next. (Re-undo cancels.)
+        sidebar.setOpsMsg('替' + name + '落子：直接在棋盘上点击其动作即可，悔棋可取消');
       } else {
         state.busy = false;
         sidebar.setOpsMsg('无法回退到该对手的回合');
