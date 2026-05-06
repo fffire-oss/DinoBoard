@@ -124,21 +124,20 @@
   z-index: 2;
 }
 
-/* Size the wall-pill via percent-of-cell instead of calc(var(--slot) - 8px).
- * On mobile the slot resolves to a fractional value (e.g. 19.7px on a 375px
- * viewport), and CSS Grid floors the actual rendered track while calc()
- * keeps the conceptual value — the resulting 0.x px drift accumulates
- * across 9 cells and visibly offsets the legal-action highlights from the
- * grid lines. Percentages resolve against the rendered containing block,
- * so they stay aligned at every viewport. */
+/* Size the wall-pill in percentages of the parent slot so the shape is
+ * consistent across viewports. Earlier revisions used `height: 8px` fixed,
+ * which on mobile — where a slot is 17-19px instead of 34px — collapsed
+ * the pill's aspect ratio to almost 1:1 (looked like a dot instead of
+ * a long pill). Both axes scale with slot now, so desktop and mobile
+ * render the same proportions. */
 .edge-slot.edge-h::after {
-  width: calc(100% - 8px);
-  height: 8px;
+  width: 85%;
+  height: 30%;
 }
 
 .edge-slot.edge-v::after {
-  width: 8px;
-  height: calc(100% - 8px);
+  width: 30%;
+  height: 85%;
 }
 
 .edge-slot.legal { cursor: pointer; }
