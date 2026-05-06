@@ -19,7 +19,9 @@
    * a parser fallback in some browsers that resolved `--slot` to 0 and
    * collapsed the whole 17×17 grid into a line. Keep `--slot` as a plain
    * `min()` and rely on `%` downstream. */
-  --slot: min(34px, calc((100vh - 120px) / 17), calc((100vw - 360px - 280px) / 17));
+  /* Reserve: sidebar 340 + info-col 340 + board-stage padding (32) +
+   * table-area gap (16) + board-grid padding (28) = 756. */
+  --slot: min(34px, calc((100vh - 120px) / 17), calc((100vw - 756px) / 17));
   padding: 14px;
   border: 1px solid #d1d5db;
   border-radius: 10px;
@@ -208,19 +210,25 @@
  *   <=720px  : sidebar becomes an overlay → reclaim 280px more */
 @media (max-width: 1200px) {
   .quoridor-board-grid {
-    --slot: min(34px, calc((100vh - 120px) / 17), calc((100vw - 280px - 280px - 80px) / 17));
+    /* Sidebar shrinks to 280, info-col stays 340, buffers same as above.
+     * 280 + 340 + 32 + 16 + 28 = 696. */
+    --slot: min(34px, calc((100vh - 120px) / 17), calc((100vw - 696px) / 17));
   }
 }
 
 @media (max-width: 900px) {
   .quoridor-board-grid {
-    --slot: min(34px, calc((100vw - 280px - 60px) / 17));
+    /* info-col stacks below board, no longer eats horizontal space.
+     * Sidebar 280 + stage padding 32 + grid padding 28 = 340. */
+    --slot: min(34px, calc((100vw - 340px) / 17));
   }
 }
 
 @media (max-width: 720px) {
   .quoridor-board-grid {
-    --slot: min(34px, calc((100vw - 40px) / 17));
+    /* Sidebar becomes overlay, full viewport available.
+     * Stage padding 32 + grid padding 16 (reduced) + 4 slack = 52. */
+    --slot: min(34px, calc((100vw - 52px) / 17));
     padding: 8px;
   }
 }
