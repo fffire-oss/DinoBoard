@@ -250,25 +250,82 @@ data-deck="1"              牌堆（tier）
 - 9 个 cell 一路累计，最右边的 highlight pill 看起来跟棋盘线明显错开
 - 桌面端 `--slot` 取到 34px 整数，没 floor 误差，所以你本机上完全看不出来
 
-**正确做法（一劳永逸版）**：在源头就把派生 viewport 的 CSS 变量用 `floor()` 取整，让 grid 渲染像素和变量值保持一致，下游所有 calc 自然对齐。
+### ❌ 不要用 CSS `floor()` + 重声明 fallback
+
+曾经尝试过：
 
 ```css
-/* 兼容老浏览器：先写不带 floor 的版本作为 fallback；
- * 现代浏览器（Safari 16+/Chrome 111+）会用第二行覆盖。
- * 不识别 floor() 的引擎会丢弃第二行，cascade 自动降级。 */
+/* 看起来很聪明，但不可靠 */
 --slot: min(34px, calc((100vw - 40px) / 17));
 --slot: floor(min(34px, calc((100vw - 40px) / 17)));
 ```
 
-`floor()` 是 CSS Values 4 加进来的函数，主流浏览器 2023 年起都支持。强制取整后 `var(--slot)` 永远是整数像素，`calc(var(--slot) * 3 - 8px)` 就不会再和 grid track 错开。
+想法是"不认 `floor()` 的浏览器会丢弃第二行，fallback 到第一行"。**但 CSS 自定义属性（`--x: ...`）的值里可以包含任何 token，解析时不验证函数名，第二行永远覆盖第一行**。某些手机浏览器支持 `floor()` 语法但在 `floor(min(...))` 嵌套下算出 0 或 NaN，结果 `repeat(17, 0)` 把整个棋盘挤成一条线。实测翻车，见 [KNOWN_ISSUES BUG-027](KNOWN_ISSUES.md#bug-027)。
 
-**双保险（任何场景都建议加）**：
+**正确做法（从最可靠到最兜底）**：
 
-- **跨单格的子元素用百分比**，让浏览器用真实渲染宽度算：`width: calc(100% - 8px)` 而不是 `calc(var(--slot) - 8px)`
-- **跨多格的子元素**：伪元素的 containing block 是单个 cell，但**百分比 > 100% 仍然是相对父元素的渲染宽度** — 直接用 `calc(300% - 8px)` 跨三格，比 `calc(var(--slot) * 3 - 8px)` 稳得多。仅当确实需要跨真实 grid track 时（`grid-column: span N`），才用 grid 自己的跨格机制
-- **`pawn` 这种用 `calc(var(--slot) * 0.82)` 算居中的尺寸没问题**（自己内部 floor 一下就好），但**绝对位置/边距/对齐尺寸**优先用百分比
+1. **优先用百分比** —— 子元素尺寸让浏览器按父元素的**渲染**宽度算，完全绕开 `var(--slot)` 可能的漂移：
+   - 跨单格：`width: calc(100% - 8px)` 而不是 `calc(var(--slot) - 8px)`
+   - 跨多格（绝对定位伪元素）：`width: calc(300% - 8px)` 跨三格，父元素渲染宽度 × 3，浏览器保证对齐。仅当必须跨真实 grid track 时（`grid-column: span N`），才用 grid 自己的跨格机制
 
-**判断规则**：CSS 变量里只要出现 `vw / vh / 100% / fr` 派生量，要么在定义处用 `floor()` 取整（推荐，一劳永逸），要么在下游用 `100% - Npx` / `300% - Npx` 替代 `calc(var(--x) * N - Npx)`。两层保险叠加最稳。
+2. **JS 回写整数 `--slot`**（Quoridor 的方案） —— 在 render 之后测量真实 cell 宽度，floor 到整数再覆写：
+
+   ```js
+   function alignSlotToRenderedTrack(boardEl) {
+     const firstCell = boardEl.querySelector('.board-cell');
+     boardEl.style.removeProperty('--slot');   // 让 CSS-derived 值重算
+     boardEl.offsetWidth;                       // 强制 reflow
+     const px = Math.floor(firstCell.getBoundingClientRect().width);
+     boardEl.style.setProperty('--slot', px + 'px');
+   }
+   ```
+
+   render 完 + `window.addEventListener('resize', ...)` 都调用一次。这样 `var(--slot) * N` 和 grid track 严格一致。
+
+3. **`@supports` + `floor()`**（如果确实要在 CSS 里取整）—— 用 feature query 守卫，不要依赖自定义属性的 cascade fallback：
+
+   ```css
+   @supports (width: floor(1px, 1px)) {
+     .board-grid { --slot: floor(min(34px, calc((100vw - 40px) / 17)), 1px); }
+   }
+   ```
+
+**判断规则**：CSS 变量里只要出现 `vw / vh / 100% / fr` 派生量，优先用**百分比下游**或 **JS 测量回写**，不要靠 CSS 自定义属性的 cascade fallback 降级 `floor()`。
+
+---
+
+## 4.6 Interactive 元素默认用 `<div role="button">`，不要用 `<button>`
+
+**踩过的坑（Quoridor 手机端，同一 bug 的另一面）**：棋盘每个格子渲染成 `<button class="board-cell">`，子元素（pawn、legal 高亮圆点）在手机上看着比格子几何中心**下移几像素**。桌面端正常。
+
+根本原因：**`<button>` 元素在某些 Chromium webview（尤其安卓系国产浏览器）里有一个 UA 烘焙的 baseline 偏移**，CSS 重置（`line-height: 1`、`font: inherit`、`-webkit-appearance: none`、`padding: 0`、`border: none`、`margin: 0`）**都消除不掉**。后果：
+
+- pawn 的 `display: flex; align-items: center` 居中在 button 的"内容区"，但内容区本身被 UA 向下挪了几像素
+- legal 圆点无论用 `position: absolute; top: 50%`、flex item、`::after`、还是 `background-image: radial-gradient(...) center` 都偏下 —— 因为 button 的 padding box 本身就不在格子几何中心
+
+### ✅ 默认用 `<div role="button" tabindex="-1">`
+
+```js
+// ❌ 不要
+const cell = document.createElement('button');
+cell.type = 'button';
+cell.className = 'board-cell';
+
+// ✅ 优先这样
+const cell = document.createElement('div');
+cell.setAttribute('role', 'button');
+cell.setAttribute('tabindex', '-1');
+cell.className = 'board-cell';
+```
+
+`<div>` 没有 UA baseline 偏移，所有子元素落在真正的几何中心。`role="button"` 保留无障碍语义，`tabindex` 让键盘可聚焦。点击事件该怎么绑怎么绑。
+
+### 什么时候必须用 `<button>`
+
+- `<form>` 里的 submit/reset 按钮（需要 native 表单语义）
+- 需要默认激活 Enter/Space 键触发的独立按钮（`<div>` 得手动绑 keydown）
+
+**对棋盘/色块/坐标点这种"几何对齐很重要的格子"，永远默认 `<div role="button">`**。`<button>` 的 UA 烘焙样式在某些 webview 上是 CSS 打不赢的。
 
 ---
 
@@ -334,3 +391,4 @@ createApp({
 - [ ] 关键数字字号 ≥ 14px
 - [ ] 可点击元素 ≥ 36×36px
 - [ ] **手机实测过**——viewport 派生的 CSS 变量在小屏幕上可能是分数像素，桌面端 32–40px 的整数值不会暴露子像素 bug（§4.5）
+- [ ] 可点击格子/色块用 `<div role="button">`，不是 `<button>`——`<button>` 的 UA baseline 偏移在安卓手机上会把所有子元素视觉下移几像素（§4.6）

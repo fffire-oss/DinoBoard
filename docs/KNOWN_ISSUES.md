@@ -38,6 +38,7 @@
 - [BUG-024] GameSession MCTS 搜索在真实状态上跑，应隔离为 AI view
 - [BUG-025] pipeline.py `nopeek_enabled` off-by-one：peek_steps=0 被错误解读为"第 0 步 peek"
 - [BUG-026] ISMCTS DAG hash collision → MCTS 选中非法 action 崩溃
+- [BUG-027] Quoridor 手机浏览器 legal 高亮下移 —— `<button>` 的 UA baseline 偏移
 
 ### 游戏层 Issues（具体游戏的规则 / 编码器 / tracker）
 
@@ -1153,6 +1154,130 @@ if (!rules.validate_action(*sim_state, chosen_action)) {
 
 - `tests/framework/test_dag_hash_collision.py`：构造已知碰撞的状态对（如果能找到）断言 fallback 路径触发且 MCTS 正常完成
 - Hasher 升级到 128-bit 或更强混合
+
+---
+
+## [BUG-027] Quoridor 手机浏览器 legal 高亮下移 —— `<button>` 的 UA baseline 偏移
+
+**分类**：Web 前端
+**状态**：已修复
+**文件**：`games/quoridor/web/quoridor.js`、`games/quoridor/web/styles.v2.css`、`platform/app.py`
+**严重程度**：中 — 手机访问者感知 legal 走子高亮偏离格子中心，影响可玩性
+
+### 问题描述
+
+手机浏览器（以及安卓 Chromium webview 的"请求桌面版"模式）访问 Quoridor，legal 走子高亮的小圆点整体比格子中心下移几个像素，视觉上像"贴着 cell 底边"。桌面浏览器正常。
+
+### 调试弯路
+
+这个 bug 吃了很多调试时间，走了好几条死路，值得完整记录：
+
+**弯路 1：`floor()` + 重声明 fallback 误以为会降级，结果把整个棋盘压成一条线**
+
+最早怀疑是 CSS Grid 的 subpixel 漂移（`--slot = (100vw - X) / 17` 在手机上是 19.7px 之类的分数，grid track 被 floor 到 19，但 `var(--slot) * N` 仍然按 19.7 算，累积偏移）。写了：
+
+```css
+--slot: min(34px, calc((100vh - 120px) / 17), calc(...));
+--slot: floor(min(34px, calc((100vh - 120px) / 17), calc(...)));
+```
+
+以为"浏览器不认 `floor()` 就 fallback 到前一行"。**但 CSS 自定义属性的 fallback 不是这么工作的** —— 自定义属性值里可以包含任何 token，解析时不验证函数名，`--slot: floor(...)` 总是作为合法声明覆盖前一行。某些手机浏览器支持 `floor()` 语法但在 `floor(min(...))` 这种嵌套下算出 0，于是 `repeat(17, 0)` 让棋盘直接变成一条线。
+
+**教训**：自定义属性 (`--x: ...`) 不做值验证，标准的"声明两次，浏览器挑能解析的那条"fallback 技巧对它**无效**。
+
+**弯路 2：把 grid tracks 换成 `1fr` + `aspect-ratio: 1/1`**
+
+第二轮假设：既然 `var(--slot)` 被独立 floor 和 `calc(var(--slot) * N)` 对不齐，干脆让 grid template 用 `1fr` 平分总宽，总宽用 `calc(var(--slot) * 17 + 28px)` 锁定，`aspect-ratio: 1/1` 保证正方形。
+
+```css
+grid-template-columns: repeat(17, 1fr);
+grid-template-rows: repeat(17, 1fr);
+width: min(100%, calc(var(--slot) * 17 + 28px));
+aspect-ratio: 1 / 1;
+```
+
+这在桌面上看着 OK，但手机浏览器上 `aspect-ratio` 的支持在某些 webview 里有 bug —— 结果**只渲染了 8 行的高度，剩下 9 行溢出到棋盘外**，对手棋子从白色棋盘里面"掉"到页面背景下面。
+
+**教训**：`aspect-ratio` 虽然 W3C 标准支持广，但在手机浏览器（尤其中国系 webview）的实现有坑。任何依赖它的布局必须在实机上测。
+
+**弯路 3：`--slot` 预留宽度算错，棋盘压到 info-panel 上**
+
+回滚到简单的 `repeat(17, var(--slot))` + `width: max-content` 之后，发现桌面模式下（viewport ~980px）棋盘右侧压住了 info-panel。原因：`--slot` 公式假设 `info-col = 280px`，但 `layout.css` 里其实已经是 `340px`，少减了 60px。**这条是**真实 bug，改成：
+
+```css
+/* 1200px 以下：sidebar 280 + info-col 340 + stage padding 32 + gap 16
+ * + grid padding 28 = 696 */
+--slot: min(34px, calc((100vh - 120px) / 17), calc((100vw - 696px) / 17));
+```
+
+并在每个 breakpoint 里写出显式加法，下次 layout 改动时数值对不上一眼可见。
+
+**弯路 4：JS 测量 `--slot` 写回整数像素**
+
+即使布局宽度算对了，手机上 legal 圆点还是偏。加了 `alignSlotToRenderedTrack(boardEl)` 在 render 后测量实际 cell 宽度、floor 回整数覆写 `--slot`。这个 fix 本身**原理正确**（`var(--slot) * N` 与 grid tracks 严格对齐），但对这个具体 bug **没效果** —— 因为 bug 的根因不是 subpixel 漂移。保留下来作为未来防御。
+
+**弯路 5：把 legal 圆点从 `::after + position: absolute; top: 50%` 改成 flex item，再改成 `radial-gradient` background**
+
+以为是 `<button>.board-cell` 的 flex 居中或 absolute 定位受 button UA line-height 影响。先试 flex 居中（`::after { display: block; flex: 0 0 auto }`），没用。又试 `background-image: radial-gradient(circle, ...) center center`，按理说 background 是按 padding box 画的，不经过任何 child box，该居中。**还是偏**。
+
+**根因：`<button>` 元素本身的 UA baseline 基线偏移**
+
+这时才意识到：即使 padding、border、margin、line-height、font、appearance 全部 reset 成 0 / inherit / none，安卓某些 Chromium webview 给 `<button>` 烘焙了一个 baseline 调整，让 button 的**内在高度略大于指定值或内部有隐含的上 padding**，把它整个推下去几个像素。
+
+无论你把**什么**东西放在 button 里或者画在 button background 上，都会被这个偏移一起带下去。background-position: center 没问题，问题是"center 相对于被挤扁的 padding box"本身就已经不在格子几何中心了。
+
+### 修复
+
+把所有 `.board-cell` 和 `.edge-slot` 从 `<button>` 换成 `<div role="button" tabindex="-1">`：
+
+```js
+// 之前
+const cell = document.createElement('button');
+cell.type = 'button';
+cell.className = 'board-cell';
+
+// 之后
+const cell = document.createElement('div');
+cell.setAttribute('role', 'button');
+cell.setAttribute('tabindex', '-1');
+cell.className = 'board-cell';
+```
+
+`<div>` 没有 UA baseline 偏移，所有子元素（pawn、legal 圆点）落在真正的几何中心。点击事件和无障碍语义靠 `role="button"` 保留。
+
+### 顺带修的：**Cache busting**
+
+调试期间发现服务器端代码已经更新但手机上还显示旧版，即使手动清理缓存、换浏览器都没用 —— 手机 ISP / 系统 webview 层的缓存比桌面粗暴得多，即便服务器返回 `Cache-Control: no-cache, no-store` 也会被忽略。
+
+在 `platform/app.py` 里加了**自动 cache-busting**：serve `/games/<game>/` 时动态改写 index.html，把里面 `href="styles.css"` 和 `src="quoridor.js"` 改成 `href="styles.css?v=<mtime>"`，每次文件被改 mtime 就变，URL 就变，任何缓存层都找不到旧条目必然 miss：
+
+```python
+_ASSET_REF_RE = re.compile(
+    r'(?P<attr>href|src)="(?P<url>[^"]+\.(?:css|js))"'
+)
+
+def _rewrite_asset_refs(html: str, web_dir: Path) -> str:
+    def repl(m):
+        url = m.group("url")
+        if "?" in url or "://" in url or url.startswith("/"):
+            return m.group(0)
+        asset = web_dir / url
+        if not asset.exists():
+            return m.group(0)
+        mtime = int(asset.stat().st_mtime)
+        return f'{m.group("attr")}="{url}?v={mtime}"'
+    return _ASSET_REF_RE.sub(repl, html)
+```
+
+注意注册自定义 handler **必须在** `StaticFiles` mount 之前，否则 mount 会 shadow 掉根路径的 GET。
+
+### 教训
+
+- **`<button>` 在 Web UI 组件中不是自由替换 `<div>` 的选择**。在对几何对齐要求苛刻的场景（棋盘格子、色块、坐标点），UA 给 button 烘焙的 baseline 偏移是 CSS 重置不掉的。默认用 `<div role="button">`，除非需要 native 表单语义。
+- **CSS 自定义属性的 fallback 需要 `@supports`**，不能靠"声明两行"。`--x: floor(...)` 不会因为浏览器不认 `floor()` 而被跳过。
+- **`aspect-ratio` 在某些手机 webview 里有 bug**，需要实机验证，不能假设"W3C 标准 + caniuse 全绿就能用"。
+- **中国系手机浏览器的缓存比 `Cache-Control` 更顽固**，走纯 header 方案不可靠，必须 URL 层 cache-busting（文件名或 query）才能突破。
+- **调试弯路值得完整记录**。这个 bug 改了 8 版 CSS、2 版 JS，其中 5 版都是错的方向。没有 devlog，下次遇到类似症状又要走一遍。
 
 ---
 
