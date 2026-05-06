@@ -1631,6 +1631,9 @@ games/<game>/web/
 | `formatSuggestedMove` | `(actionInfo, actionId) -> string` | 否 | 格式化 AI 提示推荐动作的文字描述 |
 | `getPlayerSymbol` | `(aiPlayer) -> string` | 否 | 返回玩家身份描述（默认"先手"/"后手"） |
 | `extensions` | `(gameState) -> [{label, value}]` | 否 | 信息栏扩展内容（如"牌堆剩余"） |
+| `gameIntro` | string | 否 | 开局后写入侧栏 ops-msg 的简短操作说明，AI 第一次落子时自动清空，后续让位给"已悔棋"/掉分提示等瞬态信息 |
+| `disableForce` | bool | 否 | 默认 false。设 true 时禁用"替对手落子"——侧栏不渲染按钮，pipeline 也不会进入 forceMode。隐藏信息游戏必须开启，见下文 §13.5.1 |
+| `showWinrateDefault` | bool | 否 | "显示胜率预估"复选框的默认值（可被 localStorage 覆盖）。默认 true（完全信息游戏开启）；隐藏信息游戏必须显式置为 false，见下文 §13.5.1 |
 | `onGameStart` | `() -> void` | 否 | 开局回调（可用于清理 UI 状态） |
 | `onActionSubmitted` | `() -> void` | 否 | 玩家提交动作后回调 |
 | `onUndo` | `() -> void` | 否 | 悔棋后回调 |
@@ -1686,6 +1689,22 @@ createApp({
 });
 ```
 
+#### 13.5.1 隐藏信息游戏的两个必备开关
+
+如果游戏存在对人类玩家不可见的对手私密状态（手牌、身份牌等），必须在 `createApp({...})` 同时设置：
+
+```js
+disableForce: true,
+showWinrateDefault: false,
+```
+
+两者都是为了**避免 Web 前端从 AI 决策中泄漏隐藏信息回给玩家**：
+
+- **替对手落子（`disableForce`）**：force 模式让人类替 AI 走一步，但人类看不到对手手牌，任意动作都是猜测——更糟的是提交后引擎会按真实手牌检查合法性，等于把"哪些动作合法"反馈给玩家。等价于让玩家看牌。所以 Love Letter / Coup 这类全靠手牌的游戏直接关闭这个功能。
+- **胜率预估（`showWinrateDefault`）**：信息栏胜率读的是 MCTS 根节点 `root_values[humanPlayer]`，搜索从**真实状态**（含人类已知的自己手牌 + 对手隐藏手牌）出发，胜率会随对手实际拿到的牌剧烈摆动；玩家逆向就能推出对手的牌。"掉分分析"也来自同一份 root values，所以由同一个开关同时管控（同时不显示"失误/严重失误"标记）。隐藏信息游戏默认关闭，玩家想看可在侧栏「高级功能 → 显示胜率预估」自行开启。
+
+部分隐藏的游戏（Splendor 牌堆暗保留 vs 桌面明保留）可以**只屏蔽暗的部分**，不需要整体 `disableForce`——这种粒度由游戏前端在 `renderPlayerArea` 中按 `item.visible` 自行决定哪些动作在 force 模式下点不了即可，参考 `games/splendor/web/splendor.js`。
+
 ### 13.6 参考实现
 
 - **简单参考**：`games/tictactoe/web/`（9 格棋盘，最简交互）
@@ -1738,8 +1757,12 @@ general 层统一实现以下操作，游戏前端**不需要额外代码**：
 | 操作 | API | 说明 |
 |------|-----|------|
 | **悔棋** | `POST /step-back` | 回到人类上一串连续行动的起点。循环调用 step-back，跳过 AI 回应和人类的连续回合（通过 `last_actor` 判断）。Splendor 拿币→退币退到拿币处；Azul 跨轮连续行动退到该串的第一步。本质上不区分子动作和连续回合，统一按 `last_actor` 处理 |
-| **替对手落子** | `ctx.state.forceMode` | 回退到目标 AI 玩家的一串连续行动起点，由人类替其选动作。同样通过 `last_actor` 跳过连续回合。多人游戏侧边栏有每个 AI 的独立按钮，可指定替哪个 AI 落子 |
+| **替对手落子** | `ctx.state.forceMode` | 回退到目标 AI 玩家的一串连续行动起点，由人类替其选动作。同样通过 `last_actor` 跳过连续回合。多人游戏侧边栏有每个 AI 的独立按钮，可指定替哪个 AI 落子。**`config.disableForce: true` 时该按钮整组不渲染**，用于隐藏信息游戏（见 §13.5.1） |
 | **智能提示** | `POST /ai-hint` | AI 推荐最佳动作和胜率，不落子。`formatSuggestedMove()` 格式化显示 |
+| **显示胜率预估** | 侧栏勾选 | 控制信息栏胜率 pill 与"失误/严重失误"标记是否显示。状态写入 `localStorage['dinoboard.showWinrate.<gameId>']`，默认值由 `config.showWinrateDefault` 决定（完全信息默认 true，隐藏信息必须 false） |
+| **对局中显示录像栏** | 侧栏勾选 | 状态写入 `localStorage['dinoboard.showReplayPanelAlways']`，全游戏共享 |
+
+**侧栏 ops-msg 的瞬态语义**：开局时写入 `config.gameIntro`（操作提示）；AI 第一次落子时自动清空；悔棋时显示"已悔棋"；点击"替对手落子"时显示该流程的简短说明；后续掉分提示等覆盖写入。新开局时配合 `infoPanel.reset()` 一并清掉上一局残留 pill。
 
 ### 14.3 AI Pipeline 与动作分析
 
