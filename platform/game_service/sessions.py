@@ -134,13 +134,19 @@ def create_session(
         raise ValueError(f"unknown difficulty {difficulty!r}, expected one of {list(DIFFICULTY_PRESETS)}")
     preset = DIFFICULTY_PRESETS[difficulty]
 
+    if game_id not in GAME_CONFIGS:
+        raise ValueError(f"unknown game_id {game_id!r}, not found in GAME_CONFIGS")
+
     actual_id = game_id
     if num_players != 2:
         candidate = f"{game_id}_{num_players}p"
         if candidate in engine.available_games():
             actual_id = candidate
-        elif game_id not in GAME_CONFIGS:
-            actual_id = candidate
+        else:
+            raise ValueError(
+                f"requested {num_players}p variant for {game_id!r}, but registered game "
+                f"{candidate!r} is not available"
+            )
 
     model_path = ""
     if preset["use_model"]:
@@ -156,13 +162,15 @@ def create_session(
 
     gs = engine.GameSession(actual_id, seed, model_path, False)
 
-    if game_id not in GAME_CONFIGS:
-        raise ValueError(f"unknown game_id {game_id!r}, not found in GAME_CONFIGS")
-
     web_cfg = WEB_CONFIGS.get(game_id, {})
     ai_use_filter = bool(web_cfg.get("ai_use_action_filter", False))
 
     actual_num_players = gs.num_players
+    if actual_num_players != num_players:
+        raise ValueError(
+            f"requested {num_players} players for {game_id!r}, but {actual_id!r} "
+            f"created a {actual_num_players}p session"
+        )
     ai_players = [p for p in range(actual_num_players) if p != human_player]
 
     diff_overrides = web_cfg.get("difficulty_overrides", {}).get(difficulty, {})

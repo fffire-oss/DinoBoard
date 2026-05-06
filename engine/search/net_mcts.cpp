@@ -7,7 +7,6 @@
 #include <random>
 #include <stdexcept>
 #include <unordered_map>
-#include <unordered_set>
 
 namespace board_ai::search {
 
@@ -73,6 +72,25 @@ static void apply_root_dirichlet_noise(Node& root, float alpha, float epsilon, s
   }
 }
 
+static void validate_leaf_values(
+    const std::vector<float>& values,
+    int num_players,
+    const char* context) {
+  if (static_cast<int>(values.size()) < num_players) {
+    throw std::runtime_error(
+        std::string("MCTS: ") + context + " returned " +
+        std::to_string(values.size()) + " values for " +
+        std::to_string(num_players) + " players");
+  }
+  for (int p = 0; p < num_players; ++p) {
+    if (!std::isfinite(values[static_cast<size_t>(p)])) {
+      throw std::runtime_error(
+          std::string("MCTS: ") + context +
+          " returned non-finite value for player " + std::to_string(p));
+    }
+  }
+}
+
 }  // namespace
 
 NetMcts::NetMcts(NetMctsConfig cfg) : cfg_(cfg) {}
@@ -83,12 +101,26 @@ ActionId select_action_from_visits(
     double temperature,
     std::uint64_t rng_seed,
     ActionId fallback_action) {
-  if (actions.empty() || actions.size() != visits.size()) return fallback_action;
+  (void)fallback_action;
+  if (actions.empty()) {
+    throw std::invalid_argument("select_action_from_visits: actions is empty");
+  }
+  if (actions.size() != visits.size()) {
+    throw std::invalid_argument(
+        "select_action_from_visits: actions/visits size mismatch (" +
+        std::to_string(actions.size()) + " vs " +
+        std::to_string(visits.size()) + ")");
+  }
   if (temperature <= 1e-6) {
     int best_visit = std::numeric_limits<int>::min();
     std::vector<size_t> best_indices;
     best_indices.reserve(actions.size());
     for (size_t i = 0; i < visits.size(); ++i) {
+      if (visits[i] < 0) {
+        throw std::invalid_argument(
+            "select_action_from_visits: negative visit count for action " +
+            std::to_string(actions[i]));
+      }
       if (visits[i] > best_visit) {
         best_visit = visits[i];
         best_indices.clear();
@@ -97,7 +129,9 @@ ActionId select_action_from_visits(
         best_indices.push_back(i);
       }
     }
-    if (best_indices.empty()) return fallback_action;
+    if (best_indices.empty() || best_visit <= 0) {
+      throw std::runtime_error("select_action_from_visits: no visited action to select");
+    }
     if (best_indices.size() == 1) return actions[best_indices.front()];
     SplitMix64Engine rng(rng_seed);
     std::uniform_int_distribution<size_t> pick(0, best_indices.size() - 1);
@@ -108,12 +142,24 @@ ActionId select_action_from_visits(
   std::vector<double> weights(actions.size(), 0.0);
   double sum_w = 0.0;
   for (size_t i = 0; i < visits.size(); ++i) {
-    const double base = static_cast<double>(std::max(0, visits[i]));
+    if (visits[i] < 0) {
+      throw std::invalid_argument(
+          "select_action_from_visits: negative visit count for action " +
+          std::to_string(actions[i]));
+    }
+    const double base = static_cast<double>(visits[i]);
     const double w = (base > 0.0) ? std::pow(base, inv_t) : 0.0;
-    weights[i] = std::isfinite(w) ? w : 0.0;
+    if (!std::isfinite(w)) {
+      throw std::runtime_error(
+          "select_action_from_visits: non-finite sampling weight for action " +
+          std::to_string(actions[i]));
+    }
+    weights[i] = w;
     sum_w += weights[i];
   }
-  if (sum_w <= 1e-12) return fallback_action;
+  if (!std::isfinite(sum_w) || sum_w <= 1e-12) {
+    throw std::runtime_error("select_action_from_visits: all visit sampling weights are zero");
+  }
 
   SplitMix64Engine rng(rng_seed);
   std::discrete_distribution<size_t> dist(weights.begin(), weights.end());
@@ -167,7 +213,8 @@ ActionId NetMcts::search_root(
       stats->tail_solve_completed = !ts.budget_exceeded;
       stats->tail_solve_elapsed_ms = ts.elapsed_ms;
     }
-    if (ts.outcome == TailSolveOutcome::kProvenWin && ts.best_action >= 0) {
+    if (ts.outcome == TailSolveOutcome::kProvenWin && ts.value >= 1.0f &&
+        ts.best_action >= 0) {
       if (stats) {
         stats->tail_solved = true;
         stats->tail_solve_outcome = ts.outcome;
@@ -210,6 +257,10 @@ ActionId NetMcts::search_root(
   auto expand_node = [&](Node& node, const IGameState& state) -> std::vector<float> {
     const auto legal = rules.legal_actions(state);
     if (legal.empty()) {
+      if (!state.is_terminal()) {
+        throw std::runtime_error(
+            "MCTS: legal_actions returned empty for non-terminal state");
+      }
       node.expanded = true;
       node.edges.clear();
       return value_model.terminal_values(state);
@@ -227,12 +278,25 @@ ActionId NetMcts::search_root(
     }
 
     float sum = 0.0f;
-    for (float p : priors) sum += std::max(0.0f, p);
-    if (sum <= 1e-8f) {
-      const float uniform = 1.0f / static_cast<float>(legal.size());
-      priors.assign(legal.size(), uniform);
-    } else {
-      for (float& p : priors) p = std::max(0.0f, p) / sum;
+    for (size_t i = 0; i < priors.size(); ++i) {
+      const float p = priors[i];
+      if (!std::isfinite(p)) {
+        throw std::runtime_error(
+            "MCTS: evaluator returned non-finite prior for action " +
+            std::to_string(legal[i]));
+      }
+      if (p < 0.0f) {
+        throw std::runtime_error(
+            "MCTS: evaluator returned negative prior for action " +
+            std::to_string(legal[i]));
+      }
+      sum += p;
+    }
+    if (!std::isfinite(sum) || sum <= 1e-8f) {
+      throw std::runtime_error("MCTS: evaluator returned zero prior mass over legal actions");
+    }
+    for (float& p : priors) {
+      p /= sum;
     }
 
     node.edges.clear();
@@ -307,8 +371,8 @@ ActionId NetMcts::search_root(
         break;
       }
       if (nodes[cur_idx].edges.empty()) {
-        leaf_values = value_model.terminal_values(*sim_state);
-        break;
+        throw std::runtime_error(
+            "MCTS: expanded non-terminal node has no legal edges");
       }
 
       // UCT2 edge selection. sqrt() argument is the visit count of the edge
@@ -332,50 +396,21 @@ ActionId NetMcts::search_root(
         }
       }
       if (best_edge < 0) {
-        leaf_values = value_model.terminal_values(*sim_state);
-        break;
+        throw std::runtime_error("MCTS: failed to select an edge from expanded node");
       }
 
       const ActionId chosen_action = nodes[cur_idx].edges[best_edge].action;
-      // Defensive legality check. In DAG MCTS, two simulations can reach the
-      // same (hash) DAG node with technically-different states if the hash
-      // function misses a field that affects legal_actions (a hash-scope
-      // incompleteness bug). Rather than crash, we re-filter this node's
-      // edges against the current state's actual legal set and re-pick from
-      // those. This is a workaround — the real fix is to make hash_public +
-      // hash_private(cur_player) fully determine legal_actions for every
-      // game. For games where it does (which SHOULD be every game), this
-      // fallback never triggers.
+      // Hash scope must fully determine the legal action set at an expanded
+      // DAG node. If a reused node offers an action illegal in the current
+      // sampled world, the game hash/encoder scope is broken and must fail
+      // loudly rather than silently truncating the simulation.
       if (!rules.validate_action(*sim_state, chosen_action)) {
         auto current_legal = rules.legal_actions(*sim_state);
-        std::unordered_set<ActionId> legal_set(current_legal.begin(),
-                                               current_legal.end());
-        // Re-select the best edge restricted to currently-legal actions.
-        int fallback_edge = -1;
-        float fallback_score = -std::numeric_limits<float>::infinity();
-        const float fb_sqrt_parent = std::sqrt(static_cast<float>(
-            std::max(1, incoming_edge_visits)));
-        for (int ei = 0; ei < static_cast<int>(nodes[cur_idx].edges.size()); ++ei) {
-          const Edge& e = nodes[cur_idx].edges[ei];
-          if (!legal_set.count(e.action)) continue;
-          float q = 0.0f;
-          if (e.visit_count > 0) q = e.value_sum / static_cast<float>(e.visit_count);
-          const float u = cfg_.c_puct * e.prior * fb_sqrt_parent /
-                          (1.0f + static_cast<float>(e.visit_count));
-          const float score = q + u;
-          if (score > fallback_score) {
-            fallback_score = score;
-            fallback_edge = ei;
-          }
-        }
-        if (fallback_edge < 0) {
-          // No overlap between node's edges and current legal set: the state
-          // at this node truly doesn't share a legal-action set. Terminate
-          // this simulation at leaf — use the node's value estimate.
-          leaf_values = value_model.terminal_values(*sim_state);
-          break;
-        }
-        best_edge = fallback_edge;
+        throw std::runtime_error(
+            "MCTS: DAG node legal-action mismatch; selected action " +
+            std::to_string(chosen_action) + " is not legal in current state " +
+            "(node_edges=" + std::to_string(nodes[cur_idx].edges.size()) +
+            ", current_legal=" + std::to_string(current_legal.size()) + ")");
       }
       const ActionId final_action = nodes[cur_idx].edges[best_edge].action;
       rules.do_action_fast(*sim_state, final_action);
@@ -412,31 +447,30 @@ ActionId NetMcts::search_root(
       depth += 1;
     }
 
+    validate_leaf_values(leaf_values, np, "leaf evaluation");
+
     // Backup. Standard path-walk; in a DAG each node's visit_count tracks
     // total visits across all parent paths.
     for (int i = static_cast<int>(path_nodes.size()) - 1; i >= 0; --i) {
       const int node_idx = path_nodes[static_cast<size_t>(i)];
       Node& n = nodes[node_idx];
       const size_t tp = static_cast<size_t>(n.to_play);
-      const float v = (tp < leaf_values.size())
-          ? clip_value(leaf_values[tp], cfg_.value_clip) : 0.0f;
+      const float v = clip_value(leaf_values[tp], cfg_.value_clip);
       n.visit_count += 1;
       n.value_sum += v;
       if (i > 0) {
         const int parent_idx = path_nodes[static_cast<size_t>(i - 1)];
         const int parent_edge_idx = path_edges[static_cast<size_t>(i - 1)];
         const size_t parent_tp = static_cast<size_t>(nodes[parent_idx].to_play);
-        const float pv = (parent_tp < leaf_values.size())
-            ? clip_value(leaf_values[parent_tp], cfg_.value_clip) : 0.0f;
+        const float pv = clip_value(leaf_values[parent_tp], cfg_.value_clip);
         Edge& parent_edge = nodes[parent_idx].edges[parent_edge_idx];
         parent_edge.visit_count += 1;
         parent_edge.value_sum += pv;
         if (parent_idx == 0) {
           auto& rev = root_edge_values[static_cast<size_t>(parent_edge_idx)];
           for (int p = 0; p < np; ++p) {
-            const double cv = (static_cast<size_t>(p) < leaf_values.size())
-                ? static_cast<double>(clip_value(leaf_values[static_cast<size_t>(p)], cfg_.value_clip))
-                : 0.0;
+            const double cv = static_cast<double>(
+                clip_value(leaf_values[static_cast<size_t>(p)], cfg_.value_clip));
             rev[static_cast<size_t>(p)] += cv;
           }
         }

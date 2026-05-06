@@ -17,7 +17,13 @@ class BuildExt(build_ext):
         elif self.compiler.compiler_type == "msvc":
             for ext in self.extensions:
                 ext.extra_compile_args.append("/std:c++17")
-                ext.extra_compile_args.append("/O2")
+                # MSVC 14.39 can ICE on the large template-heavy game bundle
+                # when optimization or LTCG is enabled on Windows. Prefer a
+                # reliable debug-style extension build over a broken build.
+                ext.extra_compile_args.append("/Od")
+                ext.extra_compile_args.append("/Ob0")
+                ext.extra_compile_args.append("/GL-")
+                ext.extra_compile_args.append("/bigobj")
                 ext.extra_compile_args.append("/EHsc")
                 # MSVC: need explicit UTF-8 for source files containing
                 # non-ASCII string literals (e.g. Chinese game names).

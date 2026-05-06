@@ -44,6 +44,7 @@
 
 - [BUG-017] SplendorBeliefTracker 偷看牌堆内容（Splendor）
 - [BUG-023] Love Letter AI 永远猜对 Guard — terminal-by-elimination 漏过 NoPeek 检测（Love Letter，**已被 ISMCTS 重构整体解决**）
+- [BUG-028] public hash 混入不可观察随机源，导致 ISMCTS DAG 按隐藏信息分裂（Azul / Splendor）
 
 ---
 
@@ -1318,4 +1319,63 @@ def _rewrite_asset_refs(html: str, web_dir: Path) -> str:
 
 ---
 
-> 历史上这里列有 DESIGN-001..DESIGN-004 四条"设计取舍"（tail solve margin_weight、selfplay 必走 C++、web 平台禁全局锁做重计算、gating 模型管理）。这些已成为项目长期原则，统一记录在 `CLAUDE.md` 里，不再在 KNOWN_ISSUES 中重复。本文件聚焦"踩过的坑"而非"一直遵循的原则"。
+## [BUG-028] public hash 混入不可观察随机源，导致 ISMCTS DAG 按隐藏信息分裂
+
+**分类**：游戏层（Azul / Splendor）— 开发新游戏时必须参考此案例审计 `hash_public_fields()`
+**状态**：已修复
+**文件**：`games/azul/azul_state.cpp`、`games/splendor/splendor_state.cpp`
+**严重程度**：高 — 破坏 information-set DAG 共享，可能让搜索行为和 encoder scope 不一致
+
+### 问题描述
+
+ISMCTS 的节点 key 使用 `state_hash_for_perspective(current_player)`，语义应是：
+
+```
+public fields + current player's private fields + step_count
+```
+
+这里的 `public fields` 必须是玩家从观察历史中能知道的公共信息，不能包含“谁都不知道”的随机源内部状态。
+
+本次发现两个具体问题：
+
+1. **Azul**：`hash_public_fields()` 把 `bag` 和 `box_lid` 的 vector 顺序逐个 hash 进去。玩家最多能知道袋子 / 盒盖中各颜色剩余数量，不能知道未来抽牌顺序。
+2. **Splendor**：`hash_public_fields()` 把 `rng_salt` hash 进去。`rng_salt` 是内部 RNG 盐，不属于任何玩家的公共观察。
+
+### 影响
+
+- 同一玩家视角下完全相同的信息集，会因为隐藏随机源不同而产生不同 hash。
+- ISMCTS DAG 节点被按不可观察信息分裂，等价于减少复用、削弱搜索深度和统计聚合。
+- 更严重时，hash scope 与 encoder scope 不一致：网络看不到的信息却影响 MCTS 节点 key，调试表现会很反直觉。
+- 这类问题在 API / Web 隔离架构下尤其危险，因为 ground truth 的随机源内部状态不应泄漏到 AI 决策 pipeline。
+
+### 修复
+
+**Azul**：
+
+`bag` / `box_lid` 不再按 vector 顺序 hash，改为按 5 色计数 hash：
+
+```cpp
+std::array<int, kColors> bag_counts{};
+for (std::int8_t t : bag) {
+  if (t >= 0 && t < kColors) {
+    ++bag_counts[static_cast<std::size_t>(t)];
+  }
+}
+for (int count : bag_counts) h.add(count);
+```
+
+这样保留公开可推导的 composition，移除不可观察的 draw order。
+
+**Splendor**：
+
+从 `SplendorState::hash_public_fields()` 移除 `h.add(rng_salt)`。需要 full-state/debug 语义时仍可走 legacy `state_hash(include_hidden_rng=true)` 路径。
+
+### 教训
+
+1. **`hash_public_fields()` 不是“把 state 里的公共成员变量都 hash 进去”**，而是 hash “观察历史能唯一确定的公共信息”。无人知道的随机源不属于 public。
+2. **随机源内部状态和随机结果要分开**：已经公开揭示的牌 / 砖 / 骰子结果可以 hash；未来抽牌顺序、RNG salt、deck shuffle order 不能 hash，除非它已经被观察到。
+3. **hash scope 必须和 encoder scope 对齐**：如果 encoder 只看 bag counts，hash 也只能包含 bag counts；如果 hash 包含 encoder 看不到的信息，DAG 会按网络无法区分的状态分裂。
+4. **发现 DAG 复用异常、搜索“很快但棋力弱”、同一观察历史 selfplay/API 策略分布不一致时，应优先审计 public/private hash scope**。
+5. 对每个新游戏应加测试：改变不可观察随机源顺序或 RNG salt，在 public + own private 不变时，`state_hash_for_perspective(p)` 必须不变；同时改变公开可推导的 composition 时 hash 必须变化。
+
+---

@@ -25,34 +25,57 @@ static void masked_softmax(
     const std::vector<ActionId>& legal_actions,
     std::vector<float>* out) {
   out->assign(legal_actions.size(), 0.0f);
-  if (legal_actions.empty() || logits.empty() || mask.empty()) {
-    return;
+  if (legal_actions.empty()) {
+    throw std::runtime_error("masked_softmax: legal_actions is empty");
+  }
+  if (logits.empty()) {
+    throw std::runtime_error("masked_softmax: logits is empty");
+  }
+  if (mask.empty()) {
+    throw std::runtime_error("masked_softmax: legal mask is empty");
   }
   float max_logit = -std::numeric_limits<float>::infinity();
   for (ActionId a : legal_actions) {
     const int idx = static_cast<int>(a);
-    if (idx >= 0 && idx < static_cast<int>(logits.size()) && idx < static_cast<int>(mask.size()) && mask[idx] > 0.0f) {
-      max_logit = std::max(max_logit, logits[idx]);
+    if (idx < 0 || idx >= static_cast<int>(logits.size())) {
+      throw std::runtime_error(
+          "masked_softmax: legal action " + std::to_string(a) +
+          " outside policy logits length " + std::to_string(logits.size()));
     }
+    if (idx >= static_cast<int>(mask.size())) {
+      throw std::runtime_error(
+          "masked_softmax: legal action " + std::to_string(a) +
+          " outside legal mask length " + std::to_string(mask.size()));
+    }
+    if (mask[idx] <= 0.0f) {
+      throw std::runtime_error(
+          "masked_softmax: legal action " + std::to_string(a) +
+          " is masked out by encoder");
+    }
+    if (!std::isfinite(logits[idx])) {
+      throw std::runtime_error(
+          "masked_softmax: non-finite logit for legal action " +
+          std::to_string(a));
+    }
+    max_logit = std::max(max_logit, logits[idx]);
   }
   if (!std::isfinite(max_logit)) {
-    const float u = 1.0f / static_cast<float>(legal_actions.size());
-    std::fill(out->begin(), out->end(), u);
-    return;
+    throw std::runtime_error("masked_softmax: no finite legal logits");
   }
   float z = 0.0f;
   for (size_t i = 0; i < legal_actions.size(); ++i) {
     const int idx = static_cast<int>(legal_actions[i]);
-    if (idx >= 0 && idx < static_cast<int>(logits.size()) && idx < static_cast<int>(mask.size()) && mask[idx] > 0.0f) {
-      const float e = std::exp(logits[idx] - max_logit);
-      (*out)[i] = e;
-      z += e;
+    const float e = std::exp(logits[idx] - max_logit);
+    if (!std::isfinite(e)) {
+      throw std::runtime_error(
+          "masked_softmax: non-finite exp weight for legal action " +
+          std::to_string(legal_actions[i]));
     }
+    (*out)[i] = e;
+    z += e;
   }
-  if (z <= 1e-9f) {
-    const float u = 1.0f / static_cast<float>(legal_actions.size());
-    std::fill(out->begin(), out->end(), u);
-    return;
+  if (!std::isfinite(z) || z <= 1e-9f) {
+    throw std::runtime_error("masked_softmax: zero softmax mass over legal actions");
   }
   for (float& x : *out) {
     x /= z;
@@ -336,25 +359,30 @@ bool OnnxPolicyValueEvaluator::evaluate(
       throw_on_ort_error(ort_api().GetDimensions(value_shape.get(), value_dims.data(), value_dims.size()));
     }
     const int64_t value_len = (value_dim_count > 0) ? value_dims.back() : 1;
+    if (value_len <= 0 || value_len > static_cast<int64_t>(std::numeric_limits<int>::max())) {
+      throw std::runtime_error("OnnxPolicyValueEvaluator::evaluate: invalid value output length: " +
+          std::to_string(value_len));
+    }
 
     if (value_len >= num_players) {
       // N-dim model output is perspective-relative: index 0 = perspective_player.
       // Rotate back to absolute player ordering for MCTS backup.
       values->resize(static_cast<size_t>(num_players));
       for (int i = 0; i < num_players; ++i) {
+        if (!std::isfinite(value_ptr[i])) {
+          throw std::runtime_error(
+              "OnnxPolicyValueEvaluator::evaluate: non-finite value output at index " +
+              std::to_string(i));
+        }
         const int abs_player = (perspective_player + i) % num_players;
         (*values)[static_cast<size_t>(abs_player)] =
             std::max(-1.0f, std::min(1.0f, value_ptr[i]));
       }
     } else {
-      const float v = std::max(-1.0f, std::min(1.0f, value_ptr[0]));
-      values->resize(static_cast<size_t>(num_players));
-      const float opponent_v = (num_players > 1)
-          ? -v / static_cast<float>(num_players - 1) : -v;
-      for (int p = 0; p < num_players; ++p) {
-        (*values)[static_cast<size_t>(p)] =
-            (p == perspective_player) ? v : opponent_v;
-      }
+      throw std::runtime_error(
+          "OnnxPolicyValueEvaluator::evaluate: value output length " +
+          std::to_string(value_len) + " for " + std::to_string(num_players) +
+          " players");
     }
 
     masked_softmax(logits, legal_mask, legal_actions, priors);

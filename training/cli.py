@@ -20,7 +20,7 @@ def find_game_config(game_id: str) -> dict:
         if not config_path.exists():
             raise FileNotFoundError(
                 f"Game config not found for '{game_id}' (tried '{game_id}' and '{base_id}')")
-    with open(config_path, "r") as f:
+    with open(config_path, "r", encoding="utf-8") as f:
         cfg = json.load(f)
     import dinoboard_engine
     meta = dinoboard_engine.game_metadata(game_id)
@@ -57,7 +57,7 @@ def main() -> int:
     log_datefmt = "%Y-%m-%d %H:%M:%S"
     log_level = getattr(logging, args.log_level.upper(), logging.INFO)
     logging.basicConfig(level=log_level, format=log_fmt, datefmt=log_datefmt)
-    fh = logging.FileHandler(output_dir / "train.log")
+    fh = logging.FileHandler(output_dir / "train.log", encoding="utf-8")
     fh.setLevel(log_level)
     fh.setFormatter(logging.Formatter(log_fmt, datefmt=log_datefmt))
     logging.getLogger().addHandler(fh)

@@ -34,7 +34,7 @@ def load_game_config(game_id: str) -> dict:
     import re
     base = re.sub(r"_\d+p$", "", game_id)
     config_path = PROJECT_ROOT / "games" / base / "config" / "game.json"
-    with open(config_path) as f:
+    with open(config_path, encoding="utf-8") as f:
         cfg = json.load(f)
     meta = dinoboard_engine.game_metadata(game_id)
     cfg["action_space"] = meta["action_space"]
@@ -58,11 +58,22 @@ def get_test_model(game_id: str, tmp_path_factory=None) -> str:
     cfg = {"feature_dim": feature_dim, "action_space": action_space, "num_players": num_players}
     net = create_model_from_config(cfg)
     model_dir = Path("/tmp/dinoboard_test_models")
-    model_dir.mkdir(exist_ok=True)
+    model_dir.mkdir(parents=True, exist_ok=True)
     path = model_dir / f"test_{game_id}.onnx"
     export_onnx(net, path, feature_dim)
     _MODEL_CACHE[game_id] = str(path)
     return str(path)
+
+
+def _public_equivalent(value):
+    """Drop details explicitly marked hidden before comparing public state."""
+    if isinstance(value, dict):
+        if value.get("visible") is False:
+            return {"visible": False}
+        return {k: _public_equivalent(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_public_equivalent(v) for v in value]
+    return value
 
 
 @pytest.fixture
@@ -197,7 +208,7 @@ def assert_api_belief_matches_selfplay(
         gt_gs.apply_action(step["action"])
     gt_state = gt_gs.get_state_dict()
     for key in public_keys:
-        assert api_state[key] == gt_state[key], \
+        assert _public_equivalent(api_state[key]) == _public_equivalent(gt_state[key]), \
             f"[{game_id}] public field '{key}' diverged after trace replay"
 
     api2 = dinoboard_engine.GameSession(

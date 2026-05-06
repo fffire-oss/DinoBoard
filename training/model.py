@@ -67,5 +67,6 @@ def export_onnx(net: PVNet, path: Path, input_dim: int) -> str:
         output_names=output_names,
         dynamic_axes=dynamic_axes,
         opset_version=13,
+        dynamo=False,
     )
     return str(path)
