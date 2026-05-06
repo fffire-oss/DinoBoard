@@ -29,6 +29,8 @@ compile_commands.json
 *.a
 # Bundled ONNX Runtime libs (see third_party section below) must be committed.
 !third_party/onnxruntime-linux-x64-*/lib/*.so
+!third_party/onnxruntime-win-x64-*/lib/*.dll
+!third_party/onnxruntime-win-x64-*/lib/*.lib
 
 # Training outputs
 games/*/runs/
@@ -45,11 +47,13 @@ runs/
 games/.random_models/
 
 # ONNX Runtime (local dependency)
-# Mac/Windows bundles stay local (devs install via brew / download themselves).
-# The Linux x64 bundle IS committed so `git clone` on a Linux server is enough
-# to build — avoids Alibaba Cloud shield dropping SSH when wget hits github.com.
+# Mac bundle stays local (devs install via brew).
+# Linux x64 and Windows x64 bundles ARE committed so `git clone` is enough to
+# build on those platforms — avoids cloud-firewall interference and lets the
+# README's "one-line install" promise hold on stock Windows / Linux machines.
 third_party/onnxruntime-*/
 !third_party/onnxruntime-linux-x64-*/
+!third_party/onnxruntime-win-x64-*/
 
 # Plans (private strategy docs)
 docs/plans/

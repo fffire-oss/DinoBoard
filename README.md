@@ -130,19 +130,20 @@ Full directory tree at the bottom of this file.
 
 The core is C++; Python is glue. You need:
 
-- **A C++17 compiler** — Mac: `xcode-select --install`; Linux: `apt install build-essential`; Windows: MSVC Build Tools
+- **A C++17 compiler** — Mac: `xcode-select --install`; Linux: `apt install build-essential`; Windows: [Visual Studio 2022 Build Tools](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022) (select "Desktop development with C++").
 - **Python ≥ 3.9** with `pybind11` and `torch` (for training)
 - **ONNX Runtime** — web play, self-play, and evaluation **all load `.onnx` models for the AI to move**; this is required, not optional.
-  - **Linux x64**: already bundled in the repo at `third_party/onnxruntime-linux-x64-1.17.3/` — `git clone` is enough, no download needed.
+  - **Linux x64**: already bundled at `third_party/onnxruntime-linux-x64-1.17.3/` — `git clone` is enough, no download needed.
+  - **Windows x64**: already bundled at `third_party/onnxruntime-win-x64-1.17.3/` — `git clone` is enough, no download needed.
   - **Mac**: `brew install onnxruntime`
-  - **Windows / other Linux arch**: download the platform package from [ONNX Runtime releases](https://github.com/microsoft/onnxruntime/releases) and unpack it.
+  - **Other (Linux ARM, etc.)**: download the platform package from [ONNX Runtime releases](https://github.com/microsoft/onnxruntime/releases) and unpack it; pass it via `BOARD_AI_ONNXRUNTIME_ROOT`.
 
-### Build
+### Build (Mac / Linux)
 
 ```bash
 pip install pybind11 torch
 
-# Standard build (Mac brew / Linux system paths detect ONNX Runtime automatically)
+# Standard build (Mac brew / Linux bundled paths detect ONNX Runtime automatically)
 pip install -e .
 
 # If ONNX Runtime is not in a standard path, point at it explicitly
@@ -154,6 +155,22 @@ BOARD_AI_WITH_ONNX=1 \
 python -c "import dinoboard_engine; print(dinoboard_engine.available_games())"
 # ['azul', 'azul_2p', ..., 'quoridor', 'splendor', ..., 'tictactoe']
 ```
+
+### Build (Windows)
+
+Open **"x64 Native Tools Command Prompt for VS 2022"** (so MSVC `cl.exe` is on PATH), then:
+
+```bat
+pip install pybind11 torch
+
+REM Bundled Windows ONNX Runtime is auto-detected — no env vars needed.
+pip install -e .
+
+REM Verify
+python -c "import dinoboard_engine; print(dinoboard_engine.available_games())"
+```
+
+The build copies `onnxruntime.dll` next to the compiled extension so it loads at import time without touching `PATH`.
 
 > `setup.py` prints a warning and keeps building if ONNX Runtime is missing — that path exists only so basic tests can run. **Web play and training will both fail later because the model cannot load.**
 

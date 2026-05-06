@@ -130,19 +130,20 @@ DELETE /ai/sessions/{id}                  → 结束会话
 
 本项目核心是 C++ 引擎,Python 只是胶水。需要:
 
-- **C++17 编译器** — Mac: `xcode-select --install`;Linux: `apt install build-essential`;Windows: MSVC Build Tools
+- **C++17 编译器** — Mac: `xcode-select --install`;Linux: `apt install build-essential`;Windows: [Visual Studio 2022 Build Tools](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022)(安装时勾选"使用 C++ 的桌面开发")。
 - **Python ≥ 3.9** + `pybind11` + `torch`(训练用)
 - **ONNX Runtime** — Web 对战 / 自我对弈 / 评估**都要加载 `.onnx` 模型让 AI 出棋**,这是刚需不是可选。
   - **Linux x64**:已随仓库自带在 `third_party/onnxruntime-linux-x64-1.17.3/`,`git clone` 就能用,无需下载。
+  - **Windows x64**:已随仓库自带在 `third_party/onnxruntime-win-x64-1.17.3/`,`git clone` 就能用,无需下载。
   - **Mac**:`brew install onnxruntime`
-  - **Windows / 其他 Linux 架构**:从 [ONNX Runtime releases](https://github.com/microsoft/onnxruntime/releases) 下载对应平台的包并解压。
+  - **其他平台(Linux ARM 等)**:从 [ONNX Runtime releases](https://github.com/microsoft/onnxruntime/releases) 下载对应平台的包并解压,通过 `BOARD_AI_ONNXRUNTIME_ROOT` 指定路径。
 
-### 构建
+### 构建(Mac / Linux)
 
 ```bash
 pip install pybind11 torch
 
-# 标准构建(Mac brew / Linux 系统路径自动检测到 ONNX Runtime)
+# 标准构建(Mac brew / Linux 自带 bundle 自动检测到 ONNX Runtime)
 pip install -e .
 
 # 如果 ONNX Runtime 不在标准路径,显式指定
@@ -154,6 +155,22 @@ BOARD_AI_WITH_ONNX=1 \
 python -c "import dinoboard_engine; print(dinoboard_engine.available_games())"
 # ['azul', 'azul_2p', ..., 'quoridor', 'splendor', ..., 'tictactoe']
 ```
+
+### 构建(Windows)
+
+打开 **"x64 Native Tools Command Prompt for VS 2022"**(确保 MSVC `cl.exe` 在 PATH 上),然后:
+
+```bat
+pip install pybind11 torch
+
+REM 仓库自带的 Windows ONNX Runtime 会自动检测,无需设环境变量
+pip install -e .
+
+REM 验证
+python -c "import dinoboard_engine; print(dinoboard_engine.available_games())"
+```
+
+构建会自动把 `onnxruntime.dll` 复制到编译好的扩展旁边,`import` 时直接加载,无需改 `PATH`。
 
 > `setup.py` 在没检测到 ONNX Runtime 时会打印 WARNING 并继续构建——这只是为了跑基础测试能过,**Web 对战和训练都会因为加载不了模型而失败**。
 
