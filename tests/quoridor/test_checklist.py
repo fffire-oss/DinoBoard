@@ -1,0 +1,247 @@
+"""Quoridor complete acceptance checklist.
+
+Quoridor is the deterministic full-information carrier for the framework.
+Beyond the basics (state/rules/encoder), it exercises:
+  - tail_solver + tail_solve_trigger (alpha-beta endgame solver, gated on
+    short-shortest-path)
+  - heuristic_picker (real heuristic — pawn-advance + wall-block)
+  - training_action_filter (cuts low-quality wall placements)
+  - adjudicator (winner assignment when max_game_plies hit)
+  - auxiliary_scorer (pawn-distance margin term)
+  - episode_stats_extractor (custom_stats in episode result)
+
+A new game touching ANY of these optional components should mirror the
+relevant tests in its own checklist; this file stays authoritative for
+quoridor regardless of which features other games adopt.
+"""
+import dinoboard_engine
+import pytest
+
+from conftest import GAME_CONFIGS, get_test_model
+
+GAME = "quoridor"
+ACTION_SPACE = GAME_CONFIGS[GAME]["action_space"]
+FEATURE_DIM = GAME_CONFIGS[GAME]["feature_dim"]
+
+
+# ---------------------------------------------------------------------------
+# 1. Registration & config
+# ---------------------------------------------------------------------------
+
+class TestRegistration:
+
+    def test_game_registered(self):
+        assert GAME in dinoboard_engine.available_games()
+
+    def test_metadata_matches_config(self):
+        meta = dinoboard_engine.game_metadata(GAME)
+        assert meta["action_space"] == ACTION_SPACE
+        assert meta["feature_dim"] == FEATURE_DIM
+        assert meta["num_players"] == 2
+
+
+# ---------------------------------------------------------------------------
+# 2. GameSession / action info
+# ---------------------------------------------------------------------------
+
+class TestGameSession:
+
+    def test_session_constructs(self):
+        gs = dinoboard_engine.GameSession(GAME, seed=42)
+        assert gs.num_players == 2
+        assert not gs.is_terminal
+
+    def test_legal_actions_in_range(self):
+        gs = dinoboard_engine.GameSession(GAME, seed=42)
+        legal = gs.get_legal_actions()
+        assert len(legal) > 0
+        assert all(0 <= a < ACTION_SPACE for a in legal)
+
+    def test_action_info_for_legal_actions(self):
+        gs = dinoboard_engine.GameSession(GAME, seed=42)
+        for action in gs.get_legal_actions()[:20]:
+            info = gs.get_action_info(action)
+            assert isinstance(info, dict) and len(info) > 0
+
+
+# ---------------------------------------------------------------------------
+# 3. Feature encoding
+# ---------------------------------------------------------------------------
+
+class TestEncoder:
+
+    def test_encode_state_correct_dim(self):
+        info = dinoboard_engine.encode_state(GAME, seed=42)
+        assert len(info["features"]) == FEATURE_DIM
+        assert len(info["legal_mask"]) == ACTION_SPACE
+
+
+# ---------------------------------------------------------------------------
+# 4. Selfplay
+# ---------------------------------------------------------------------------
+
+class TestSelfplay:
+
+    def test_episode_completes(self):
+        ep = dinoboard_engine.run_selfplay_episode(
+            game_id=GAME, seed=42, model_path=get_test_model(GAME),
+            simulations=10, max_game_plies=80,
+        )
+        assert ep["total_plies"] > 0
+
+    def test_sample_integrity(self):
+        ep = dinoboard_engine.run_selfplay_episode(
+            game_id=GAME, seed=42, model_path=get_test_model(GAME),
+            simulations=10, max_game_plies=50,
+        )
+        for s in ep["samples"]:
+            assert len(s["features"]) == FEATURE_DIM
+            assert len(s["legal_mask"]) == ACTION_SPACE
+            legal_set = {i for i, m in enumerate(s["legal_mask"]) if m > 0}
+            visited = {a for a, v in zip(s["policy_action_ids"], s["policy_action_visits"]) if v > 0}
+            assert visited <= legal_set
+
+    def test_determinism_same_seed(self):
+        kw = dict(
+            game_id=GAME, seed=12345, model_path=get_test_model(GAME),
+            simulations=10, max_game_plies=40,
+            dirichlet_alpha=0.0, dirichlet_epsilon=0.0,
+        )
+        ep1 = dinoboard_engine.run_selfplay_episode(**kw)
+        ep2 = dinoboard_engine.run_selfplay_episode(**kw)
+        assert ep1["winner"] == ep2["winner"]
+        assert ep1["total_plies"] == ep2["total_plies"]
+
+
+# ---------------------------------------------------------------------------
+# 5. MCTS / arena
+# ---------------------------------------------------------------------------
+
+class TestMcts:
+
+    def test_apply_ai_action_advances_state(self):
+        m = get_test_model(GAME)
+        gs = dinoboard_engine.GameSession(GAME, seed=42, model_path=m)
+        before = gs.get_state_dict()
+        gs.apply_ai_action(simulations=10, temperature=0.0)
+        after = gs.get_state_dict()
+        assert before != after
+
+    def test_arena_completes(self):
+        m = get_test_model(GAME)
+        result = dinoboard_engine.run_arena_match(
+            game_id=GAME, seed=42, model_paths=[m, m],
+            simulations_list=[10, 10], temperature=0.0,
+        )
+        assert "winner" in result and result["total_plies"] > 0
+
+
+# ---------------------------------------------------------------------------
+# 6. Heuristic picker (real heuristic, must always be legal)
+# ---------------------------------------------------------------------------
+
+class TestHeuristic:
+
+    def test_heuristic_returns_legal_action(self):
+        for seed in range(50):
+            gs = dinoboard_engine.GameSession(GAME, seed=seed)
+            result = gs.get_heuristic_action()
+            assert "action" in result
+            legal = gs.get_all_legal_actions()
+            assert result["action"] in legal, (
+                f"seed {seed}: heuristic action {result['action']} not legal"
+            )
+
+
+# ---------------------------------------------------------------------------
+# 7. Tail solver + trigger
+# ---------------------------------------------------------------------------
+
+class TestTailSolver:
+
+    def test_tail_solve_api_works(self):
+        r = dinoboard_engine.tail_solve(
+            game_id=GAME, seed=42, perspective_player=0,
+            depth_limit=1, node_budget=100,
+        )
+        assert "value" in r and "best_action" in r
+
+    def test_margin_weight_runs_without_error(self):
+        for w in (0.0, 0.01):
+            ep = dinoboard_engine.run_selfplay_episode(
+                game_id=GAME, seed=42, model_path=get_test_model(GAME),
+                simulations=10, max_game_plies=200,
+                tail_solve_enabled=True, tail_solve_start_ply=1,
+                tail_solve_depth_limit=3, tail_solve_node_budget=500,
+                tail_solve_margin_weight=w,
+            )
+            assert ep["total_plies"] > 0
+
+    def test_configure_tail_solve_via_session(self):
+        m = get_test_model(GAME)
+        gs = dinoboard_engine.GameSession(GAME, seed=42, model_path=m)
+        gs.configure_tail_solve(True, 5, 1000)
+        result = gs.get_ai_action(simulations=10, temperature=0.0)
+        stats = result["stats"]
+        assert "tail_solved" in stats and "tail_solve_value" in stats
+
+    def test_configure_tail_solve_disabled(self):
+        m = get_test_model(GAME)
+        gs = dinoboard_engine.GameSession(GAME, seed=42, model_path=m)
+        gs.configure_tail_solve(False, 5, 1000)
+        result = gs.get_ai_action(simulations=10, temperature=0.0)
+        assert result["stats"]["tail_solved"] is False
+
+
+# ---------------------------------------------------------------------------
+# 8. Adjudicator (max_game_plies → winner assigned)
+# ---------------------------------------------------------------------------
+
+class TestAdjudicator:
+
+    def test_adjudicated_z_is_valid(self):
+        ep = dinoboard_engine.run_selfplay_episode(
+            game_id=GAME, seed=42, model_path=get_test_model(GAME),
+            simulations=10, max_game_plies=5,
+        )
+        if ep["total_plies"] >= 5 and not any(s.get("z_values") for s in ep["samples"]):
+            for s in ep["samples"]:
+                assert s["z"] in (-1.0, 0.0, 1.0), f"bad z={s['z']}"
+
+
+# ---------------------------------------------------------------------------
+# 9. Auxiliary scorer + custom stats
+# ---------------------------------------------------------------------------
+
+class TestAuxiliaryScorerAndStats:
+
+    def test_auxiliary_score_finite(self):
+        ep = dinoboard_engine.run_selfplay_episode(
+            game_id=GAME, seed=42, model_path=get_test_model(GAME),
+            simulations=10, max_game_plies=50,
+        )
+        for s in ep["samples"]:
+            score = s.get("auxiliary_score", 0.0)
+            assert -100 < score < 100, f"ply {s['ply']}: aux out of range {score}"
+
+    def test_custom_stats_dict(self):
+        ep = dinoboard_engine.run_selfplay_episode(
+            game_id=GAME, seed=42, model_path=get_test_model(GAME),
+            simulations=10, max_game_plies=30,
+        )
+        assert isinstance(ep.get("custom_stats", {}), dict)
+
+
+# ---------------------------------------------------------------------------
+# 10. Training action filter (cuts low-quality walls)
+# ---------------------------------------------------------------------------
+
+class TestTrainingFilter:
+
+    def test_filter_reduces_action_count(self):
+        gs_f = dinoboard_engine.GameSession(GAME, seed=42, use_filter=True)
+        gs_u = dinoboard_engine.GameSession(GAME, seed=42, use_filter=False)
+        f = len(gs_f.get_legal_actions())
+        u = len(gs_u.get_legal_actions())
+        assert f < u, f"filter should reduce actions: {f} vs {u}"
+        assert set(gs_f.get_legal_actions()).issubset(set(gs_u.get_legal_actions()))

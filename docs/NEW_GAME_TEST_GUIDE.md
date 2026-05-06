@@ -703,50 +703,89 @@ python -m pytest tests/test_api_belief_matches_selfplay.py -v -k <game_id>
 
 ## 快速运行
 
-把以上测试保存为 `tests/test_your_game_verify.py`，然后运行：
+把以上测试保存为 `tests/<your_game>/test_checklist.py`（关于目录结构见下一节），然后运行：
 
 ```bash
-# 全量验证（替换 GAME_ID）
-python -m pytest tests/test_your_game_verify.py -v
+# 全量验证你的清单
+python -m pytest tests/<your_game>/ -v
 
 # 快速冒烟
-python -m pytest tests/test_your_game_verify.py -v -k "registered or completes or determinism"
+python -m pytest tests/<your_game>/ -v -k "registered or completes or determinism"
 
-# 查看现有跨游戏测试是否通过你的游戏
-python -m pytest tests/ -v -k "your_game"
+# 与你的游戏相关的全部测试（包括框架层用其他游戏跑的参数化用例）
+python -m pytest tests/ -v -k "<your_game>"
 
-# 运行全部自动化测试（加入 CANONICAL_GAMES 后）
+# 全套自动化测试
 python -m pytest tests/ -x -q
 ```
 
 ---
 
-## 接入现有测试套件
+## 测试架构原则：两层测试
 
-当你的游戏通过上述所有测试后，将其加入 `tests/conftest.py` 的 `CANONICAL_GAMES` 列表：
+> **这一节是开发者必读。** 它解释了 `tests/` 为什么是当前这种布局，以及作为新游戏开发者你应该写什么、不该改什么。
 
-```python
-CANONICAL_GAMES = ["tictactoe", "quoridor", "splendor", "azul", "loveletter", "coup", "your_game"]
-```
+`tests/` 目录分两层，对应**两个完全不同的读者**和**两种完全不同的失败语义**。
 
-以及对应的分类列表（根据你注册的组件）：
+### 第一层：`tests/framework/` —— 框架不变量
 
-```python
-GAMES_WITH_HEURISTIC = ["quoridor", "your_game"]              # 如果注册了 heuristic_picker
-GAMES_WITH_TAIL_SOLVER = ["quoridor", "splendor", "your_game"] # 如果注册了 tail_solver
-GAMES_WITH_TRAINING_FILTER = ["quoridor", "your_game"]         # 如果注册了 training_action_filter
-# 隐藏信息游戏的 IS-MCTS 正确性测试在 test_is_mcts_correctness.py 中，
-# 直接按 game_id 参数化，无需额外列表。
-```
+**读者**：项目维护者（写 C++ 引擎、MCTS、ISMCTS、训练管线的人）。
 
-这样现有的跨游戏参数化测试会自动覆盖你的新游戏，包括：
-- 特征编码回归测试（BUG-007 防护）
-- 样本完整性验证
-- do/undo 一致性
-- MCTS 行为正确性
-- ONNX round-trip
+**触发条件**：当你修改 `engine/`、`training/`、`platform/ai_service/` 等**框架代码**时，这一层告诉你"是不是把哪个游戏的什么基础假设破坏了"。
 
-如果你的游戏有隐藏信息，还需要把 `game_id` 加入 `tests/test_encoder_respects_hash_scope.py` 和 `tests/test_dag_reuse.py` 的参数化列表，验证 encoder 严格遵守 hash scope、DAG 节点正确复用。
+**测什么**：跨游戏参数化的不变量——do/undo 一致、ONNX round-trip、selfplay 样本完整、tracker 不偷看真值、encoder 不泄漏对手私信、DAG 无环、API 与 selfplay 行为一致 …… 这些都是框架对**任何已注册游戏**都必须成立的性质。
+
+**承载游戏（matrix carrier）**：`FRAMEWORK_GAMES = ["quoridor", "azul", "loveletter"]`。这三个游戏一起最小完备地覆盖了框架关心的所有结构特征：
+
+| 特征 | quoridor | azul | loveletter |
+|---|---|---|---|
+| 完全公开 + 确定 | ✓ | | |
+| 物理随机（对称、无玩家私信） | | ✓ | |
+| 信息不对称（有玩家私信） | | | ✓ |
+| 多人变体 (3p/4p) | | ✓ | ✓ |
+| 玩家淘汰 | | | ✓ |
+| `tail_solver` | ✓ | | |
+| `belief_tracker` | | ✓ | ✓ |
+| `hash_private_fields(p)` 非空 | | | ✓ |
+
+> **作为新游戏开发者，你不需要修改 `tests/framework/`。** 框架层用 `FRAMEWORK_GAMES` 这三个固定游戏来验证框架本身——这是项目维护者的工具。如果你的新游戏带来了一个**新的结构特征**（既不是 quoridor 也不是 azul/loveletter 的子集），再考虑是否需要把它加进 `FRAMEWORK_GAMES` 或某个子集列表（`FRAMEWORK_HIDDEN_INFO_GAMES`、`FRAMEWORK_TAIL_SOLVER_GAMES` 等），这是项目维护者的决定。
+
+### 第二层：`tests/<game>/` —— 单游戏完备清单
+
+**读者**：你，新游戏开发者。
+
+**触发条件**：当你实现一个新游戏，或修改自己游戏的代码时，这一层告诉你"我的游戏作为一个完整的集成对象，是不是 ready 了"。
+
+**测什么**：你这个游戏从注册到 selfplay 到 arena 到 web 配置的**端到端验收**。每个游戏一个 `tests/<game>/` 文件夹，里面是**这个游戏自己的完整测试清单**。
+
+**关键性质：每个游戏的测试是各自独立的——故意冗余**。即使框架层已经用 quoridor/azul/loveletter 测过 do/undo 一致性，你的 `tests/splendor/test_checklist.py` 里**仍然要测 splendor 自己的 do/undo 一致性**。原因：
+
+1. **本地化的失败信号**：当你修改 splendor 的 rules，splendor 的清单立刻全红，不需要去看一个跨 6 个游戏参数化的失败用例慢慢推断哪个步骤挂了。
+2. **明确的"游戏完成"定义**：`pytest tests/<your_game>/` 全绿 = 你的游戏 ready。这是一个清晰的、对开发者可见的契约。
+3. **复制成本极低，维护成本不高**：一个清单不到 300 行，且变化频率低（写完基本不动）。
+4. **架构可读性**：新游戏的开发者打开 `tests/<some_game>/` 就能看到一个完整可执行的"模板"，远比"去框架层挖出 N 个参数化测试再过滤参数"清晰。
+
+### 你的工作流
+
+写一个新游戏 `myGame`：
+
+1. 复制一份现有清单作为模板。选**与你的游戏特征最接近的那个**：
+   - 完全公开 + 确定 → `tests/tictactoe/test_checklist.py` 或 `tests/quoridor/test_checklist.py`（如果你有 tail_solver / heuristic / filter）
+   - 公开物理随机 → `tests/azul/test_checklist.py`
+   - 信息不对称 → `tests/loveletter/test_checklist.py` 或 `tests/coup/test_checklist.py`
+2. 把 `GAME = "myGame"` 改成你的游戏 id，删掉你不支持的可选组件分组（例如没有 `tail_solver` → 删掉 `TestTailSolver`，并加上 `TestUnsupportedComponents::test_no_tail_solver`），按需调整 simulations / max_game_plies。
+3. 运行 `pytest tests/myGame/ -v` 直到全绿。
+4. **顺手**跑一遍 `pytest tests/framework/` 看你的引擎改动有没有破坏框架不变量。如果你的游戏新增了一个真正全新的结构特征，告诉项目维护者——他们会决定是否更新 `FRAMEWORK_GAMES` 或某个子集列表。
+
+### 为什么不在框架层一次性测全部 6 个游戏？
+
+第一版做过这件事——`tests/test_*.py` 用 `CANONICAL_GAMES = [...]` 跑全部 6 个游戏。问题是：
+
+- 某些不变量（例如 `test_dag_reuse_active`）在不同游戏上的合理参数差很多（loveletter 几十次访问就能看到 reuse；splendor 要几百次），写成参数化反而需要 if/else 调阈值，难读、易错。
+- 框架层每次跑都要把 6 个游戏全跑一遍，CI 慢，调试反馈链长。
+- 单游戏的失败信号被淹没在 6 倍的测试中。
+
+新架构里，框架层用最小完备的 3 个游戏跑，CI 快、信号干净；每个游戏自己的清单用最贴合该游戏的参数测自己——两层互补，互不淹没。
 
 ---
 

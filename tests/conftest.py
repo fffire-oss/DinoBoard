@@ -11,6 +11,17 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 CANONICAL_GAMES = ["tictactoe", "quoridor", "splendor", "azul", "loveletter", "coup"]
 
+# Framework matrix — minimal carrier set used by tests/framework/. These
+# three games together cover every structural feature the framework cares
+# about (deterministic / symmetric-random / asymmetric-hidden, 2p / 2-4p,
+# tail solver, belief tracker with and without per-player private fields,
+# elimination). Per-game tests in tests/<game>/ test their own game in full
+# regardless of whether it is in this list.
+FRAMEWORK_GAMES = ["quoridor", "azul", "loveletter"]
+FRAMEWORK_HIDDEN_INFO_GAMES = ["azul", "loveletter"]
+FRAMEWORK_MULTIPLAYER_GAMES = ["azul", "loveletter"]
+FRAMEWORK_TAIL_SOLVER_GAMES = ["quoridor"]
+
 
 def load_game_config(game_id: str) -> dict:
     import re
@@ -63,7 +74,11 @@ GAMES_WITH_TAIL_SOLVER = ["quoridor", "splendor"]
 GAMES_WITH_TRAINING_FILTER = ["quoridor"]
 
 
-@pytest.fixture(params=CANONICAL_GAMES)
+# `game_id` fixture defaults to FRAMEWORK_GAMES (the matrix carrier set).
+# Tests that need exhaustive coverage (e.g. tests/<game>/test_checklist.py)
+# hardcode their own game id and don't use this fixture; tests that need
+# a different subset can use @pytest.mark.parametrize("game_id", [...]).
+@pytest.fixture(params=FRAMEWORK_GAMES)
 def game_id(request):
     return request.param
 
