@@ -107,6 +107,7 @@ function renderBoard(container, gs, ctx) {
   const humanPlayer = ctx.state.humanPlayer;
   const numPlayers = st.num_players;
   const currentPlayer = st.current_player;
+  const isTerminal = !!gs.is_terminal;
 
   const board = document.createElement('div');
   board.className = 'll-board';
@@ -173,7 +174,13 @@ function renderBoard(container, gs, ctx) {
     }
     opp.appendChild(statusEl);
 
-    const disc = buildDiscardPile(p.discards || [], pi);
+    // End-of-round showdown: append the alive player's last hand card to
+    // their visible discard pile so the table is fully revealed. Engine
+    // leaves the hand intact for tie-break sum calculations, so we tack
+    // it on the JS side without mutating game state.
+    const renderedDiscards = (p.discards || []).slice();
+    if (isTerminal && p.alive && p.hand > 0) renderedDiscards.push(p.hand);
+    const disc = buildDiscardPile(renderedDiscards, pi);
     opp.appendChild(disc);
 
     opponents.appendChild(opp);
@@ -289,14 +296,18 @@ function renderPlayerArea(container, gs, ctx) {
   area.className = 'll-player-area';
   area.setAttribute('data-player', String(humanPlayer));
 
-  // Self-target highlight: Prince can always target self; other target
-  // cards (Priest/Baron/King) can only "target self" via the engine's
-  // no-effect fallback when every opponent is Handmaid-protected.
-  // `validTargets` already encodes both cases (engine adds offset+me
-  // when `found==false`).
+  // Self-target highlight: Prince is the ONLY card that legitimately
+  // targets self (forces self to discard and redraw). Priest/Baron/King
+  // emit a self-fallback action (target=me) only when every opponent is
+  // Handmaid-protected, and the engine treats it as a no-op discard —
+  // peeking own hand, comparing self vs self, swapping with self all
+  // yield zero info. So we don't let the player click their own area for
+  // those cards; instead the hand card auto-resolves the fallback like
+  // Guard's "弃出无效" path. Prince keeps the self-click affordance.
+  const validTargets = pendingCard > 0 ? getTargetsForCard(pendingCard, legalSet) : new Set();
   const selfIsValidTarget = (
-    playing && pendingCard > 0 && needsTarget(pendingCard) && !needsGuess(pendingCard)
-    && getTargetsForCard(pendingCard, legalSet).has(humanPlayer)
+    playing && pendingCard === 5 /* Prince */
+    && validTargets.has(humanPlayer)
   );
   if (selfIsValidTarget) {
     area.classList.add('selectable-self');
@@ -309,7 +320,13 @@ function renderPlayerArea(container, gs, ctx) {
     });
   }
 
-  const disc = buildDiscardPile(pd.discards || [], humanPlayer);
+  const isTerminal = !!gs.is_terminal;
+  // Showdown: if the round ended and human is still alive, append their
+  // last hand card to the discard pile so the player sees their own
+  // table revealed alongside the opponents'.
+  const myDiscards = (pd.discards || []).slice();
+  if (isTerminal && pd.alive && pd.hand > 0) myDiscards.push(pd.hand);
+  const disc = buildDiscardPile(myDiscards, humanPlayer);
   disc.classList.add('mine');
   area.appendChild(disc);
 
@@ -318,6 +335,13 @@ function renderPlayerArea(container, gs, ctx) {
     dead.className = 'll-dead-msg';
     dead.textContent = '你已被淘汰';
     area.appendChild(dead);
+    container.appendChild(area);
+    return;
+  }
+
+  // At terminal: the human's last card has been moved to the discard pile
+  // visually. Don't also render it as a hand card (that would duplicate it).
+  if (isTerminal) {
     container.appendChild(area);
     return;
   }
@@ -394,6 +418,23 @@ function createCardElement(cardValue, playing, legalSet) {
 
       if (!needsTarget(cardValue)) {
         submitNoTargetCard(cardValue, legalSet);
+      } else if (cardValue !== 5 /* not Prince */ && cardValue !== 1 /* not Guard */) {
+        // Priest/Baron/King: if the only legal action is the self-fallback
+        // (every opponent Handmaid-protected), auto-submit as a no-op
+        // discard. Asking the player to click their own area to "peek their
+        // own card" is meaningless and confusing.
+        const tgts = getTargetsForCard(cardValue, legalSet);
+        const humanPlayer = currentCtx.state.humanPlayer;
+        const hasOppTarget = [...tgts].some(t => t !== humanPlayer);
+        if (!hasOppTarget && tgts.has(humanPlayer)) {
+          const aid = resolveAction(cardValue, humanPlayer, -1);
+          if (legalSet.has(aid)) {
+            resetPending();
+            currentCtx.submitAction(aid);
+            return;
+          }
+        }
+        currentCtx.rerender();
       } else {
         currentCtx.rerender();
       }
@@ -551,7 +592,63 @@ function describeTransition(prevState, newState, actionInfo, actionId) {
   const reveal = buildRevealStep(prevState, newState, actionInfo, actor, humanPlayer);
   if (reveal) steps.push(reveal);
 
+  // End-of-round showdown: when this action ended the round (deck out,
+  // or sole-survivor by elimination), reveal every still-alive player's
+  // last hand card by flying it from their seat to their own discard pile
+  // and materializing it there. The hand pile thus becomes the public
+  // "table" and the player can see what everyone was holding at compare
+  // time. The accompanying info-panel extension prints the same info.
+  if (newState && newState.is_terminal && !prevState.is_terminal) {
+    const showdown = buildShowdownStep(newState, actor, humanPlayer);
+    if (showdown) steps.push(showdown);
+  }
+
   return steps.length ? steps : null;
+}
+
+function buildShowdownStep(newState, actor, humanPlayer) {
+  const players = (newState.state && newState.state.players) || [];
+  const flights = [];
+  for (let pi = 0; pi < players.length; pi++) {
+    const p = players[pi];
+    if (!p.alive) continue;
+    const card = p.hand;
+    if (!card || card <= 0) continue;
+    const fromSel = pi === humanPlayer
+      ? '[data-hand-card="' + card + '"]'
+      : '[data-opponent="' + pi + '"]';
+    flights.push({
+      type: 'fly',
+      from: fromSel,
+      to: '[data-discard-incoming="' + pi + '"]',
+      createElement() {
+        const el = document.createElement('div');
+        el.className = 'anim-flying-card ll-card-fly card-' + card;
+        el.textContent = CARD_VALUES[card];
+        return el;
+      },
+      width: 68,
+      height: 92,
+      duration: 500,
+      onComplete: (() => {
+        const incoming = document.querySelector('[data-discard-incoming="' + pi + '"]');
+        if (!incoming) return;
+        const cardEl = document.createElement('div');
+        cardEl.className = 'll-discard-card card-' + card;
+        const v = document.createElement('div');
+        v.className = 'll-discard-card-value';
+        v.textContent = CARD_VALUES[card];
+        const n = document.createElement('div');
+        n.className = 'll-discard-card-name';
+        n.textContent = CARD_LABELS[card];
+        cardEl.appendChild(v);
+        cardEl.appendChild(n);
+        incoming.parentNode.insertBefore(cardEl, incoming);
+      }),
+    });
+  }
+  if (!flights.length) return null;
+  return { type: 'group', children: flights };
 }
 
 function buildRevealStep(prevState, newState, actionInfo, actor, humanPlayer) {
@@ -560,6 +657,11 @@ function buildRevealStep(prevState, newState, actionInfo, actor, humanPlayer) {
 
   const target = actionInfo.target;
   if (target == null || target < 0) return null;
+  // Self-target is the engine's no-op fallback (every opponent protected).
+  // No information changes hands — skip the reveal modal entirely so the
+  // player isn't shown a useless "look at your own card" or "compare X vs
+  // X" popup.
+  if (target === actor) return null;
 
   // Only interrupt the player when they're actually learning something.
   // - Priest: only the actor learns. Skip unless human is the actor.
@@ -682,6 +784,31 @@ function revealBody(cards, summaryText) {
   return wrap;
 }
 
+// Showdown extension: at game end, list every alive player's last hand
+// card in the info panel so the showdown is also readable as text. Empty
+// during normal play.
+const showdownExtension = {
+  render(el, gameState) {
+    if (!gameState || !gameState.state || !gameState.is_terminal) {
+      el.style.display = 'none';
+      return;
+    }
+    const players = gameState.state.players || [];
+    const parts = [];
+    for (let pi = 0; pi < players.length; pi++) {
+      const p = players[pi];
+      if (!p.alive || !p.hand || p.hand <= 0) continue;
+      parts.push('玩家' + pi + '：' + CARD_LABELS[p.hand]);
+    }
+    if (!parts.length) {
+      el.style.display = 'none';
+      return;
+    }
+    el.style.display = '';
+    el.textContent = '终局底牌 ' + parts.join('  ');
+  }
+};
+
 createApp({
   gameId: 'loveletter',
   gameTitle: '情书',
@@ -693,6 +820,7 @@ createApp({
   formatOpponentMove: formatMove,
   formatSuggestedMove: formatMove,
   getPlayerSymbol: (p) => '玩家' + p,
+  extensions: [showdownExtension],
   difficulties: ['heuristic', 'casual', 'expert'],
   defaultDifficulty: 'expert',
   onActionSubmitted: () => { resetPending(); },
