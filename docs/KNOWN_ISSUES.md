@@ -38,7 +38,7 @@
 - [BUG-024] GameSession MCTS 搜索在真实状态上跑，应隔离为 AI view
 - [BUG-025] pipeline.py `nopeek_enabled` off-by-one：peek_steps=0 被错误解读为"第 0 步 peek"
 - [BUG-026] ISMCTS DAG hash collision → MCTS 选中非法 action 崩溃
-- [BUG-027] Quoridor 手机浏览器 legal 高亮下移 —— `<button>` 的 UA baseline 偏移
+- [BUG-027] Quoridor 手机端棋盘 UI 连环坑 —— button UA baseline 偏移 + 固定像素尺寸在小 slot 下退化
 
 ### 游戏层 Issues（具体游戏的规则 / 编码器 / tracker）
 
@@ -1157,16 +1157,21 @@ if (!rules.validate_action(*sim_state, chosen_action)) {
 
 ---
 
-## [BUG-027] Quoridor 手机浏览器 legal 高亮下移 —— `<button>` 的 UA baseline 偏移
+## [BUG-027] Quoridor 手机端棋盘 UI 连环坑 —— button UA baseline 偏移 + 固定像素尺寸在小 slot 下退化
 
 **分类**：Web 前端
 **状态**：已修复
 **文件**：`games/quoridor/web/quoridor.js`、`games/quoridor/web/styles.v2.css`、`platform/app.py`
-**严重程度**：中 — 手机访问者感知 legal 走子高亮偏离格子中心，影响可玩性
+**严重程度**：中 — 手机访问者感知 legal 高亮偏离格子中心、放墙 pill 变成圆点，影响可玩性
 
 ### 问题描述
 
-手机浏览器（以及安卓 Chromium webview 的"请求桌面版"模式）访问 Quoridor，legal 走子高亮的小圆点整体比格子中心下移几个像素，视觉上像"贴着 cell 底边"。桌面浏览器正常。
+手机浏览器（以及安卓 Chromium webview 的"请求桌面版"模式）访问 Quoridor，出现两个叠加的视觉 bug：
+
+1. legal 走子高亮的小圆点整体比格子几何中心**下移几个像素**，视觉上像"贴着 cell 底边"
+2. legal 放墙 pill 在桌面上是**长条形**，手机上退化成**正方形/圆点**
+
+桌面浏览器两个都正常。
 
 ### 调试弯路
 
@@ -1245,6 +1250,37 @@ cell.className = 'board-cell';
 
 `<div>` 没有 UA baseline 偏移，所有子元素（pawn、legal 圆点）落在真正的几何中心。点击事件和无障碍语义靠 `role="button"` 保留。
 
+### 修复 2：wall-pill 固定像素高度 → 改成 slot 百分比
+
+button → div 那一版修完后，用户发现 legal 放墙 pill 在桌面上是长条形、手机上变成了圆点。CSS 当时是：
+
+```css
+.edge-slot.edge-h::after {
+  width: calc(100% - 8px);   /* 宽度按 slot 比例变 */
+  height: 8px;               /* 但高度是固定 8px */
+}
+```
+
+- 桌面 slot = 34px：pill 是 26×8，长宽比 ~3.2，看着是长 pill
+- 手机 slot = 17~19px：pill 是 9~11×8，长宽比 ~1.1，看着像正方形/圆点
+
+**固定像素尺寸在"设计时只照顾到一个 slot 大小"的场景下必然退化**。桌面那版看着对是因为 slot 大；手机上 slot 小了一倍，固定 8px 相对比例就翻倍，pill 宽高比塌了。
+
+改成两个轴都用 slot 百分比：
+
+```css
+.edge-slot.edge-h::after {
+  width: 85%;
+  height: 30%;
+}
+.edge-slot.edge-v::after {
+  width: 30%;
+  height: 85%;
+}
+```
+
+现在桌面和手机 pill 比例一致，都是长条。已放置的 wall-anchor 继承 30% 高度，手机上稍薄但还是清晰的长条形墙体。
+
 ### 顺带修的：**Cache busting**
 
 调试期间发现服务器端代码已经更新但手机上还显示旧版，即使手动清理缓存、换浏览器都没用 —— 手机 ISP / 系统 webview 层的缓存比桌面粗暴得多，即便服务器返回 `Cache-Control: no-cache, no-store` 也会被忽略。
@@ -1276,6 +1312,7 @@ def _rewrite_asset_refs(html: str, web_dir: Path) -> str:
 - **`<button>` 在 Web UI 组件中不是自由替换 `<div>` 的选择**。在对几何对齐要求苛刻的场景（棋盘格子、色块、坐标点），UA 给 button 烘焙的 baseline 偏移是 CSS 重置不掉的。默认用 `<div role="button">`，除非需要 native 表单语义。
 - **CSS 自定义属性的 fallback 需要 `@supports`**，不能靠"声明两行"。`--x: floor(...)` 不会因为浏览器不认 `floor()` 而被跳过。
 - **`aspect-ratio` 在某些手机 webview 里有 bug**，需要实机验证，不能假设"W3C 标准 + caniuse 全绿就能用"。
+- **混合"百分比 + 固定像素"的尺寸公式在小 slot 下会退化**。`width: calc(100% - 8px); height: 8px` 在 34px slot 是长 pill，换到 17px slot 变成正方形。响应式 UI 里凡是要保持"视觉比例"的尺寸，两个轴都用百分比，不要一轴百分比一轴固定像素。
 - **中国系手机浏览器的缓存比 `Cache-Control` 更顽固**，走纯 header 方案不可靠，必须 URL 层 cache-busting（文件名或 query）才能突破。
 - **调试弯路值得完整记录**。这个 bug 改了 8 版 CSS、2 版 JS，其中 5 版都是错的方向。没有 devlog，下次遇到类似症状又要走一遍。
 
