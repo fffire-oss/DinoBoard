@@ -1,4 +1,5 @@
 """DinoBoard web platform entry point."""
+import re
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -56,10 +57,59 @@ if static_dir.exists():
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 games_dir = PROJECT_ROOT / "games"
+
+
+# Append `?v=<mtime>` to every same-origin CSS/JS reference in an index.html
+# so aggressive ISP/browser/webview caches (common on Chinese mobile browsers
+# that ignore Cache-Control) treat each edit as a fresh URL and can't serve
+# a stale copy. Only relative refs are rewritten — absolute URLs, CDN refs,
+# and already-versioned URLs are left alone.
+_ASSET_REF_RE = re.compile(
+    r'(?P<attr>href|src)="(?P<url>[^"]+\.(?:css|js))"'
+)
+
+
+def _rewrite_asset_refs(html: str, web_dir: Path) -> str:
+    def repl(m: re.Match) -> str:
+        url = m.group("url")
+        if "?" in url or "://" in url or url.startswith("/"):
+            return m.group(0)
+        asset = web_dir / url
+        if not asset.exists():
+            return m.group(0)
+        mtime = int(asset.stat().st_mtime)
+        return f'{m.group("attr")}="{url}?v={mtime}"'
+    return _ASSET_REF_RE.sub(repl, html)
+
+
+def _make_game_index_handler(web_dir: Path):
+    index_path = web_dir / "index.html"
+
+    def handler() -> HTMLResponse:
+        html = index_path.read_text(encoding="utf-8")
+        return HTMLResponse(_rewrite_asset_refs(html, web_dir))
+    return handler
+
+
 for game_dir in sorted(games_dir.iterdir()):
     web_dir = game_dir / "web"
     if web_dir.exists() and (web_dir / "index.html").exists():
         game_name = game_dir.name
+        # Custom index handler that injects cache-busting query strings.
+        # Must be registered before the StaticFiles mount, otherwise the
+        # mount shadows the bare-path route for `/games/<game>/`.
+        app.add_api_route(
+            f"/games/{game_name}/",
+            _make_game_index_handler(web_dir),
+            methods=["GET"],
+            include_in_schema=False,
+        )
+        app.add_api_route(
+            f"/games/{game_name}",
+            _make_game_index_handler(web_dir),
+            methods=["GET"],
+            include_in_schema=False,
+        )
         app.mount(
             f"/games/{game_name}",
             StaticFiles(directory=str(web_dir), html=True),
