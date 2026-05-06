@@ -34,8 +34,13 @@
    * on the wrong row. */
   grid-template-columns: repeat(17, 1fr);
   grid-template-rows: repeat(17, 1fr);
-  width: calc(var(--slot) * 17 + 28px);
-  height: calc(var(--slot) * 17 + 28px);
+  /* Grid is a square whose size is whichever is smaller: the desired
+   * slot-based size, or the board column's actual width. On desktop the
+   * `--slot`-based max keeps cells at a comfortable 34px; on mobile the
+   * column width wins and 17 `1fr` tracks divide it cleanly — no floor
+   * drift because tracks come from the actual rendered width. */
+  width: min(100%, calc(var(--slot) * 17 + 28px));
+  aspect-ratio: 1 / 1;
   box-sizing: border-box;
   gap: 0;
   position: relative;
@@ -81,11 +86,13 @@
 }
 
 .pawn {
-  /* Scale with --slot so the pawn stays proportional when the board
-   * resizes. ~85% of the cell width keeps a visible rim of the cell
-   * background around the piece. */
-  width: calc(var(--slot) * 0.82);
-  height: calc(var(--slot) * 0.82);
+  /* Scale to the actual cell (percentages of the flex parent) rather than
+   * the theoretical `--slot` — on mobile the grid is driven by `1fr`, so
+   * the real track width can be smaller than `--slot`, and a fixed
+   * slot-based size would overflow the cell. Percentages + aspect-ratio
+   * stay square at every viewport. */
+  width: 82%;
+  aspect-ratio: 1 / 1;
   border-radius: 999px;
   display: flex;
   align-items: center;
