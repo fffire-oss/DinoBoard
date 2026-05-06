@@ -697,12 +697,11 @@ board_ai::GameBundle make_splendor(const std::string& game_id, std::uint64_t see
   // Tail solver never consumes hidden chance outcomes → safe.
   b.stochastic_tail_solve_safe = true;
 
-  b.tail_solve_trigger = [](const board_ai::IGameState& state, int ply) -> bool {
-    if (ply < 40) return false;
+  b.tail_solve_trigger = [](const board_ai::IGameState& state, int /*ply*/) -> bool {
     const auto& s = board_ai::checked_cast<board_ai::splendor::SplendorState<NPlayers>>(state);
     const auto& d = s.persistent.data();
     for (int p = 0; p < NPlayers; ++p) {
-      if (d.player_points[static_cast<size_t>(p)] >= 12) return true;
+      if (d.player_points[static_cast<size_t>(p)] >= 10) return true;
     }
     return false;
   };

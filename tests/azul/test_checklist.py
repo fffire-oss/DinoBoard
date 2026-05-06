@@ -7,7 +7,11 @@ the bag is shuffled but every player sees what's drawn into factories.
     private fields (so hash_private_fields can stay empty)
   - multiplayer variants: 2p / 3p / 4p
   - uniform-random heuristic_picker (web 'heuristic' fallback)
-  - no tail_solver, no training_filter, no adjudicator, no aux_scorer
+  - tail_solver: AlphaBeta + custom trigger (some pattern-line >=4 AND
+    >=2 factories empty); safe to combine with belief tracker because
+    do_action_deterministic forces a draw-terminal whenever a round-end
+    refill (the only randomness) would have fired.
+  - no training_filter, no adjudicator, no aux_scorer
 """
 import dinoboard_engine
 import pytest
@@ -183,17 +187,64 @@ class TestHeuristic:
 
 
 # ---------------------------------------------------------------------------
-# 7. Components NOT registered for azul
+# 7. Tail solver + trigger
 # ---------------------------------------------------------------------------
 
-class TestUnsupportedComponents:
+class TestTailSolver:
+    """Azul tail solver: AlphaBeta with stochastic_tail_solve_safe=True
+    because do_action_deterministic collapses any round-end refill (the
+    only random event) into a draw-terminal (winner=-1, value 0).
+    """
 
-    def test_no_tail_solver(self):
-        with pytest.raises(RuntimeError, match="no tail_solver registered"):
-            dinoboard_engine.tail_solve(
-                game_id=GAME, seed=42, perspective_player=0,
-                depth_limit=5, node_budget=10000,
-            )
+    def test_tail_solve_api_returns_valid_result(self):
+        r = dinoboard_engine.tail_solve(
+            game_id=GAME, seed=42, perspective_player=0,
+            depth_limit=2, node_budget=2000,
+        )
+        assert "value" in r and "best_action" in r
+        assert "nodes_searched" in r and "budget_exceeded" in r
+        assert r["nodes_searched"] >= 0
+        assert -2.0 <= r["value"] <= 2.0
+
+    def test_tail_solve_tiny_budget_exceeds(self):
+        r = dinoboard_engine.tail_solve(
+            game_id=GAME, seed=42, perspective_player=0,
+            depth_limit=20, node_budget=5,
+        )
+        assert r["budget_exceeded"], "tiny budget should exceed"
+
+    def test_configure_tail_solve_via_session(self):
+        """Drive a session with tail_solve enabled — get_ai_action returns
+        tail_solve stats fields whether or not the trigger fires."""
+        m = get_test_model(GAME)
+        gs = dinoboard_engine.GameSession(GAME, seed=42, model_path=m)
+        gs.configure_tail_solve(True, 5, 1000)
+        result = gs.get_ai_action(simulations=10, temperature=0.0)
+        stats = result["stats"]
+        assert "tail_solved" in stats and "tail_solve_value" in stats
+
+    def test_configure_tail_solve_disabled_never_fires(self):
+        m = get_test_model(GAME)
+        gs = dinoboard_engine.GameSession(GAME, seed=42, model_path=m)
+        gs.configure_tail_solve(False, 5, 1000)
+        result = gs.get_ai_action(simulations=10, temperature=0.0)
+        assert result["stats"]["tail_solved"] is False
+
+    def test_selfplay_with_tail_solve_runs(self):
+        """End-to-end: a full selfplay episode with the tail solver
+        configured the way web.json wires it. Uses a tiny budget so it's
+        fast — we only assert the invariant successes <= completed <= attempts.
+        """
+        ep = dinoboard_engine.run_selfplay_episode(
+            game_id=GAME, seed=42, model_path=get_test_model(GAME),
+            simulations=10, max_game_plies=200,
+            tail_solve_enabled=True, tail_solve_start_ply=1,
+            tail_solve_depth_limit=2, tail_solve_node_budget=500,
+        )
+        a = ep["tail_solve_attempts"]
+        c = ep["tail_solve_completed"]
+        s = ep["tail_solve_successes"]
+        assert s <= c <= a, f"invariant violated: {s} <= {c} <= {a}"
 
 
 # ---------------------------------------------------------------------------

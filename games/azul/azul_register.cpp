@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "../../engine/core/game_registry.h"
+#include "../../engine/search/tail_solver.h"
 #include "azul_state.h"
 #include "azul_rules.h"
 #include "azul_net_adapter.h"
@@ -472,6 +473,40 @@ board_ai::GameBundle make_azul(const std::string& game_id, std::uint64_t seed) {
   b.public_event_applier = azul_events::apply_event<NPlayers>;
   b.initial_observation_extractor = azul_events::extract_initial_observation<NPlayers>;
   b.initial_observation_applier = azul_events::apply_initial_observation<NPlayers>;
+
+  b.tail_solver = std::make_unique<board_ai::search::AlphaBetaTailSolver>();
+  // AzulRules::do_action_deterministic forces a draw-terminal (winner=-1)
+  // whenever an action would trigger a round-end factory refill (the only
+  // source of hidden randomness in Azul). Tail solver therefore never
+  // consumes hidden chance outcomes — safe to combine with belief tracker.
+  b.stochastic_tail_solve_safe = true;
+
+  // Trigger: at least one player has ≥4 tiles in some pattern-line row,
+  // AND at least 2 factories are empty. Captures "round nearly resolved
+  // and a wall placement is imminent" — small enough subgame to solve.
+  b.tail_solve_trigger = [](const board_ai::IGameState& state, int /*ply*/) -> bool {
+    using Cfg = board_ai::azul::AzulConfig<NPlayers>;
+    const auto& s = board_ai::checked_cast<board_ai::azul::AzulState<NPlayers>>(state);
+    bool any_line_near_full = false;
+    for (int p = 0; p < NPlayers; ++p) {
+      const auto& ps = s.players[p];
+      for (int r = 0; r < board_ai::azul::kRows; ++r) {
+        if (static_cast<int>(ps.line_len[r]) >= 4) {
+          any_line_near_full = true;
+          break;
+        }
+      }
+      if (any_line_near_full) break;
+    }
+    if (!any_line_near_full) return false;
+    int empty_factories = 0;
+    for (int f = 0; f < Cfg::kFactories; ++f) {
+      int total = 0;
+      for (int c = 0; c < board_ai::azul::kColors; ++c) total += s.factories[f][c];
+      if (total == 0) ++empty_factories;
+    }
+    return empty_factories >= 2;
+  };
   return b;
 }
 

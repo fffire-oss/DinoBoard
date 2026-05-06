@@ -68,6 +68,22 @@ class TestLoadWebConfigs:
         assert ts["depth_limit"] == 10
         assert ts["node_budget"] == 200000
 
+    def test_azul_has_tail_solve(self):
+        from game_service.sessions import load_web_configs
+        configs = load_web_configs()
+        ts = configs["azul"]["tail_solve"]
+        assert ts["enabled"] is True
+        assert ts["depth_limit"] == 20
+        assert ts["node_budget"] == 1000000
+
+    def test_splendor_has_tail_solve(self):
+        from game_service.sessions import load_web_configs
+        configs = load_web_configs()
+        ts = configs["splendor"]["tail_solve"]
+        assert ts["enabled"] is True
+        assert ts["depth_limit"] == 7
+        assert ts["node_budget"] == 1000000
+
     def test_games_without_web_json_not_in_configs(self):
         """Games that have no web.json and no legacy web fields should not appear."""
         from game_service.sessions import load_web_configs

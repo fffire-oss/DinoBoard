@@ -5,5 +5,10 @@
       "temperature": 0.0
     }
   },
-  "analysis_simulations": 500
+  "analysis_simulations": 500,
+  "tail_solve": {
+    "enabled": true,
+    "depth_limit": 20,
+    "node_budget": 1000000
+  }
 }

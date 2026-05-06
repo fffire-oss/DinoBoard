@@ -2,7 +2,7 @@
 
 Splendor is a hidden-information game with:
   - belief_tracker (deck contents are hidden, but card pool is public)
-  - tail_solver + tail_solve_trigger (>=12 points triggers solve)
+  - tail_solver + tail_solve_trigger (any player >=10 points)
   - multiplayer variants: 2p / 3p / 4p
   - uniform-random heuristic_picker (web 'heuristic' fallback)
   - no real heuristic, no training_filter, no adjudicator, no aux_scorer
@@ -203,6 +203,12 @@ class TestHeuristic:
 # ---------------------------------------------------------------------------
 
 class TestTailSolver:
+    """Splendor tail solver: AlphaBeta with stochastic_tail_solve_safe=True
+    because SplendorRules::do_action_deterministic forces the tier-replenish
+    step to skip drawing the hidden deck (forced_draw_override = -2). The
+    solver only sees the current public state — never samples / branches over
+    hidden information.
+    """
 
     def test_tail_solve_api(self):
         r = dinoboard_engine.tail_solve(
@@ -210,6 +216,46 @@ class TestTailSolver:
             depth_limit=2, node_budget=1000,
         )
         assert "value" in r and "budget_exceeded" in r
+
+    def test_tail_solve_tiny_budget_exceeds(self):
+        r = dinoboard_engine.tail_solve(
+            game_id=GAME, seed=42, perspective_player=0,
+            depth_limit=20, node_budget=5,
+        )
+        assert r["budget_exceeded"], "tiny budget should exceed"
+
+    def test_configure_tail_solve_via_session(self):
+        """Drive a session with tail_solve enabled — get_ai_action returns
+        tail_solve stats fields whether or not the trigger fires."""
+        m = get_test_model(GAME)
+        gs = dinoboard_engine.GameSession(GAME, seed=42, model_path=m)
+        gs.configure_tail_solve(True, 5, 1000)
+        result = gs.get_ai_action(simulations=10, temperature=0.0)
+        stats = result["stats"]
+        assert "tail_solved" in stats and "tail_solve_value" in stats
+
+    def test_configure_tail_solve_disabled_never_fires(self):
+        m = get_test_model(GAME)
+        gs = dinoboard_engine.GameSession(GAME, seed=42, model_path=m)
+        gs.configure_tail_solve(False, 5, 1000)
+        result = gs.get_ai_action(simulations=10, temperature=0.0)
+        assert result["stats"]["tail_solved"] is False
+
+    def test_selfplay_with_tail_solve_runs(self):
+        """End-to-end: full selfplay episode with the tail solver wired the
+        way web.json does. Tiny budget so it's fast — only assert the
+        invariant successes <= completed <= attempts.
+        """
+        ep = dinoboard_engine.run_selfplay_episode(
+            game_id=GAME, seed=42, model_path=get_test_model(GAME),
+            simulations=10, max_game_plies=200,
+            tail_solve_enabled=True, tail_solve_start_ply=1,
+            tail_solve_depth_limit=2, tail_solve_node_budget=500,
+        )
+        a = ep["tail_solve_attempts"]
+        c = ep["tail_solve_completed"]
+        s = ep["tail_solve_successes"]
+        assert s <= c <= a, f"invariant violated: {s} <= {c} <= {a}"
 
 
 # ---------------------------------------------------------------------------

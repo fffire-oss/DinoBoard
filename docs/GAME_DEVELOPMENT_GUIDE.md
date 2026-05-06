@@ -994,12 +994,13 @@ b.tail_solve_trigger = [](const board_ai::IGameState& state, int ply) -> bool {
 
 **示例**（Splendor — 有人接近胜利时尝试）：
 ```cpp
-b.tail_solve_trigger = [](const board_ai::IGameState& state, int ply) -> bool {
-  if (ply < 40) return false;
+b.tail_solve_trigger = [](const board_ai::IGameState& state, int /*ply*/) -> bool {
   const auto& s = board_ai::checked_cast<SplendorState<NPlayers>>(state);
   const auto& d = s.persistent.data();
   for (int p = 0; p < NPlayers; ++p) {
-    if (d.player_points[static_cast<size_t>(p)] >= 12) return true;
+    // 10 分是规则上的相变点：5 分卡数量决定 10→15 必经一张大牌，
+    // 搜索空间在此处显著塌缩。实测 11 分阈值会漏掉~17% 必胜手。
+    if (d.player_points[static_cast<size_t>(p)] >= 10) return true;
   }
   return false;
 };
@@ -1049,6 +1050,62 @@ value = terminal_value + margin_weight × auxiliary_scorer(state, perspective)
 `margin_weight` 需保证 `margin_weight × max(|scorer_value|) < 1.0`，否则平局可能被误判为胜利（采用条件为 `|value| >= 1.0`）。`auxiliary_scorer` 接口无返回值限制，如果 scorer 无界需相应减小 weight。需要同时注册 `auxiliary_scorer`。
 
 **注意**：对于随机游戏，确保实现了 `do_action_deterministic()`，否则 tail solver 会包含随机分支导致结果不准确。
+
+#### 9.2.1 调参方法论：触发条件 / 深度 / 预算如何选
+
+新游戏接入 tail solver 时不要凭直觉拍超参数。以下是从 Splendor / Azul 调参实战总结的流程：
+
+**Step 1 — 用游戏规则锁定触发器锚点**
+
+触发条件应该对应**规则常量定义的"残局相变点"**，不是笼统的"差不多到后期"：
+
+| 游戏 | 触发锚点 | 规则依据 |
+|------|---------|---------|
+| Splendor | 任一玩家 ≥10 分 | 5 分卡数量有限，10→15 必经一张大牌，搜索空间塌缩 |
+| Azul | 某行 pattern-line ≥4 + ≥2 工厂空 | 倒数第二格 + 本轮接近结束，行动空间显著收窄 |
+| Quoridor | 某玩家最短路 ≤ 4 | 距离阈值下分支因子可控 |
+
+**反例**（要避免）：
+- `ply >= N` 单独作为触发条件 —— ply 是 epiphenomenon，不是因果
+- 复合 AND 条件里塞"双保险"（如 `ply>=40 && points>=10`），实战会发现某一项从不咬住，删掉等价。**不咬住 = 不存在**
+- 拍脑袋的中间值（如 Splendor 选 12 分 = 离胜利只差 3 分）—— 没有规则依据，多半不是相变点
+
+**Step 2 — 端到端实测，看四个 KPI**
+
+跑 N=20-30 局 `run_selfplay_episode(tail_solve_enabled=True, ...)`，收集 episode stats：
+
+| 指标 | 含义 | 健康范围 |
+|------|------|---------|
+| `tail_solve_attempts` | 触发次数 | 衡量触发器作用范围 |
+| `completed / attempts` | 完成率（未超 budget） | **必须 ≥ 95%**，低于此说明在浪费搜索 |
+| `successes / attempts` | 命中率（找到必胜的比例） | 触发器精度核心 KPI |
+| `tail_solve_total_ms / attempts` | 单次平均耗时 | 网页端 < 50ms 玩家无感，>200ms 要警惕 |
+
+**别只测一个手造局面**。让 AI 自对弈 25 局，得到的是**真实分布**下的指标。单点测试无意义。
+
+**Step 3 — 调参顺序：一次只动一个变量**
+
+1. **先把 budget 给慷慨**（比预期需要的大一个数量级，例如 1M），让深度自由发挥
+2. **从某个 depth 起步往上推**（5 → 6 → 7 → 8 ...），观察完成率
+3. **判定停止**：完成率明显掉下来才停（不是看耗时、不是看"够用了"）。Splendor 实测 6→7 完成率从 100%→99.6%、必胜手 +19%，这种程度**不算崩**，应该继续往上测 —— 因为崩塌曲线通常先慢后快，而效率/质量平衡的 sweet spot 一般在崩塌前的 1-2 档。**实际工程上还要权衡"崩了一点 vs 多吃下来的必胜手"**：如果 99% → 95% 完成率换来 +30% 必胜手，多半值得；如果换来 +5% 必胜手，那就停在 99%。
+4. **再调触发阈值**（`points>=10` vs `>=11`）：往严的方向收一档对比
+   - successes 掉得慢、attempts 掉得快 → 阈值收得对（精度提升，浪费减少）
+   - successes 跟着掉很多 → 阈值过严，错过有价值局面，退回去
+5. **回头压 budget**（如果完成率仍接近 100%）：压到刚好覆盖 95 分位耗时，给玩家更快响应
+
+**Step 4 — 把规则知识凌驾于命中率之上**
+
+命中率（successes/attempts）高不等于强。一个永远不触发的过严触发器命中率 100%，但毫无用处。**规则告诉你的相变点 > 命中率优化结果**。
+
+**例**：Splendor `>=11` 命中率（30.9%）高于 `>=10`（22.1%），但 `>=10` 多找出 21% 必胜手 —— 因为规则上 10 分才是相变点，11 分时已经晚了一步。
+
+**反原则总结**
+
+- ❌ 没测过的设置不要相信先验直觉（"指数爆炸"在 TT + 迭代加深下不一定）
+- ❌ "看起来够用就停" → 必须测到完成率真的掉
+- ❌ 复合 AND 条件没单独验证每一项是否在咬住
+- ❌ 只测一个手造局面就下结论
+- ❌ 同时动多个变量（深度 + 阈值 + 预算）—— 失去归因能力
 
 ### 9.3 TrainingActionFilter — 训练动作过滤
 
