@@ -242,6 +242,24 @@ data-deck="1"              牌堆（tier）
 
 ---
 
+## 4.5 子像素陷阱：CSS Grid 轨道是会被 floor 的
+
+**踩过的坑（Quoridor 手机端）**：棋盘用 `grid-template-columns: repeat(17, var(--slot))`，`--slot` 是从视口宽度算出来的（`min(34px, calc((100vw - 40px) / 17))`）。手机上 `(375 - 40) / 17 ≈ 19.7px`，CSS Grid 把每条 track 渲染成 19px 或 20px（floor 到设备像素），但 `var(--slot)` 在其他地方仍然是 `19.7px` 这个理论值。后果：
+
+- 子元素用 `width: calc(var(--slot) - 8px)`、`width: calc(var(--slot) * 3 - 8px)` 这类绝对计算 → 跟实际 cell 的渲染宽度差一点点
+- 9 个 cell 一路累计，最右边的 highlight pill 看起来跟棋盘线明显错开
+- 桌面端 `--slot` 取到 34px 整数，没 floor 误差，所以你本机上完全看不出来
+
+**正确做法**：
+
+- **跨单格的子元素用百分比**，让浏览器用真实渲染宽度算：`width: calc(100% - 8px)` 而不是 `calc(var(--slot) - 8px)`
+- **跨多格的子元素**没法用百分比（伪元素的 containing block 是单个 cell），只能继续用 `calc(var(--slot) * N - 8px)`，这种地方手机上会有可见偏移；如果一定要消除，改成 `position: absolute` + `grid-column: span N` 让它跨真实 grid track，而不是手算偏移
+- **一切由 viewport 派生的 CSS 变量都是浮点数**，下游一律假设它会被 floor。`pawn` 这种用 `calc(var(--slot) * 0.82)` 算居中的尺寸没问题（自己 floor 就好），但**绝对位置/边距**别这么算
+
+**判断规则**：CSS 变量里只要出现 `vw / vh / 100% / fr` 派生量，写下游 `calc(var(--x) - Npx)` 之前先想一下 — "这个值会不会跟某个 grid track 或父容器的渲染像素需要对齐？" 是 → 改用 `100% - Npx`。
+
+---
+
 ## 5. 布局框架
 
 通用层 (`general/`) 提供固定的页面框架，游戏前端只填充内容：
@@ -303,3 +321,4 @@ createApp({
 - [ ] 可操作元素有 hover 和 cursor:pointer
 - [ ] 关键数字字号 ≥ 14px
 - [ ] 可点击元素 ≥ 36×36px
+- [ ] **手机实测过**——viewport 派生的 CSS 变量在小屏幕上可能是分数像素，桌面端 32–40px 的整数值不会暴露子像素 bug（§4.5）
