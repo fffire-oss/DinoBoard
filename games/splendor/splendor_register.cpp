@@ -411,7 +411,239 @@ PublicEventTrace extract_events(
       }
     }
   }
+
+  // BG-008 Phase 2: full post-action public snapshot for
+  // message-driven public state推进. Mirrors every field that
+  // SplendorState::hash_public_fields reads.
+  {
+    AnyMap snap;
+    snap["current_player"] = std::any(static_cast<int>(da.current_player));
+    snap["first_player"] = std::any(static_cast<int>(da.first_player));
+    snap["plies"] = std::any(static_cast<int>(da.plies));
+    snap["final_round_remaining"] = std::any(static_cast<int>(da.final_round_remaining));
+    snap["stage"] = std::any(static_cast<int>(da.stage));
+    snap["pending_returns"] = std::any(static_cast<int>(da.pending_returns));
+    snap["pending_nobles_size"] = std::any(static_cast<int>(da.pending_nobles_size));
+    std::vector<int> pending_noble_slots_v;
+    pending_noble_slots_v.reserve(da.pending_noble_slots.size());
+    for (auto slot : da.pending_noble_slots) pending_noble_slots_v.push_back(static_cast<int>(slot));
+    snap["pending_noble_slots"] = std::any(pending_noble_slots_v);
+    snap["winner"] = std::any(static_cast<int>(da.winner));
+    snap["terminal"] = std::any(static_cast<bool>(da.terminal));
+    snap["shared_victory"] = std::any(static_cast<bool>(da.shared_victory));
+
+    std::vector<int> scores_v(da.scores.begin(), da.scores.end());
+    snap["scores"] = std::any(scores_v);
+    std::vector<int> bank_v;
+    bank_v.reserve(da.bank.size());
+    for (auto v : da.bank) bank_v.push_back(static_cast<int>(v));
+    snap["bank"] = std::any(bank_v);
+
+    // Per-player public arrays, flattened row-major: [p0 values..., p1 values..., ...]
+    auto flatten_player_ints = [&](auto accessor) {
+      std::vector<int> flat;
+      flat.reserve(NPlayers * 6);
+      for (int p = 0; p < NPlayers; ++p) {
+        for (auto v : accessor(p)) flat.push_back(static_cast<int>(v));
+      }
+      return flat;
+    };
+    snap["player_gems_flat"] = std::any(flatten_player_ints(
+        [&](int p) -> const auto& { return da.player_gems[p]; }));
+    snap["player_bonuses_flat"] = std::any(flatten_player_ints(
+        [&](int p) -> const auto& { return da.player_bonuses[p]; }));
+    std::vector<int> points_v(NPlayers);
+    std::vector<int> cards_count_v(NPlayers);
+    std::vector<int> nobles_count_v(NPlayers);
+    std::vector<int> reserved_size_v(NPlayers);
+    for (int p = 0; p < NPlayers; ++p) {
+      points_v[p] = static_cast<int>(da.player_points[p]);
+      cards_count_v[p] = static_cast<int>(da.player_cards_count[p]);
+      nobles_count_v[p] = static_cast<int>(da.player_nobles_count[p]);
+      reserved_size_v[p] = static_cast<int>(da.reserved_size[p]);
+    }
+    snap["player_points"] = std::any(points_v);
+    snap["player_cards_count"] = std::any(cards_count_v);
+    snap["player_nobles_count"] = std::any(nobles_count_v);
+    snap["reserved_size"] = std::any(reserved_size_v);
+
+    // Reserved visibility flags (all) + face-up card IDs. Face-down
+    // card IDs are NOT in the snapshot (they're private to the owner;
+    // tracker + self_reserve_deck event handle them).
+    std::vector<int> reserved_visible_flat(NPlayers * 3);
+    std::vector<int> reserved_faceup_ids_flat(NPlayers * 3, -1);
+    for (int p = 0; p < NPlayers; ++p) {
+      for (int i = 0; i < 3; ++i) {
+        const bool visible = da.reserved_visible[p][i] != 0;
+        reserved_visible_flat[p * 3 + i] = visible ? 1 : 0;
+        if (visible) {
+          reserved_faceup_ids_flat[p * 3 + i] = static_cast<int>(da.reserved[p][i]);
+        }
+      }
+    }
+    snap["reserved_visible_flat"] = std::any(reserved_visible_flat);
+    snap["reserved_faceup_ids_flat"] = std::any(reserved_faceup_ids_flat);
+
+    // Tableau: sizes + card IDs per tier (public).
+    std::vector<int> tableau_size_v(3);
+    std::vector<int> tableau_ids_flat(3 * 4, -1);
+    for (int t = 0; t < 3; ++t) {
+      tableau_size_v[t] = static_cast<int>(da.tableau_size[t]);
+      for (int slot = 0; slot < 4; ++slot) {
+        tableau_ids_flat[t * 4 + slot] = static_cast<int>(da.tableau[t][slot]);
+      }
+    }
+    snap["tableau_size"] = std::any(tableau_size_v);
+    snap["tableau_ids_flat"] = std::any(tableau_ids_flat);
+
+    // Deck sizes (public); contents are hidden.
+    std::vector<int> deck_sizes_v(3);
+    for (int t = 0; t < 3; ++t) deck_sizes_v[t] = static_cast<int>(da.decks[t].size());
+    snap["deck_sizes"] = std::any(deck_sizes_v);
+
+    // Nobles (public IDs + slot count).
+    snap["nobles_size"] = std::any(static_cast<int>(da.nobles_size));
+    std::vector<int> nobles_v;
+    nobles_v.reserve(da.nobles.size());
+    for (auto nid : da.nobles) nobles_v.push_back(static_cast<int>(nid));
+    snap["nobles"] = std::any(nobles_v);
+
+    out.public_snapshot = std::move(snap);
+  }
+
   return out;
+}
+
+// BG-008 Phase 2: applier — inverse of the snapshot extractor above.
+// Overwrites public fields onto `state`, leaves hidden fields (face-down
+// reserved ids, deck contents) for randomize_unseen to fill.
+template <int NPlayers>
+void apply_public_state(IGameState& state, const AnyMap& snap) {
+  auto& s = board_ai::checked_cast<SplendorState<NPlayers>>(state);
+
+  auto get_int = [&](const char* key) -> int {
+    auto it = snap.find(key);
+    return (it != snap.end()) ? std::any_cast<int>(it->second) : 0;
+  };
+  auto get_bool = [&](const char* key) -> bool {
+    auto it = snap.find(key);
+    return (it != snap.end()) ? std::any_cast<bool>(it->second) : false;
+  };
+  auto get_iv = [&](const char* key) -> std::vector<int> {
+    auto it = snap.find(key);
+    return (it != snap.end())
+        ? std::any_cast<std::vector<int>>(it->second)
+        : std::vector<int>{};
+  };
+
+  mutate_persistent<NPlayers>(s, [&](SplendorData<NPlayers>& d) {
+    d.current_player = static_cast<std::int8_t>(get_int("current_player"));
+    d.first_player = static_cast<std::int8_t>(get_int("first_player"));
+    d.plies = static_cast<std::int16_t>(get_int("plies"));
+    d.final_round_remaining = static_cast<std::int8_t>(get_int("final_round_remaining"));
+    d.stage = static_cast<std::int8_t>(get_int("stage"));
+    d.pending_returns = static_cast<std::int8_t>(get_int("pending_returns"));
+    d.pending_nobles_size = static_cast<std::int8_t>(get_int("pending_nobles_size"));
+    d.winner = static_cast<std::int8_t>(get_int("winner"));
+    d.terminal = get_bool("terminal");
+    d.shared_victory = get_bool("shared_victory");
+
+    auto pns = get_iv("pending_noble_slots");
+    for (size_t i = 0; i < d.pending_noble_slots.size(); ++i) {
+      d.pending_noble_slots[i] = (i < pns.size()) ? static_cast<std::int8_t>(pns[i]) : -1;
+    }
+
+    auto scores_v = get_iv("scores");
+    for (int p = 0; p < NPlayers && p < static_cast<int>(scores_v.size()); ++p) {
+      d.scores[p] = scores_v[p];
+    }
+    auto bank_v = get_iv("bank");
+    for (size_t i = 0; i < d.bank.size() && i < bank_v.size(); ++i) {
+      d.bank[i] = static_cast<std::int8_t>(bank_v[i]);
+    }
+
+    auto gems_flat = get_iv("player_gems_flat");
+    auto bonuses_flat = get_iv("player_bonuses_flat");
+    const int stride_gems = d.player_gems[0].size();
+    const int stride_bonuses = d.player_bonuses[0].size();
+    for (int p = 0; p < NPlayers; ++p) {
+      for (int i = 0; i < stride_gems; ++i) {
+        const int idx = p * stride_gems + i;
+        if (idx < static_cast<int>(gems_flat.size())) {
+          d.player_gems[p][i] = static_cast<std::int8_t>(gems_flat[idx]);
+        }
+      }
+      for (int i = 0; i < stride_bonuses; ++i) {
+        const int idx = p * stride_bonuses + i;
+        if (idx < static_cast<int>(bonuses_flat.size())) {
+          d.player_bonuses[p][i] = static_cast<std::int8_t>(bonuses_flat[idx]);
+        }
+      }
+    }
+
+    auto points = get_iv("player_points");
+    auto cards_count = get_iv("player_cards_count");
+    auto nobles_count = get_iv("player_nobles_count");
+    auto reserved_sz = get_iv("reserved_size");
+    for (int p = 0; p < NPlayers; ++p) {
+      if (p < static_cast<int>(points.size())) d.player_points[p] = static_cast<std::int8_t>(points[p]);
+      if (p < static_cast<int>(cards_count.size())) d.player_cards_count[p] = static_cast<std::int8_t>(cards_count[p]);
+      if (p < static_cast<int>(nobles_count.size())) d.player_nobles_count[p] = static_cast<std::int8_t>(nobles_count[p]);
+      if (p < static_cast<int>(reserved_sz.size())) d.reserved_size[p] = static_cast<std::int8_t>(reserved_sz[p]);
+    }
+
+    auto visible_flat = get_iv("reserved_visible_flat");
+    auto faceup_ids_flat = get_iv("reserved_faceup_ids_flat");
+    for (int p = 0; p < NPlayers; ++p) {
+      for (int i = 0; i < 3; ++i) {
+        const int idx = p * 3 + i;
+        if (idx < static_cast<int>(visible_flat.size())) {
+          d.reserved_visible[p][i] = static_cast<std::int8_t>(visible_flat[idx]);
+        }
+        // Face-up reserved cards: overwrite from snapshot. Face-down
+        // reserved cards: leave as-is (tracker / self_reserve_deck handle).
+        if (idx < static_cast<int>(faceup_ids_flat.size()) &&
+            visible_flat[idx] != 0 &&
+            faceup_ids_flat[idx] >= 0) {
+          d.reserved[p][i] = static_cast<std::int16_t>(faceup_ids_flat[idx]);
+        }
+      }
+    }
+
+    auto tableau_sz = get_iv("tableau_size");
+    auto tableau_ids = get_iv("tableau_ids_flat");
+    for (int t = 0; t < 3; ++t) {
+      if (t < static_cast<int>(tableau_sz.size())) {
+        d.tableau_size[t] = static_cast<std::int8_t>(tableau_sz[t]);
+      }
+      for (int slot = 0; slot < 4; ++slot) {
+        const int idx = t * 4 + slot;
+        if (idx < static_cast<int>(tableau_ids.size())) {
+          d.tableau[t][slot] = static_cast<std::int16_t>(tableau_ids[idx]);
+        }
+      }
+    }
+
+    // Deck sizes are public; contents will be filled by randomize_unseen.
+    auto deck_sizes = get_iv("deck_sizes");
+    for (int t = 0; t < 3; ++t) {
+      const int target = (t < static_cast<int>(deck_sizes.size())) ? deck_sizes[t] : 0;
+      if (target < 0) continue;
+      if (static_cast<int>(d.decks[t].size()) > target) {
+        d.decks[t].resize(static_cast<size_t>(target));
+      } else {
+        while (static_cast<int>(d.decks[t].size()) < target) {
+          d.decks[t].push_back(-1);  // placeholder; randomize_unseen fills
+        }
+      }
+    }
+
+    d.nobles_size = static_cast<std::int8_t>(get_int("nobles_size"));
+    auto nobles_v = get_iv("nobles");
+    for (size_t i = 0; i < d.nobles.size(); ++i) {
+      d.nobles[i] = (i < nobles_v.size()) ? static_cast<std::int16_t>(nobles_v[i]) : -1;
+    }
+  });
 }
 
 template <int NPlayers>
@@ -688,6 +920,7 @@ board_ai::GameBundle make_splendor(const std::string& game_id, std::uint64_t see
   b.heuristic_picker = splendor_heuristic::pick<NPlayers>;
   b.public_event_extractor = splendor_events::extract_events<NPlayers>;
   b.public_event_applier = splendor_events::apply_event<NPlayers>;
+  b.public_state_applier = splendor_events::apply_public_state<NPlayers>;
   b.initial_observation_extractor = splendor_events::extract_initial_observation<NPlayers>;
   b.initial_observation_applier = splendor_events::apply_initial_observation<NPlayers>;
 
