@@ -1331,7 +1331,15 @@ virtual void randomize_unseen(IGameState& state, std::mt19937& rng) const = 0;
 
 两个 extractor 是小函数（~20-40 行），只读观察者可见字段，易于审计。
 
-`randomize_unseen(state, rng)` 是 MCTS 采样的**写入口**——可以读 state 的公开字段 + 观察者自己的字段（discard_piles、自己的 hand 等），但禁止读 opp 的 hidden 字段（对手手牌、deck 内容）。tracker 从自己累积的 belief 构建 unseen pool 和 known-hand 分配。
+`randomize_unseen(state, rng)` 是采样的**写入口**——可以读 state 的公开字段 + 观察者自己的字段（discard_piles、自己的 hand 等），但禁止读 opp 的 hidden 字段（对手手牌、deck 内容）。tracker 从自己累积的 belief 构建 unseen pool 和 known-hand 分配。
+
+**BG-008 契约**：`randomize_unseen` 返回的世界必须满足所有公共不变量——`hash_public_fields` 的值在相同观测史、不同 RNG 采样下 byte-equal。隐藏多重集（deck size / bag size / court-deck size 等）必须由 tracker 的 seen 信息**推导**出来，不能保留输入 state 里的残值（输入里的残值可能已被 session 的 `do_action_fast` + event 处理漂移）。Stale 采样（opp hidden 字段的旧 cid 现在已经被公开看到）必须从当前未见池重采。
+
+**`randomize_unseen` 的两个调用点**：
+1. MCTS 根采样（per-sim determinization）：每次 sim 开头在 cloned state 上调用一次
+2. API 会话末尾 freshening（BG-008）：`GameSessionWrapper::apply_observation` 末尾自动用 deterministic RNG 调用一次，把会话持久 state_ 的隐藏字段重新采样，消除 BUG-028 家族的 RNG 漂移。开发者不用写胶水代码，框架包办
+
+**开发者必须保证**：游戏的 `do_action_fast` **不能让公共输出依赖被 `randomize_unseen` 重采的字段**。如果 `do_action_fast` 内部有这样的读取（如 LoveLetter 在牌堆空时用 `check_end_game` 读所有活着玩家手牌判胜负），必须通过 extractor emit 一条 post-event 让 applier 覆盖公共输出成 truth 值（LoveLetter 的 `round_end` post-event 就是做这个）。否则测试 `test_public_hash_excludes_internal_rng` 的 60-seed sweep 会抓到漂移。
 
 **Belief tracker 不仅追踪公开信息，也可以追踪通过游戏技能合法获得的私有知识**。例如 Love Letter 中 Priest 偷看对手手牌、King 交换后知道对方原来的牌——这些通过 `hand_override` 事件传递到 tracker。`randomize_unseen` 时优先使用 tracker 中的确定知识（直接固定），没有确定知识的才从 unseen pool 中随机采样。这使得 ISMCTS 的采样质量更高——已知的不浪费预算重新猜。
 
@@ -1355,6 +1363,15 @@ virtual void randomize_unseen(IGameState& state, std::mt19937& rng) const = 0;
   3. do_action_fast(state, chosen)                       // 执行动作
   4. evt = bundle.public_event_extractor(before, action, after, perspective)
      belief_tracker->observe_public_event(actor, chosen, evt.pre_events, evt.post_events)
+
+API 会话的 apply_observation 额外在 step 4 之后调：
+  5. belief_tracker->randomize_unseen(state_, freshen_rng)  // BG-008：刷掉
+                                                            // do_action_fast
+                                                            // 残留的 session
+                                                            // RNG 采样，保证
+                                                            // state_ 的公开
+                                                            // 字段可由观测史
+                                                            // 推导
 ```
 
 `tracker_init` / `tracker_observe` 这类 helper 封装了 extractor 调用（见 `bindings/py_engine.cpp`）。游戏开发者只需实现 IBeliefTracker 的 3 个方法 + `initial_observation_extractor` + `public_event_extractor`。

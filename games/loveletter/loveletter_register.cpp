@@ -564,14 +564,15 @@ PublicEventTrace extract_events(
   }
 
   // Post-event 3: terminal transition. `check_end_game` inside do_action_fast
-  // computes winner from d.hand[all alive] when deck empties (line 160 of
-  // loveletter_rules.cpp). If session's d.hand[opp] is session-sampled
-  // (different from truth), session computes wrong winner → public-hash
-  // drift. Emitting truth winner as a post-event idempotently overrides
-  // session's check_end_game output. Sole-survivor path produces truth
-  // values already, so this is a no-op there; deck-empty path gets
-  // corrected. This makes session public output invariant to the opp-hand
-  // sample at action time — enabling BG-008 MVP (freshen-at-end-of-apply).
+  // computes winner from d.hand[all alive] when the deck empties. In the
+  // API session, d.hand[opp] is freshly sampled at the end of every
+  // apply_observation (see py_engine / belief_tracker.h randomize_unseen
+  // contract), so the session's check_end_game may compute a winner that
+  // depends on the sampled opp hand rather than truth. Emitting truth
+  // winner as a post-event idempotently overrides this: sole-survivor
+  // path already agrees with truth (no-op); deck-empty path is corrected.
+  // Required by BG-008's invariant that public fields of state_ are
+  // observation-history-derivable.
   if (da.terminal && !db.terminal) {
     AnyMap payload;
     payload["winner"] = std::any(static_cast<int>(da.winner));

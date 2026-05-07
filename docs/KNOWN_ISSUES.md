@@ -1367,15 +1367,7 @@ for (int count : bag_counts) h.add(count);
 
 这样保留公开可推导的 composition，移除不可观察的 draw order。
 
-**Splendor**：
-
-第一轮：从 `SplendorState::hash_public_fields()` 移除 `h.add(rng_salt)`。
-
-第二轮（2026-05-07 补丁）：deck size **是公共信息**（每张牌起始已知，每次补 tableau / blind reserve 都公开 -1），所以必须留在 `hash_public_fields`。drift 的真正根因在 `SplendorBeliefTracker::reconcile_state`：它按 `pool − seen − opp_hidden_reserved` 重建 deck 内容，但当某个 cid 既在 AI 世界的 opp 暗 reserve 槽里、又因为后续 `deck_flip` 事件被加进了 `seen_cards_`（说明 truth 已经把这张卡公开放上 tableau），slot 还存着这张 stale cid。`reconcile_state` 对每个 cid 同时检查 seen 和 opp_hidden_reserved——seen 命中先 continue，但 stale cid 已经被 seen 排除了，没机会让 opp_hidden 减一次 deck size。两个不同 sim 在不同步堆积不同数量的 stale slot → deck size 分歧。
-
-修复方案在 `SplendorBeliefTracker::reconcile_state`：扫描 opp 暗 reserve 时，若 cid 已在 `seen_cards_` 里，把这个 slot 标记为 stale，从当前未见池里重抽一张同 tier 的牌填进去（再标记 changed 以触发重建）。重抽的牌不会和 seen 冲突，opp_hidden_reserved 集合的 tier 分布在所有 sim 里就一致了，deck size 在两个 sim 里都收敛到 truth 的尺寸。
-
-回归脚本：以独立 seed 启动两个 `GameSession`，apply 同一个 selfplay observation_trace，每一步比较 `state_hash_for_perspective`。修复前 60 seed sweep × 多次执行经常 ~3-11 起 drift；修复后连续 10 次 0 drift。
+**Splendor**：从 `SplendorState::hash_public_fields()` 移除 `h.add(rng_salt)`；`decks[t].size()` 留在 public hash（公共可推导）。deck 内容的 RNG 漂移由 BG-008（见下文）彻底收掉。
 
 **Coup**（2026-05-07，第三轮 BUG-028 同族 bug）：
 
@@ -1383,9 +1375,19 @@ for (int count : bag_counts) h.add(count);
 
 1. **`self_exchange_draw`**（post）：perspective 是 Ambassador 交换的 active player，从 `kExchangeReturn1` 之外进入 `kExchangeReturn1` 时触发。perspective 看见自己抽到的 2 张牌，但 AI session 在 sampled court_deck 上抽出了不同的两张。Applier 把 AI sampled 的两张推回 court_deck，删掉 truth 对应的两张（保持 size 不变），把 `exchange_drawn` 钉到 truth。
 2. **`self_influence_redraw`**（post）：`kRevealSlot0/1` 在挑战成功（`card == claimed_character`）分支中，`coup_rules.cpp` line 431 / 509 给 revealer 抽一张新的 influence card；当 revealer == perspective 时，新卡进入 `hash_private_fields(perspective)`，AI sampled 不一致。Applier 同 self_exchange_draw 套路：sampled 的旧 influence 推回 court_deck，删掉 truth 对应的一张，把 `influence[][]` 钉到 truth。
-3. **`public_return_card`**（post）：每个 `kReturn*` action 在 truth 中都把 1 张牌推回 court_deck（legal_actions 保证 returned char 在 exchange_drawn 或 active player hand 里 → 一定 push）。但当 actor 是对手且 randomize_unseen 给对手手牌/exchange_drawn 抽到了不同的多重集，AI session 走 `removed=false` 分支不 push，公共 `court_deck.size()` 漂移。Applier 直接读取 truth 的 `expected_deck_size` 强制对齐。
+3. **`public_return_card`**（post）：每个 `kReturn*` action 在 truth 中都把 1 张牌推回 court_deck。载荷含 `expected_deck_size` + `exchange_drawn: [int, int]`。Applier 强制 `court_deck.size()` 等于 `expected_deck_size`，并把 `exchange_drawn` 钉到 truth。
 
-修复后 60-seed sweep × 4 个游戏（azul / loveletter / splendor / coup）全过；连续 5 次稳定通过。
+**BG-008（2026-05-07，架构层收尾）**：
+
+上面三轮都是在"per-event 修补漂移"的思路里打补丁，每遇到一条新的撞车路径就加一个 event。根治的架构是：`py_engine::apply_observation` 末尾**统一调 `tracker.randomize_unseen(state_, rng)`**，让 session state_ 的隐藏字段每 ply 都被重新采样成一个与观测史一致的新世界；`randomize_unseen` 的契约被强化为“产出世界的 `hash_public_fields` 在同一观测史下 byte-equal”。
+
+这条路径要求每个游戏的 `do_action_fast` **不能让自己的公开输出依赖被 `randomize_unseen` 重采样的字段**。对 LoveLetter 来说，`check_end_game` 在牌堆空时会读 `d.hand[all alive players]` 比大小判胜负——对手手牌是 session 采样值，污染 winner；修复是 extractor 在 terminal 翻转时 emit `round_end` post-event 带 truth winner，applier 覆盖。Splendor / Coup / Azul 的 `do_action_fast` 公开输出都不读重采样字段（Splendor 对手暗 reserve、Coup 对手 influence/exchange_drawn、Azul bag 顺序都是 hidden-only），所以不需要额外 event。
+
+副作用：Coup 的 `exchange_drawn{}` 默认值是 `{0, 0}`（`std::array<int8_t, 2>` 的 zero-init），而 `randomize_unseen` 用 `>= 0` 判断 "slot 有真卡"——这是 Coup 从 day-1 就存在的潜在 bug，只不过 `randomize_unseen` 原先只在 MCTS clone 上跑，从没写回 session 持久 state。BG-008 把 `randomize_unseen` 搬到每个 `apply_observation` 末尾后，这个 bug 立刻把 court_deck 偷走 2 张牌。修复点：`coup_state.h` 成员默认 `{-1, -1}`、`coup_state.cpp::reset_with_seed` 显式赋 `{-1, -1}`、`coup_rules.cpp::advance_turn` 的 `= {}` 改成 `= {-1, -1}`。
+
+BG-008 落地之后：`IBeliefTracker::reconcile_state` 虚函数删除；Splendor 的 `reconcile_state` 实现删除；Coup 的 3 个 truth-sync event 继续存在（它们 pin 的是 `hash_private_fields` 里的 perspective 私有字段，不是 public hash 漂移的补丁，仍然必要）。
+
+回归保护：`tests/framework/test_public_hash_excludes_internal_rng.py`（60-seed × 4 hidden-info 游戏）+ `tests/framework/test_session_hidden_fields_resampled.py`（新增，断言 session state_ 的隐藏字段在每 ply 末被重新采样），连续 5 次稳定通过。
 
 ### 教训
 

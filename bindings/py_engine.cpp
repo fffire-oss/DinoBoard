@@ -881,11 +881,29 @@ class GameSessionWrapper {
   //   3. Apply the action itself
   //   4. Apply all post-action events (override random outcomes)
   //   5. belief_tracker.observe_public_event(actor, action, pre, post)
+  //   6. belief_tracker.randomize_unseen(state_, freshen_rng)  [BG-008]
   //
   // Tracker is fed the event payloads directly — no state ref crosses its
-  // interface. Pre/post lists are the same events the extractor would have
-  // produced on a selfplay state diff, so tracker behavior matches across
-  // selfplay and API paths (enforced by test_api_belief_matches_selfplay).
+  // observe interface. Pre/post lists are the same events the extractor
+  // would have produced on a selfplay state diff, so tracker behavior
+  // matches across selfplay and API paths (enforced by
+  // test_api_belief_matches_selfplay).
+  //
+  // Step 6 (BG-008) re-samples session state_'s hidden fields from the
+  // tracker's current information set, guaranteeing that state_'s public
+  // fields are observation-history-derivable. This eliminates BUG-028-
+  // family RNG drift: whatever the session's internal `draw_nonce` /
+  // mt19937 did during do_action_fast is overwritten, and the next
+  // `state_hash_for_perspective` / clone-for-MCTS starts from a fresh
+  // sample. randomize_unseen's contract (see belief_tracker.h) requires
+  // `hash_public_fields` to be byte-equal across any two trackers with
+  // the same observation history regardless of input state's hidden.
+  //
+  // Precondition on each game's public_event_extractor / applier: any
+  // public output of do_action_fast that reads hidden fields MUST be
+  // covered by an event the applier overrides (e.g. LL `round_end`
+  // carries truth winner so `check_end_game` reading d.hand[opp] can't
+  // poison the session's winner).
   //
   // `pre_events` / `post_events` are lists of {"kind": str, "payload": dict}.
   void apply_observation(ActionId action,
@@ -920,27 +938,11 @@ class GameSessionWrapper {
       bundle_->public_event_applier(*bundle_->state, EventPhase::kPostAction, kind, payload);
     }
     if (bt_) {
-      // In API mode, the caller provides the event stream directly — feed
-      // it straight to the tracker. No state-diff extraction needed.
       std::vector<PublicEvent> pre_events_v(pre_list.begin(), pre_list.end());
       std::vector<PublicEvent> post_events_v(post_list.begin(), post_list.end());
       bt_->observe_public_event(actor, action, pre_events_v, post_events_v);
-      // BG-008: freshen hidden state by re-sampling via randomize_unseen.
-      // The contract (see belief_tracker.h) guarantees public invariants —
-      // after this call, state_'s public fields match truth regardless of
-      // per-event applier drift (Splendor deck size, Coup court deck,
-      // etc.), and any session-RNG-specific hidden that might otherwise
-      // accumulate is overwritten by a fresh sample.
-      //
-      // Precondition on the game's public_event_extractor: public outputs
-      // of do_action_fast that could read hidden fields must also be
-      // emitted as events so the applier can override them. LL added
-      // `round_end` for this (winner-from-hidden at deck-empty). Games
-      // whose do_action_fast public outputs never read hidden (Splendor,
-      // Coup, Azul) have nothing to add.
-      //
-      // Deterministic RNG so the session's behavior is reproducible from
-      // (seed_, ply_count_).
+      // BG-008: freshen hidden state. Deterministic RNG from (seed_,
+      // ply_count_) so the session's behavior is reproducible.
       const std::uint64_t freshen_seed = seed_ ^
           (static_cast<std::uint64_t>(ply_count_) * kGoldenRatio64) ^
           0xCAFEF00DD15EA5E5ULL;

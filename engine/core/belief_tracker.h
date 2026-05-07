@@ -108,30 +108,6 @@ class IBeliefTracker {
   // leaks P's private knowledge into Q's features (BUG / OB-002).
   // Default returns -1; trackers that store a perspective override.
   virtual int perspective_player() const { return -1; }
-
-  // Reconcile public state fields after applying an observation. Called at
-  // the end of apply_observation in the API path (py_engine), AFTER the
-  // event applier has done its per-event work. Gives the tracker a chance
-  // to fix invariants that per-event appliers can't maintain locally —
-  // notably, Splendor's deck content is a function of (tableau, all
-  // reserved, bought cards), and per-slot deck_flip events conflate
-  // "slot shift" with "real deck draw" in a way that drifts API state.
-  //
-  // Narrower than randomize_unseen: may ONLY rewrite fields whose values
-  // do NOT feed back into subsequent do_action_fast's public outputs.
-  // E.g. Splendor deck content/multiset: safe (do_action_fast pops a
-  // random index, public output doesn't depend on content). E.g. LL
-  // d.hand[opp]: NOT safe (check_end_game reads it on deck-empty → public
-  // winner depends on it). A future refactor (BG-008) moves session
-  // persistent state fully into tracker + on-demand materialization,
-  // which makes this hook unnecessary; until then it stays.
-  //
-  // The default is a no-op; games whose event protocol maintains a clean
-  // local invariant don't need to override it.
-  //
-  // May READ / WRITE observer-visible fields in state. Must NOT read
-  // hidden fields (use tracker's internal knowledge instead).
-  virtual void reconcile_state(IGameState& /*state*/) const {}
 };
 
 }  // namespace board_ai

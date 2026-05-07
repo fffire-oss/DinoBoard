@@ -47,7 +47,6 @@ class SplendorBeliefTracker final : public IBeliefTracker {
       const std::vector<PublicEvent>& pre_events,
       const std::vector<PublicEvent>& post_events) override;
   void randomize_unseen(IGameState& state, std::mt19937& rng) const override;
-  void reconcile_state(IGameState& state) const override;
   AnyMap serialize() const override;
 
  private:

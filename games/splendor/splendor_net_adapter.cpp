@@ -235,10 +235,8 @@ void SplendorBeliefTracker<NPlayers>::observe_public_event(
 // randomize_unseen produces a world whose public fields are byte-equal
 // across any two trackers with the same observation history, regardless
 // of the input state's hidden contents. Called per-sim at MCTS root to
-// provide determinization. At API apply_observation end, a NARROWER
-// reconcile_state is used instead (see reconcile_state below + belief_
-// tracker.h) because re-sampling opp hidden here would break LL's
-// end-of-deck winner computation (BG-008 aborted MVP, 2026-05-07).
+// provide determinization, AND at the end of each API apply_observation
+// (BG-008) to freshen session state_ and eliminate RNG drift.
 //
 // Algorithm:
 //   1. unseen_by_tier[t] = pool[t] - seen_cards  (canonical; same for
@@ -252,7 +250,7 @@ void SplendorBeliefTracker<NPlayers>::observe_public_event(
 //      equals truth's deck size by construction:
 //        truth_deck[t] = pool[t] − seen_cards − opp_hidden_reserves[t]
 //      (same formula). Do NOT preserve input state's deck size — that
-//      carries accumulated drift from apply_observation.
+//      could carry accumulated drift from do_action_fast.
 template <int NPlayers>
 void SplendorBeliefTracker<NPlayers>::randomize_unseen(IGameState& state, std::mt19937& rng) const {
   auto* s = dynamic_cast<SplendorState<NPlayers>*>(&state);
@@ -319,97 +317,6 @@ void SplendorBeliefTracker<NPlayers>::randomize_unseen(IGameState& state, std::m
   node->materialized = std::make_shared<const SplendorData<NPlayers>>(std::move(data));
   s->persistent = SplendorPersistentState<NPlayers>(node);
   s->undo_stack.clear();
-}
-
-// Narrow post-apply_observation hook: rebuild deck multiset from
-// (pool − seen_cards − opp_hidden_reserved) and re-sample stale opp
-// hidden slots (cards now in seen_cards). This is SAFE at end of
-// apply_observation because Splendor's do_action_fast never reads opp
-// hidden reserve contents for any public output (unlike LL's
-// check_end_game reading d.hand[opp]); it only reads them for
-// perspective's own UI/MCTS queries, which materialize a fresh world
-// anyway.
-//
-// Fixes the Splendor-specific drift where per-slot `deck_flip` events
-// conflate "slot shift" with "real deck draw", causing API's deck size
-// to drift 1 per faceup-reserve / faceup-buy action (BUG-028 family).
-template <int NPlayers>
-void SplendorBeliefTracker<NPlayers>::reconcile_state(IGameState& state) const {
-  auto* s = dynamic_cast<SplendorState<NPlayers>*>(&state);
-  if (!s) return;
-  SplendorData<NPlayers> data = s->persistent.data();
-  const auto& pool = splendor_card_pool();
-  const int total_cards = static_cast<int>(pool.size());
-
-  std::unordered_set<int> opp_hidden_reserved;
-  std::vector<std::tuple<int, int, int>> stale_slots;  // (player, slot, tier)
-  for (int p = 0; p < NPlayers; ++p) {
-    if (p == perspective_player_) continue;
-    for (int slot = 0; slot < data.reserved_size[p]; ++slot) {
-      if (data.reserved_visible[p][static_cast<size_t>(slot)] == 0) {
-        const int cid = data.reserved[p][static_cast<size_t>(slot)];
-        if (cid >= 0 && cid < total_cards) {
-          if (seen_cards_.count(cid)) {
-            const int tier_idx = pool[static_cast<size_t>(cid)].tier - 1;
-            stale_slots.emplace_back(p, slot, tier_idx);
-          } else {
-            opp_hidden_reserved.insert(cid);
-          }
-        }
-      }
-    }
-  }
-  if (!stale_slots.empty()) {
-    std::array<std::vector<int>, 3> avail{};
-    for (int cid = 0; cid < total_cards; ++cid) {
-      if (seen_cards_.count(cid)) continue;
-      if (opp_hidden_reserved.count(cid)) continue;
-      const int t = pool[static_cast<size_t>(cid)].tier - 1;
-      if (t >= 0 && t < 3) avail[static_cast<size_t>(t)].push_back(cid);
-    }
-    for (auto& [p, slot, t] : stale_slots) {
-      if (t < 0 || t >= 3 || avail[static_cast<size_t>(t)].empty()) continue;
-      const int new_cid = avail[static_cast<size_t>(t)].back();
-      avail[static_cast<size_t>(t)].pop_back();
-      data.reserved[p][static_cast<size_t>(slot)] =
-          static_cast<std::int16_t>(new_cid);
-      opp_hidden_reserved.insert(new_cid);
-    }
-  }
-
-  std::array<std::vector<int>, 3> new_decks{};
-  for (int cid = 0; cid < total_cards; ++cid) {
-    if (seen_cards_.count(cid)) continue;
-    if (opp_hidden_reserved.count(cid)) continue;
-    const int tier_idx = pool[static_cast<size_t>(cid)].tier - 1;
-    if (tier_idx >= 0 && tier_idx < 3) {
-      new_decks[static_cast<size_t>(tier_idx)].push_back(cid);
-    }
-  }
-
-  bool changed = !stale_slots.empty();
-  for (int t = 0; t < 3; ++t) {
-    auto& deck = data.decks[static_cast<size_t>(t)];
-    const auto& nd = new_decks[static_cast<size_t>(t)];
-    if (deck.size() != nd.size()) changed = true;
-    else {
-      std::unordered_set<int> cur(deck.begin(), deck.end());
-      for (int c : nd) if (!cur.count(c)) { changed = true; break; }
-    }
-    if (changed) {
-      deck.clear();
-      deck.reserve(nd.size());
-      for (int c : nd) deck.push_back(static_cast<std::int16_t>(c));
-    }
-  }
-
-  if (changed) {
-    auto node = std::make_shared<SplendorPersistentNode<NPlayers>>();
-    node->action_from_parent = -1;
-    node->materialized = std::make_shared<const SplendorData<NPlayers>>(std::move(data));
-    s->persistent = SplendorPersistentState<NPlayers>(std::move(node));
-    s->undo_stack.clear();
-  }
 }
 
 template <int NPlayers>
