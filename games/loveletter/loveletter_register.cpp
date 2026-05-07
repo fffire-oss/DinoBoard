@@ -563,23 +563,159 @@ PublicEventTrace extract_events(
     out.post_events.emplace_back("drawn_override", std::move(payload));
   }
 
-  // Post-event 3: terminal transition. `check_end_game` inside do_action_fast
-  // computes winner from d.hand[all alive] when the deck empties. In the
-  // API session, d.hand[opp] is freshly sampled at the end of every
-  // apply_observation (see py_engine / belief_tracker.h randomize_unseen
-  // contract), so the session's check_end_game may compute a winner that
-  // depends on the sampled opp hand rather than truth. Emitting truth
-  // winner as a post-event idempotently overrides this: sole-survivor
-  // path already agrees with truth (no-op); deck-empty path is corrected.
-  // Required by BG-008's invariant that public fields of state_ are
-  // observation-history-derivable.
+  // Legacy truth-sync post-event — scheduled for deletion in BG-008
+  // Phase 2 stage 2 once apply_observation actually invokes
+  // public_state_applier (the snapshot covers winner/terminal already).
+  // Keeping it for now so 60-seed sweep stays green during Phase 2.
   if (da.terminal && !db.terminal) {
     AnyMap payload;
     payload["winner"] = std::any(static_cast<int>(da.winner));
     out.post_events.emplace_back("round_end", std::move(payload));
   }
 
+  // BG-008 Phase 2: populate full public snapshot from post-action truth.
+  // The applier writes every hash_public_fields-relevant field back; once
+  // apply_observation starts invoking public_state_applier (stage 2), the
+  // legacy `round_end` post-event above becomes redundant and is deleted.
+  // See docs/plans/MESSAGE_DRIVEN_AI_REFACTOR.md.
+  //
+  // Fields matched to LoveLetterState::hash_public_fields:
+  //   current_player / first_player / ply / winner / terminal
+  //   per-player: alive / protected / hand_exposed / discard_piles
+  //   deck.size (public count)
+  //   face_up_removed (deterministic at game start, included for applier
+  //   idempotence across re-apply)
+  {
+    AnyMap snap;
+    snap["current_player"] = std::any(static_cast<int>(da.current_player));
+    snap["first_player"] = std::any(static_cast<int>(da.first_player));
+    snap["ply"] = std::any(static_cast<int>(da.ply));
+    snap["winner"] = std::any(static_cast<int>(da.winner));
+    snap["terminal"] = std::any(static_cast<bool>(da.terminal));
+    snap["deck_size"] = std::any(static_cast<int>(da.deck.size()));
+
+    std::vector<int> alive_v(NPlayers);
+    std::vector<int> protected_v(NPlayers);
+    std::vector<int> hand_exposed_v(NPlayers);
+    for (int p = 0; p < NPlayers; ++p) {
+      alive_v[p] = da.alive[p] ? 1 : 0;
+      protected_v[p] = da.protected_flags[p] ? 1 : 0;
+      hand_exposed_v[p] = static_cast<int>(da.hand_exposed[p]);
+    }
+    snap["alive"] = std::any(alive_v);
+    snap["protected"] = std::any(protected_v);
+    snap["hand_exposed"] = std::any(hand_exposed_v);
+
+    std::vector<std::vector<int>> discards_all(NPlayers);
+    for (int p = 0; p < NPlayers; ++p) {
+      std::vector<int> discards;
+      discards.reserve(da.discard_piles[static_cast<size_t>(p)].size());
+      for (auto c : da.discard_piles[static_cast<size_t>(p)]) {
+        discards.push_back(static_cast<int>(c));
+      }
+      discards_all[p] = std::move(discards);
+    }
+    snap["discard_piles"] = std::any(discards_all);
+
+    std::vector<int> face_up;
+    face_up.reserve(da.face_up_removed.size());
+    for (auto c : da.face_up_removed) face_up.push_back(static_cast<int>(c));
+    snap["face_up_removed"] = std::any(face_up);
+
+    out.public_snapshot = std::move(snap);
+  }
+
   return out;
+}
+
+// BG-008 Phase 2: inverse of the public_snapshot population above.
+// Writes back every public field onto `state`. Called at the end of
+// apply_observation (once Phase 2 stage 2 lands); here it's already
+// registered so stage 2's `apply_observation` can simply invoke it.
+template <int NPlayers>
+void apply_public_state(IGameState& state, const AnyMap& snap) {
+  auto& s = board_ai::checked_cast<LoveLetterState<NPlayers>>(state);
+  auto& d = s.data;
+
+  auto get_int = [&](const char* key) -> int {
+    auto it = snap.find(key);
+    return (it != snap.end()) ? std::any_cast<int>(it->second) : 0;
+  };
+  auto get_bool = [&](const char* key) -> bool {
+    auto it = snap.find(key);
+    return (it != snap.end()) ? std::any_cast<bool>(it->second) : false;
+  };
+  auto get_iv = [&](const char* key) -> std::vector<int> {
+    auto it = snap.find(key);
+    return (it != snap.end())
+        ? std::any_cast<std::vector<int>>(it->second)
+        : std::vector<int>{};
+  };
+
+  d.current_player = static_cast<std::int8_t>(get_int("current_player"));
+  d.first_player = static_cast<std::int8_t>(get_int("first_player"));
+  d.ply = static_cast<std::int16_t>(get_int("ply"));
+  d.winner = static_cast<std::int8_t>(get_int("winner"));
+  d.terminal = get_bool("terminal");
+
+  auto alive_v = get_iv("alive");
+  auto protected_v = get_iv("protected");
+  auto hand_exposed_v = get_iv("hand_exposed");
+  for (int p = 0; p < NPlayers; ++p) {
+    if (p < static_cast<int>(alive_v.size())) d.alive[p] = alive_v[p] != 0;
+    if (p < static_cast<int>(protected_v.size())) d.protected_flags[p] = protected_v[p] != 0;
+    if (p < static_cast<int>(hand_exposed_v.size())) {
+      d.hand_exposed[p] = static_cast<std::int8_t>(hand_exposed_v[p]);
+    }
+  }
+
+  // discard_piles: list-of-lists. Comes in as either
+  // vector<vector<int>> (C++-side populated) or vector<any> where each
+  // inner any wraps vector<int> (Python-side round-trip through
+  // py_to_any). Handle both.
+  auto it_d = snap.find("discard_piles");
+  if (it_d != snap.end()) {
+    auto set_pile = [&](int p, const std::vector<int>& row) {
+      if (p < 0 || p >= NPlayers) return;
+      d.discard_piles[static_cast<size_t>(p)].clear();
+      for (int c : row) {
+        d.discard_piles[static_cast<size_t>(p)].push_back(static_cast<std::int8_t>(c));
+      }
+    };
+    if (it_d->second.type() == typeid(std::vector<std::vector<int>>)) {
+      const auto& piles =
+          std::any_cast<const std::vector<std::vector<int>>&>(it_d->second);
+      for (int p = 0; p < NPlayers && p < static_cast<int>(piles.size()); ++p) {
+        set_pile(p, piles[static_cast<size_t>(p)]);
+      }
+    } else if (it_d->second.type() == typeid(std::vector<std::any>)) {
+      const auto& outer =
+          std::any_cast<const std::vector<std::any>&>(it_d->second);
+      for (int p = 0; p < NPlayers && p < static_cast<int>(outer.size()); ++p) {
+        if (outer[p].type() == typeid(std::vector<int>)) {
+          set_pile(p, std::any_cast<const std::vector<int>&>(outer[p]));
+        }
+      }
+    }
+  }
+
+  auto face_up_v = get_iv("face_up_removed");
+  d.face_up_removed.clear();
+  for (int c : face_up_v) d.face_up_removed.push_back(static_cast<std::int8_t>(c));
+
+  // deck_size is public; the observer's deck content is sampled so we
+  // only honor the size here. Trim or pad with 0 placeholder — the next
+  // randomize_unseen call will rebuild deck content properly.
+  const int target_size = get_int("deck_size");
+  if (target_size >= 0) {
+    if (static_cast<int>(d.deck.size()) > target_size) {
+      d.deck.resize(static_cast<size_t>(target_size));
+    } else {
+      while (static_cast<int>(d.deck.size()) < target_size) {
+        d.deck.push_back(0);  // placeholder; randomize_unseen overwrites
+      }
+    }
+  }
 }
 
 template <int NPlayers>
@@ -598,6 +734,8 @@ void apply_event(IGameState& state, EventPhase /*phase*/,
     const int card = std::any_cast<int>(payload.at("card"));
     d.drawn_card = static_cast<std::int8_t>(card);
   } else if (kind == "round_end") {
+    // Legacy, slated for deletion in Phase 2 stage 2 (apply_public_state
+    // covers it).
     const int winner = std::any_cast<int>(payload.at("winner"));
     d.winner = static_cast<std::int8_t>(winner);
     d.terminal = true;
@@ -626,6 +764,7 @@ board_ai::GameBundle make_loveletter(const std::string& game_id, std::uint64_t s
   b.heuristic_picker = loveletter_heuristic::pick<NPlayers>;
   b.public_event_extractor = loveletter_events::extract_events<NPlayers>;
   b.public_event_applier = loveletter_events::apply_event<NPlayers>;
+  b.public_state_applier = loveletter_events::apply_public_state<NPlayers>;
   b.initial_observation_extractor = loveletter_events::extract_initial_observation<NPlayers>;
   b.initial_observation_applier = loveletter_events::apply_initial_observation<NPlayers>;
   return b;

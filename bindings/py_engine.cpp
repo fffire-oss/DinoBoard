@@ -109,6 +109,14 @@ py::object any_to_py(const std::any& val) {
     return py::cast(std::any_cast<std::string>(val));
   if (val.type() == typeid(std::vector<int>))
     return py::cast(std::any_cast<std::vector<int>>(val));
+  if (val.type() == typeid(std::vector<std::vector<int>>)) {
+    py::list lst;
+    for (const auto& inner :
+         std::any_cast<std::vector<std::vector<int>>>(val)) {
+      lst.append(py::cast(inner));
+    }
+    return lst;
+  }
   if (val.type() == typeid(std::vector<std::any>)) {
     py::list lst;
     for (const auto& item : std::any_cast<std::vector<std::any>>(val))
@@ -208,6 +216,11 @@ py::dict result_to_py(const runtime::SelfplayEpisodeResult& result) {
         post.append(e);
       }
       entry["post_events"] = post;
+      // BG-008 Phase 2: expose the truth-side public snapshot. Empty
+      // for games without public_state_applier registered.
+      py::dict snap;
+      for (const auto& [k, v] : t.public_snapshot) snap[py::cast(k)] = any_to_py(v);
+      entry["public_snapshot"] = snap;
       py::dict bs;
       for (const auto& [k, v] : t.belief_snapshot_after) bs[py::cast(k)] = any_to_py(v);
       entry["belief_snapshot_after"] = bs;
@@ -834,6 +847,22 @@ class GameSessionWrapper {
     return out;
   }
 
+  // BG-008 Phase 2 stage 1 test hook: directly invoke the game's
+  // public_state_applier on a given snapshot. Used by
+  // test_public_snapshot_round_trip to verify the applier is a correct
+  // inverse of the extractor without going through apply_observation
+  // (which still falls back to do_action_fast in stage 1).
+  void apply_public_snapshot(py::dict snapshot) {
+    if (!bundle_->public_state_applier) {
+      throw std::runtime_error(
+          "apply_public_snapshot: game '" + game_id_ +
+          "' has no public_state_applier registered");
+    }
+    AnyMap snap = py_dict_to_any_map(snapshot);
+    py::gil_scoped_release release;
+    bundle_->public_state_applier(*bundle_->state, snap);
+  }
+
   py::dict get_action_info(ActionId action) {
     if (!bundle_->action_descriptor) {
       throw std::runtime_error("get_action_info: game '" + game_id_ + "' has no action_descriptor registered");
@@ -1420,6 +1449,8 @@ PYBIND11_MODULE(dinoboard_engine, m) {
            py::arg("player"))
       .def("get_state_dict", &GameSessionWrapper::get_state_dict)
       .def("get_action_info", &GameSessionWrapper::get_action_info)
+      .def("apply_public_snapshot", &GameSessionWrapper::apply_public_snapshot,
+           py::arg("snapshot"))
       .def("get_legal_actions", &GameSessionWrapper::get_legal_actions)
       .def("get_all_legal_actions", &GameSessionWrapper::get_all_legal_actions)
       .def("apply_action", &GameSessionWrapper::apply_action)

@@ -38,12 +38,16 @@ struct SelfplaySample {
 // Per-ply observation trace for API belief-equivalence tests. Only populated
 // when run_selfplay_episode is called with trace_perspective >= 0 AND the
 // game has registered a public_event_extractor.
+//
+// `public_snapshot` (BG-008 Phase 2): populated iff the game's extractor
+// fills it (== game registers public_state_applier). Empty map otherwise.
 struct SelfplayObservationTrace {
   int ply = 0;
   int actor = 0;                           // player whose action this was
   ActionId action = -1;
   std::vector<std::pair<std::string, AnyMap>> pre_events{};
   std::vector<std::pair<std::string, AnyMap>> post_events{};
+  AnyMap public_snapshot{};
   std::map<std::string, std::any> belief_snapshot_after{};
 };
 

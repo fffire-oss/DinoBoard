@@ -158,6 +158,7 @@ SelfplayEpisodeResult run_selfplay_episode(
             *state_before, chosen, *state, trace_perspective);
         t.pre_events = evt.pre_events;
         t.post_events = evt.post_events;
+        t.public_snapshot = evt.public_snapshot;
         trace_belief_tracker->observe_public_event(
             player, chosen, evt.pre_events, evt.post_events);
         t.belief_snapshot_after = trace_belief_tracker->serialize();
@@ -266,6 +267,7 @@ SelfplayEpisodeResult run_selfplay_episode(
           *state_before, chosen, *state, trace_perspective);
       t.pre_events = evt.pre_events;
       t.post_events = evt.post_events;
+      t.public_snapshot = evt.public_snapshot;
       trace_belief_tracker->observe_public_event(
           player, chosen, evt.pre_events, evt.post_events);
       t.belief_snapshot_after = trace_belief_tracker->serialize();
