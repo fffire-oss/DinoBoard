@@ -67,10 +67,23 @@ class IBeliefTracker {
       const std::vector<PublicEvent>& pre_events,
       const std::vector<PublicEvent>& post_events) = 0;
 
-  // Randomize all unseen information in-place for MCTS determinization.
-  // Uses the tracked belief (built from init + observe_public_event) to
-  // build the unseen pool, then randomly distributes it (e.g. deck +
-  // opponent hidden cards).
+  // Randomize all unseen information in-place, producing a world
+  // consistent with this tracker's information set.
+  //
+  // Contract (BG-008): the result must satisfy every public invariant —
+  // `hash_public_fields` on the output is byte-equal across any two
+  // trackers with the same observation history, regardless of the input
+  // state's hidden contents or the caller's RNG. Concretely:
+  //   - Hidden multisets (e.g. deck sizes, bag sizes, court-deck size)
+  //     are derived from the tracker's seen information (pool minus seen
+  //     minus opp-committed hidden), NOT preserved from the input state.
+  //   - Stale samples (opp hidden fields whose cid later became publicly
+  //     seen) are re-sampled from the current unseen pool.
+  //
+  // Called both at MCTS simulation root (different RNG per sim, hidden
+  // contents differ but public fields don't) and at the end of
+  // apply_observation (to freshen session state and prevent
+  // BUG-028-family RNG drift from accumulating across plies).
   //
   // This method WRITES to `state`. It may READ observer-visible fields
   // from `state` (e.g. alive flags, discard piles) to compute WHAT to
@@ -104,10 +117,17 @@ class IBeliefTracker {
   // reserved, bought cards), and per-slot deck_flip events conflate
   // "slot shift" with "real deck draw" in a way that drifts API state.
   //
+  // Narrower than randomize_unseen: may ONLY rewrite fields whose values
+  // do NOT feed back into subsequent do_action_fast's public outputs.
+  // E.g. Splendor deck content/multiset: safe (do_action_fast pops a
+  // random index, public output doesn't depend on content). E.g. LL
+  // d.hand[opp]: NOT safe (check_end_game reads it on deck-empty → public
+  // winner depends on it). A future refactor (BG-008) moves session
+  // persistent state fully into tracker + on-demand materialization,
+  // which makes this hook unnecessary; until then it stays.
+  //
   // The default is a no-op; games whose event protocol maintains a clean
-  // local invariant don't need to override it. Splendor overrides to
-  // recompute deck content from tracker's seen_cards, so |deck_tier_t|
-  // matches GT's exactly after every observation.
+  // local invariant don't need to override it.
   //
   // May READ / WRITE observer-visible fields in state. Must NOT read
   // hidden fields (use tracker's internal knowledge instead).

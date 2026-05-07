@@ -232,6 +232,27 @@ void SplendorBeliefTracker<NPlayers>::observe_public_event(
   (void)action;
 }
 
+// randomize_unseen produces a world whose public fields are byte-equal
+// across any two trackers with the same observation history, regardless
+// of the input state's hidden contents. Called per-sim at MCTS root to
+// provide determinization. At API apply_observation end, a NARROWER
+// reconcile_state is used instead (see reconcile_state below + belief_
+// tracker.h) because re-sampling opp hidden here would break LL's
+// end-of-deck winner computation (BG-008 aborted MVP, 2026-05-07).
+//
+// Algorithm:
+//   1. unseen_by_tier[t] = pool[t] - seen_cards  (canonical; same for
+//      every tracker with the same seen_cards).
+//   2. For each non-perspective hidden reserve slot: consume one card
+//      from unseen_by_tier[tier_of_slot]. Stale cards (current cid now
+//      in seen_cards) still yield the correct tier via card→tier lookup,
+//      so they get overwritten with a fresh unseen card.
+//   3. Remaining unseen_by_tier[t] → data.decks[t]. Size is exactly
+//      |unseen_by_tier[t]| − (opp_hidden_reserves of tier t), which
+//      equals truth's deck size by construction:
+//        truth_deck[t] = pool[t] − seen_cards − opp_hidden_reserves[t]
+//      (same formula). Do NOT preserve input state's deck size — that
+//      carries accumulated drift from apply_observation.
 template <int NPlayers>
 void SplendorBeliefTracker<NPlayers>::randomize_unseen(IGameState& state, std::mt19937& rng) const {
   auto* s = dynamic_cast<SplendorState<NPlayers>*>(&state);
@@ -277,14 +298,17 @@ void SplendorBeliefTracker<NPlayers>::randomize_unseen(IGameState& state, std::m
     }
   }
 
+  // Deck content = remaining unseen pool per tier. Size is determined by
+  // the (pool - seen - opp_hidden) formula, not by preservation of the
+  // input state's deck size.
   for (int t = 0; t < 3; ++t) {
-    const auto deck_size = data.decks[static_cast<size_t>(t)].size();
-    data.decks[static_cast<size_t>(t)].clear();
     auto& pool = unseen_by_tier[static_cast<size_t>(t)];
     auto& i = idx[static_cast<size_t>(t)];
-    for (size_t k = 0; k < deck_size && i < pool.size(); ++k) {
-      data.decks[static_cast<size_t>(t)].push_back(
-          static_cast<std::int16_t>(pool[i++]));
+    auto& deck = data.decks[static_cast<size_t>(t)];
+    deck.clear();
+    deck.reserve(pool.size() - i);
+    for (; i < pool.size(); ++i) {
+      deck.push_back(static_cast<std::int16_t>(pool[i]));
     }
   }
 
@@ -297,36 +321,26 @@ void SplendorBeliefTracker<NPlayers>::randomize_unseen(IGameState& state, std::m
   s->undo_stack.clear();
 }
 
+// Narrow post-apply_observation hook: rebuild deck multiset from
+// (pool − seen_cards − opp_hidden_reserved) and re-sample stale opp
+// hidden slots (cards now in seen_cards). This is SAFE at end of
+// apply_observation because Splendor's do_action_fast never reads opp
+// hidden reserve contents for any public output (unlike LL's
+// check_end_game reading d.hand[opp]); it only reads them for
+// perspective's own UI/MCTS queries, which materialize a fresh world
+// anyway.
+//
+// Fixes the Splendor-specific drift where per-slot `deck_flip` events
+// conflate "slot shift" with "real deck draw", causing API's deck size
+// to drift 1 per faceup-reserve / faceup-buy action (BUG-028 family).
 template <int NPlayers>
 void SplendorBeliefTracker<NPlayers>::reconcile_state(IGameState& state) const {
-  // Rebuild per-tier deck content from the tracker's seen_cards.
-  //
-  // Invariant: after every action, the observer's unseen pool is
-  //   pool - seen_cards = (opp hidden reserved from API's current world)
-  //                     ∪ (deck content)
-  // API's deck should therefore be: (pool_tier - seen_cards_tier) minus
-  // the cards that API's current world has placed in opp hidden reserved.
-  //
-  // This fixes the Splendor-specific drift where per-slot `deck_flip`
-  // events conflate slot shifts with real deck draws, causing API's deck
-  // size to drift 1 per faceup-reserve / faceup-buy action.
   auto* s = dynamic_cast<SplendorState<NPlayers>*>(&state);
   if (!s) return;
   SplendorData<NPlayers> data = s->persistent.data();
   const auto& pool = splendor_card_pool();
   const int total_cards = static_cast<int>(pool.size());
 
-  // Collect opp hidden reserved card IDs currently in API's world. If a
-  // hidden slot holds a card that has since been observed publicly (i.e.
-  // appeared in tableau or perspective's own reserve via deck_flip /
-  // self_reserve_deck), the sampled world is infeasible — randomize_unseen
-  // sampled X into opp hidden but truth later showed X in tableau. We must
-  // re-sample those slots from the current unseen pool, otherwise:
-  //   (a) seen ∩ opp_hidden is non-empty → reconcile's
-  //       deck = pool − seen − opp_hidden double-skips, deck size shrinks
-  //       less than truth → public-hash drift (BUG-028 family).
-  //   (b) two different sims with different stale collisions land at
-  //       different deck sizes for the same observation history.
   std::unordered_set<int> opp_hidden_reserved;
   std::vector<std::tuple<int, int, int>> stale_slots;  // (player, slot, tier)
   for (int p = 0; p < NPlayers; ++p) {
@@ -336,7 +350,6 @@ void SplendorBeliefTracker<NPlayers>::reconcile_state(IGameState& state) const {
         const int cid = data.reserved[p][static_cast<size_t>(slot)];
         if (cid >= 0 && cid < total_cards) {
           if (seen_cards_.count(cid)) {
-            // Stale: this card has been publicly observed elsewhere.
             const int tier_idx = pool[static_cast<size_t>(cid)].tier - 1;
             stale_slots.emplace_back(p, slot, tier_idx);
           } else {
@@ -346,8 +359,6 @@ void SplendorBeliefTracker<NPlayers>::reconcile_state(IGameState& state) const {
       }
     }
   }
-  // Re-sample stale slots from the unseen pool of the matching tier,
-  // excluding cards already in opp_hidden_reserved.
   if (!stale_slots.empty()) {
     std::array<std::vector<int>, 3> avail{};
     for (int cid = 0; cid < total_cards; ++cid) {
@@ -366,7 +377,6 @@ void SplendorBeliefTracker<NPlayers>::reconcile_state(IGameState& state) const {
     }
   }
 
-  // Rebuild each tier's deck from unseen pool - opp_hidden_reserved.
   std::array<std::vector<int>, 3> new_decks{};
   for (int cid = 0; cid < total_cards; ++cid) {
     if (seen_cards_.count(cid)) continue;
@@ -383,8 +393,6 @@ void SplendorBeliefTracker<NPlayers>::reconcile_state(IGameState& state) const {
     const auto& nd = new_decks[static_cast<size_t>(t)];
     if (deck.size() != nd.size()) changed = true;
     else {
-      // Compare as sets (order doesn't matter — randomize_unseen
-      // reshuffles each sim anyway).
       std::unordered_set<int> cur(deck.begin(), deck.end());
       for (int c : nd) if (!cur.count(c)) { changed = true; break; }
     }

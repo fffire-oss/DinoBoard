@@ -929,6 +929,18 @@ class GameSessionWrapper {
       // that per-event appliers can't maintain (e.g. Splendor deck size
       // drifts when slot-shift and deck-draw are conflated in deck_flip
       // events). Default implementation is a no-op.
+      //
+      // WHY NOT FULL randomize_unseen HERE (BG-008 aborted MVP, 2026-05-07):
+      // Calling randomize_unseen at end of apply_observation re-samples
+      // opp hidden fields (e.g. LL d.hand[opp]), which the NEXT
+      // apply_observation's do_action_fast then reads via terminal-check
+      // / end-of-deck paths → session-specific terminal/winner → public
+      // hash drift. reconcile_state is the narrower hook: it may rewrite
+      // deck content / opp hidden placeholders whose values do NOT feed
+      // back into do_action_fast's public outputs. Full "session state
+      // is just materialized on demand" (design intent B) requires the
+      // tracker to own canonical public state AND do_action_fast to not
+      // run on session state_ — too big for this MVP. Tracked as BG-008.
       bt_->reconcile_state(*bundle_->state);
     }
     ++ply_count_;

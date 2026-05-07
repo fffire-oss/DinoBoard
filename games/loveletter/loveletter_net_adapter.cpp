@@ -295,6 +295,28 @@ void LoveLetterBeliefTracker<NPlayers>::observe_public_event(
     }
   }
 
+  // Post-event: self-target Prince emits hand_override(perspective, Z) even
+  // when i_am_actor, but the i_am_actor branch above doesn't handle it
+  // (the Prince-target updater is inside i_am_target's else-if). Without
+  // this, own_hand_ stays at perspective's pre-Prince value, causing
+  // randomize_unseen's consume() to decrement the wrong card and produce
+  // an infeasible world (BG-008 regression: duplicate Princess etc.).
+  //
+  // Safe to apply unconditionally — hand_override for perspective is only
+  // emitted when truth says perspective's hand changed, which is exactly
+  // when own_hand_ must follow.
+  for (const auto& ev : post_events) {
+    if (ev.first == "hand_override") {
+      auto pit = ev.second.find("player");
+      auto cit = ev.second.find("card");
+      if (pit != ev.second.end() && cit != ev.second.end() &&
+          std::any_cast<int>(pit->second) == perspective_player_) {
+        own_hand_ = static_cast<std::int8_t>(std::any_cast<int>(cit->second));
+        break;
+      }
+    }
+  }
+
   // --- Update knowledge of other players' hands ---
   // When someone plays a card that we tracked, clear the tracked value
   // (they used it up).
