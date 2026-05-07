@@ -180,7 +180,7 @@ PublicEventTrace extract_coup_events(
     const IGameState& before,
     ActionId action,
     const IGameState& after,
-    int /*perspective*/) {
+    int perspective) {
   using namespace board_ai::coup;
   const auto& sb = board_ai::checked_cast<CoupState<NPlayers>>(before);
   const auto& sa = board_ai::checked_cast<CoupState<NPlayers>>(after);
@@ -270,6 +270,82 @@ PublicEventTrace extract_coup_events(
     out.post_events.push_back({"exchange_complete", std::move(payload)});
   }
 
+  // Case 4: self_influence_redraw — challenge-success branch where the
+  // revealer is the perspective player. When `card == claimed_character` in
+  // kResolveChallengeAction / kResolveChallengeCounter, do_action_fast pushes
+  // the revealed card back to court_deck and draws a fresh one into
+  // influence[revealer][slot] (coup_rules.cpp lines 430-431, 508-509). If
+  // revealer == perspective, that new card is in hash_private_fields(
+  // perspective) but the AI session sampled a different card from its own
+  // randomized court_deck — so the perspective hash drifts across worlds even
+  // though perspective sees their own new card. Pin to truth here.
+  //
+  // Detection: kRevealSlot0/1, before stage is one of the two challenge-
+  // resolve stages, revealed[][] did NOT flip (success branch — failure
+  // branch goes through lose_influence_at_slot which sets revealed=true),
+  // and the revealer matches perspective.
+  if ((action == kRevealSlot0 || action == kRevealSlot1) &&
+      perspective >= 0 && perspective < NPlayers) {
+    int slot = (action == kRevealSlot0) ? 0 : 1;
+    int revealer = -1;
+    if (db.stage == CoupStage::kResolveChallengeAction) {
+      revealer = db.active_player;
+    } else if (db.stage == CoupStage::kResolveChallengeCounter) {
+      revealer = db.blocker;
+    }
+    if (revealer == perspective &&
+        !db.revealed[revealer][slot] && !da.revealed[revealer][slot]) {
+      AnyMap payload;
+      payload["player"] = std::any(revealer);
+      payload["slot"] = std::any(slot);
+      payload["role"] = std::any(static_cast<int>(da.influence[revealer][slot]));
+      out.post_events.push_back({"self_influence_redraw", std::move(payload)});
+    }
+  }
+
+  // Case 5: public_return_card — every return_card action publicly adds 1 card
+  // back to court_deck (truth invariant: legal_actions guarantees the returned
+  // char is in exchange_drawn or active player's hand → removed=true → push).
+  // In an AI-sampled opponent-exchange world, the multiset may be inconsistent
+  // with the future action sequence (randomize_unseen sampled before knowing
+  // the public return), so do_action_fast can take the removed=false branch
+  // and skip the push — drifting court_deck.size(), which IS in
+  // hash_public_fields, splitting the perspective hash across worlds.
+  // Sync the AI session's deck size to truth.
+  if (action >= kReturnDuke && action <= kReturnContessa) {
+    AnyMap payload;
+    payload["card"] = std::any(static_cast<int>(action - kReturnDuke));
+    payload["expected_deck_size"] = std::any(static_cast<int>(da.court_deck.size()));
+    out.post_events.push_back({"public_return_card", std::move(payload)});
+  }
+
+  // Case 6: self_exchange_draw — perspective player just drew 2 cards from
+  // court_deck into exchange_drawn[]. This happens when do_action_fast
+  // transitions FROM a non-exchange-return stage INTO kExchangeReturn1 AND
+  // the active player is the perspective. In ground truth those 2 cards
+  // are specific characters; the AI session sampled different unseen
+  // cards via randomize_unseen. exchange_drawn is hashed in
+  // hash_private_fields(active_player), so without this override the
+  // perspective hash drifts across sampled worlds even though perspective
+  // sees their own draws (BUG-028 family).
+  //
+  // Mirrors Splendor's self_reserve_deck event.
+  if (db.stage != CoupStage::kExchangeReturn1 &&
+      db.stage != CoupStage::kExchangeReturn2 &&
+      da.stage == CoupStage::kExchangeReturn1 &&
+      da.active_player == perspective &&
+      perspective >= 0 && perspective < NPlayers) {
+    AnyMap payload;
+    payload["player"] = std::any(da.active_player);
+    std::vector<int> drawn;
+    drawn.reserve(2);
+    for (int i = 0; i < 2; ++i) {
+      drawn.push_back(static_cast<int>(da.exchange_drawn[i]));
+    }
+    payload["drawn"] = std::any(drawn);
+    out.post_events.push_back({"self_exchange_draw", std::move(payload)});
+  }
+
   return out;
 }
 
@@ -333,6 +409,107 @@ void apply_coup_event(
     if (role < 0 || role >= kCharacterCount) return;
     if (d.revealed[p][slot]) return;
     d.influence[p][slot] = static_cast<CharId>(role);
+    return;
+  }
+  if (phase == EventPhase::kPostAction && kind == "self_influence_redraw") {
+    // Challenge-success branch: AI session's do_action_fast just drew a fresh
+    // card into influence[revealer][slot] from its own randomized court_deck.
+    // Override to truth, with the same court-deck balance as self_exchange_draw:
+    // push AI's new card back, then remove a truth-matching card (or pop_back)
+    // to keep court_deck.size() invariant.
+    auto& s = board_ai::checked_cast<CoupState<NPlayers>>(state);
+    auto& d = s.data;
+    auto it_p = payload.find("player");
+    auto it_s = payload.find("slot");
+    auto it_r = payload.find("role");
+    if (it_p == payload.end() || it_s == payload.end() || it_r == payload.end()) return;
+    int p = std::any_cast<int>(it_p->second);
+    int slot = std::any_cast<int>(it_s->second);
+    int role = std::any_cast<int>(it_r->second);
+    if (p < 0 || p >= NPlayers) return;
+    if (slot < 0 || slot >= 2) return;
+    if (role < 0 || role >= kCharacterCount) return;
+    if (d.revealed[p][slot]) return;
+    if (d.influence[p][slot] >= 0) {
+      d.court_deck.push_back(d.influence[p][slot]);
+    }
+    auto it = std::find(d.court_deck.begin(), d.court_deck.end(),
+                        static_cast<CharId>(role));
+    if (it != d.court_deck.end()) {
+      d.court_deck.erase(it);
+    } else if (!d.court_deck.empty()) {
+      d.court_deck.pop_back();
+    }
+    d.influence[p][slot] = static_cast<CharId>(role);
+    return;
+  }
+  if (phase == EventPhase::kPostAction && kind == "public_return_card") {
+    // In truth, every return_card action removes the returned char from the
+    // actor's exchange_drawn or hand and pushes it to court_deck (+1 size).
+    // In an AI-sampled opp-exchange world, the sampled exchange_drawn/hand
+    // multiset may not contain the returned char, so do_action_fast skips
+    // the push and court_deck.size() drifts. Sync to truth.
+    auto& s = board_ai::checked_cast<CoupState<NPlayers>>(state);
+    auto& d = s.data;
+    auto it_size = payload.find("expected_deck_size");
+    auto it_card = payload.find("card");
+    if (it_size == payload.end() || it_card == payload.end()) return;
+    int expected = std::any_cast<int>(it_size->second);
+    int card = std::any_cast<int>(it_card->second);
+    int cur = static_cast<int>(d.court_deck.size());
+    if (cur < expected) {
+      // AI session missed the push. Add the returned card to balance.
+      d.court_deck.push_back(static_cast<CharId>(card));
+    } else if (cur > expected) {
+      // Shouldn't happen, but be defensive.
+      while (static_cast<int>(d.court_deck.size()) > expected &&
+             !d.court_deck.empty()) {
+        d.court_deck.pop_back();
+      }
+    }
+    return;
+  }
+  if (phase == EventPhase::kPostAction && kind == "self_exchange_draw") {
+    // Perspective player just drew 2 cards from court_deck into
+    // exchange_drawn[]. The AI session's randomize_unseen sampled different
+    // cards. Override exchange_drawn[] to truth. court_deck contents are
+    // NOT in any public hash (only court_deck.size() is), and exchange_drawn
+    // IS in hash_private_fields(active_player). So we need to:
+    //   (a) Set exchange_drawn := truth (necessary for hash equivalence).
+    //   (b) Preserve court_deck.size() (necessary because size IS public).
+    //
+    // We don't need to make court_deck content-equal across worlds — that
+    // multiset is intentionally sampled per world. Just keep size right by
+    // replacing the AI's previously-drawn cards back into court_deck (truth
+    // is now the source of exchange_drawn, AI's sampled draws aren't real).
+    auto& s = board_ai::checked_cast<CoupState<NPlayers>>(state);
+    auto& d = s.data;
+    auto it_d = payload.find("drawn");
+    if (it_d == payload.end()) return;
+    auto drawn = std::any_cast<std::vector<int>>(it_d->second);
+    if (drawn.size() != 2) return;
+    // Push AI's previously-drawn cards back, then set exchange_drawn to
+    // truth. Net deck size unchanged; exchange_drawn pinned to truth.
+    for (int i = 0; i < 2; ++i) {
+      if (d.exchange_drawn[i] >= 0) {
+        d.court_deck.push_back(d.exchange_drawn[i]);
+      }
+    }
+    // Remove 2 cards from court_deck to balance the push above. Prefer
+    // removing truth-matching cards so court_deck composition stays
+    // belief-consistent for this world (cards that "really are" in
+    // exchange_drawn now shouldn't double-count in the deck).
+    for (int t : drawn) {
+      auto it = std::find(d.court_deck.begin(), d.court_deck.end(),
+                          static_cast<CharId>(t));
+      if (it != d.court_deck.end()) {
+        d.court_deck.erase(it);
+      } else if (!d.court_deck.empty()) {
+        d.court_deck.pop_back();  // best-effort: keep size invariant.
+      }
+    }
+    d.exchange_drawn[0] = static_cast<CharId>(drawn[0]);
+    d.exchange_drawn[1] = static_cast<CharId>(drawn[1]);
     return;
   }
   // card_revealed / exchange_complete: tracker-only, no state mutation.

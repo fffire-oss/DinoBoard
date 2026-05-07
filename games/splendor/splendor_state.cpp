@@ -307,7 +307,11 @@ void SplendorState<NPlayers>::hash_public_fields(Hasher& h) const {
     h.add(d.tableau_size[t] + 47);
     for (auto cid : d.tableau[t]) h.add(cid + 53);
     h.add(d.decks[t].size() + 59);
-    // Deck contents hidden from all players — not hashed anywhere.
+    // Deck size IS public: starts known, decrements 1 every tableau refill
+    // (after buy/reserve-from-tableau) and every blind reserve — all public
+    // events. Deck contents are hidden; only the size is hashed.
+    // randomize_unseen MUST preserve this size; otherwise the hash drifts
+    // across sampled worlds (BUG-028 family).
   }
   h.add(d.nobles_size + 67);
   for (int i = 0; i < Cfg::kNobleCount; ++i) {

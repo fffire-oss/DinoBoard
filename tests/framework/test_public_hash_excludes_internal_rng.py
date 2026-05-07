@@ -53,63 +53,106 @@ from conftest import get_test_model
 HIDDEN_INFO_GAMES = ["azul", "loveletter", "splendor", "coup"]
 
 
+# Sweep parameters tuned so the test reliably triggers BUG-028-class drifts
+# without ballooning CI runtime. Single-seed (the original form of this
+# test) passed even on pre-fix engines that had a real drift bug, because
+# whether `randomize_unseen` happens to assign the relevant unseen card to
+# `decks[t]` vs an opp face-down reserve is itself random — so any check
+# that hashes a single (seed_a, seed_b) pair is sampling from a Bernoulli
+# distribution and may miss the divergence. The sweep makes the
+# Bernoulli's failure rate `≈ p^N`, so realistic per-game drift rates
+# (~2% per episode in the second-round Splendor bug) become reliable
+# pytest failures (P[no drift in 30 episodes] ≈ 0.55, in 60 ≈ 0.30, in
+# 120 ≈ 0.09 — we run 60 with model_path="" which is faster and gives
+# us a reliable but not flaky safety net).
+DRIFT_SWEEP_TRUTH_SEEDS = list(range(50, 50 + 60 * 7, 7))  # 60 episodes
+DRIFT_SWEEP_MAX_PLIES = 60
+
+
 @pytest.mark.parametrize("game_id", HIDDEN_INFO_GAMES)
 def test_public_hash_invariant_under_internal_rng(game_id):
-    """Two API sessions seeded differently but fed the same observation
-    history must produce identical state_hash_for_perspective. Failure
-    means hash_public_fields is reading internal RNG state — BUG-028.
+    """Sweep version of BUG-028 regression: across many self-play seeds,
+    two API sessions seeded differently but fed the same observation
+    history must produce identical state_hash_for_perspective.
+
+    Why a sweep, not a single seed: the divergence trigger is conditional
+    on `randomize_unseen` happening to assign a specific unseen card to
+    one bucket vs another — itself random per (seed_a, seed_b). A single
+    pair can hash-equal even on a buggy build by luck. We want CI to
+    deterministically (or near-deterministically) catch any new game's
+    `hash_public_fields` slipping in unobservable randomness.
+
+    Failure modes this catches by construction:
+      - Hashing internal RNG state directly (rng_salt, mt19937 snapshot)
+      - Hashing pre-draw deck/bag/box_lid vector ordering
+      - Hashing a count/size that varies across `randomize_unseen` worlds
+        but is NOT publicly derivable (e.g. `decks[t].size()` when cards
+        can also live in opp face-down reserves — second-round Splendor
+        bug, 2026-05-07)
     """
     perspective = 0
-    seed_truth = 42
     seed_a = 9999
     seed_b = 314159  # different RNG state from seed_a
 
     model_path = get_test_model(game_id)
-    ep = engine.run_selfplay_episode(
-        game_id=game_id, seed=seed_truth, model_path=model_path,
-        simulations=20, max_game_plies=40,
-        trace_perspective=perspective,
-    )
-    trace = ep.get("observation_trace") or []
-    if not trace:
-        pytest.skip(f"[{game_id}] empty observation trace")
+    drifts: list[tuple[int, int, str]] = []  # (seed_truth, ply, detail)
 
-    sess_a = engine.GameSession(
-        game_id, seed=seed_a, model_path="", use_filter=False)
-    sess_b = engine.GameSession(
-        game_id, seed=seed_b, model_path="", use_filter=False)
+    for seed_truth in DRIFT_SWEEP_TRUTH_SEEDS:
+        ep = engine.run_selfplay_episode(
+            game_id=game_id, seed=seed_truth, model_path=model_path,
+            simulations=20, max_game_plies=DRIFT_SWEEP_MAX_PLIES,
+            trace_perspective=perspective,
+        )
+        trace = ep.get("observation_trace") or []
+        if not trace:
+            continue
 
-    sess_a.apply_initial_observation(perspective, ep["initial_observation"])
-    sess_b.apply_initial_observation(perspective, ep["initial_observation"])
+        sess_a = engine.GameSession(
+            game_id, seed=seed_a, model_path="", use_filter=False)
+        sess_b = engine.GameSession(
+            game_id, seed=seed_b, model_path="", use_filter=False)
+        sess_a.apply_initial_observation(perspective, ep["initial_observation"])
+        sess_b.apply_initial_observation(perspective, ep["initial_observation"])
 
-    h_a = sess_a.state_hash_for_perspective(perspective)
-    h_b = sess_b.state_hash_for_perspective(perspective)
-    assert h_a == h_b, (
-        f"[{game_id}] state_hash_for_perspective diverged at initial "
-        f"observation under different internal RNG seeds: {h_a:#x} vs "
-        f"{h_b:#x}. This means hash_public_fields (or hash_private_fields "
-        f"for perspective={perspective}) is hashing internal RNG state. "
-        f"See BUG-028."
-    )
-
-    for step in trace:
-        sess_a.apply_observation(
-            step["action"], pre_events=step["pre_events"],
-            post_events=step["post_events"])
-        sess_b.apply_observation(
-            step["action"], pre_events=step["pre_events"],
-            post_events=step["post_events"])
         h_a = sess_a.state_hash_for_perspective(perspective)
         h_b = sess_b.state_hash_for_perspective(perspective)
-        assert h_a == h_b, (
-            f"[{game_id}] state_hash_for_perspective diverged at ply "
-            f"{step['ply']} (action={step['action']}) under different "
-            f"internal RNG seeds: {h_a:#x} vs {h_b:#x}. "
-            f"Likely cause: hash_public_fields is hashing internal RNG "
-            f"state (rng_salt, mt19937 snapshot, or pre-draw deck/bag "
-            f"vector ordering). See BUG-028. Public hash MUST be a "
-            f"function of the observation history alone."
-        )
+        if h_a != h_b:
+            drifts.append((seed_truth, -1, f"init: {h_a:#x} vs {h_b:#x}"))
+            continue
+
+        for step in trace:
+            sess_a.apply_observation(
+                step["action"], pre_events=step["pre_events"],
+                post_events=step["post_events"])
+            sess_b.apply_observation(
+                step["action"], pre_events=step["pre_events"],
+                post_events=step["post_events"])
+            h_a = sess_a.state_hash_for_perspective(perspective)
+            h_b = sess_b.state_hash_for_perspective(perspective)
+            if h_a != h_b:
+                post_kinds = [e["kind"] for e in step["post_events"]]
+                drifts.append((
+                    seed_truth, step["ply"],
+                    f"act={step['action']} post={post_kinds} "
+                    f"{h_a:#x} vs {h_b:#x}"))
+                break
+
+    assert not drifts, (
+        f"[{game_id}] state_hash_for_perspective diverged across "
+        f"{len(drifts)}/{len(DRIFT_SWEEP_TRUTH_SEEDS)} self-play seeds "
+        f"under different API session RNG seeds.\n"
+        f"First few drifts:\n  " +
+        "\n  ".join(f"seed_truth={s} ply={p}: {d}" for s, p, d in drifts[:5]) +
+        f"\n\nThis means hash_public_fields (or hash_private_fields for "
+        f"perspective={perspective}) is hashing state that varies under "
+        f"`randomize_unseen` but is NOT derivable from the observation "
+        f"history. Common causes: (1) rng_salt / mt19937 snapshot; (2) "
+        f"pre-draw deck/bag/box_lid vector ordering; (3) a size/count "
+        f"that depends on the random partition of unseen cards across "
+        f"deck vs opp face-down reserves (second-round Splendor bug, "
+        f"2026-05-07). See BUG-028. Public hash MUST be a function of "
+        f"the observation history alone."
+    )
 
 
 @pytest.mark.parametrize("game_id", HIDDEN_INFO_GAMES)

@@ -316,17 +316,53 @@ void SplendorBeliefTracker<NPlayers>::reconcile_state(IGameState& state) const {
   const auto& pool = splendor_card_pool();
   const int total_cards = static_cast<int>(pool.size());
 
-  // Collect opp hidden reserved card IDs currently in API's world.
+  // Collect opp hidden reserved card IDs currently in API's world. If a
+  // hidden slot holds a card that has since been observed publicly (i.e.
+  // appeared in tableau or perspective's own reserve via deck_flip /
+  // self_reserve_deck), the sampled world is infeasible — randomize_unseen
+  // sampled X into opp hidden but truth later showed X in tableau. We must
+  // re-sample those slots from the current unseen pool, otherwise:
+  //   (a) seen ∩ opp_hidden is non-empty → reconcile's
+  //       deck = pool − seen − opp_hidden double-skips, deck size shrinks
+  //       less than truth → public-hash drift (BUG-028 family).
+  //   (b) two different sims with different stale collisions land at
+  //       different deck sizes for the same observation history.
   std::unordered_set<int> opp_hidden_reserved;
+  std::vector<std::tuple<int, int, int>> stale_slots;  // (player, slot, tier)
   for (int p = 0; p < NPlayers; ++p) {
     if (p == perspective_player_) continue;
     for (int slot = 0; slot < data.reserved_size[p]; ++slot) {
       if (data.reserved_visible[p][static_cast<size_t>(slot)] == 0) {
         const int cid = data.reserved[p][static_cast<size_t>(slot)];
         if (cid >= 0 && cid < total_cards) {
-          opp_hidden_reserved.insert(cid);
+          if (seen_cards_.count(cid)) {
+            // Stale: this card has been publicly observed elsewhere.
+            const int tier_idx = pool[static_cast<size_t>(cid)].tier - 1;
+            stale_slots.emplace_back(p, slot, tier_idx);
+          } else {
+            opp_hidden_reserved.insert(cid);
+          }
         }
       }
+    }
+  }
+  // Re-sample stale slots from the unseen pool of the matching tier,
+  // excluding cards already in opp_hidden_reserved.
+  if (!stale_slots.empty()) {
+    std::array<std::vector<int>, 3> avail{};
+    for (int cid = 0; cid < total_cards; ++cid) {
+      if (seen_cards_.count(cid)) continue;
+      if (opp_hidden_reserved.count(cid)) continue;
+      const int t = pool[static_cast<size_t>(cid)].tier - 1;
+      if (t >= 0 && t < 3) avail[static_cast<size_t>(t)].push_back(cid);
+    }
+    for (auto& [p, slot, t] : stale_slots) {
+      if (t < 0 || t >= 3 || avail[static_cast<size_t>(t)].empty()) continue;
+      const int new_cid = avail[static_cast<size_t>(t)].back();
+      avail[static_cast<size_t>(t)].pop_back();
+      data.reserved[p][static_cast<size_t>(slot)] =
+          static_cast<std::int16_t>(new_cid);
+      opp_hidden_reserved.insert(new_cid);
     }
   }
 
@@ -341,7 +377,7 @@ void SplendorBeliefTracker<NPlayers>::reconcile_state(IGameState& state) const {
     }
   }
 
-  bool changed = false;
+  bool changed = !stale_slots.empty();
   for (int t = 0; t < 3; ++t) {
     auto& deck = data.decks[static_cast<size_t>(t)];
     const auto& nd = new_decks[static_cast<size_t>(t)];

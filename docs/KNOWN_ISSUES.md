@@ -1369,7 +1369,23 @@ for (int count : bag_counts) h.add(count);
 
 **Splendor**：
 
-从 `SplendorState::hash_public_fields()` 移除 `h.add(rng_salt)`。需要 full-state/debug 语义时仍可走 legacy `state_hash(include_hidden_rng=true)` 路径。
+第一轮：从 `SplendorState::hash_public_fields()` 移除 `h.add(rng_salt)`。
+
+第二轮（2026-05-07 补丁）：deck size **是公共信息**（每张牌起始已知，每次补 tableau / blind reserve 都公开 -1），所以必须留在 `hash_public_fields`。drift 的真正根因在 `SplendorBeliefTracker::reconcile_state`：它按 `pool − seen − opp_hidden_reserved` 重建 deck 内容，但当某个 cid 既在 AI 世界的 opp 暗 reserve 槽里、又因为后续 `deck_flip` 事件被加进了 `seen_cards_`（说明 truth 已经把这张卡公开放上 tableau），slot 还存着这张 stale cid。`reconcile_state` 对每个 cid 同时检查 seen 和 opp_hidden_reserved——seen 命中先 continue，但 stale cid 已经被 seen 排除了，没机会让 opp_hidden 减一次 deck size。两个不同 sim 在不同步堆积不同数量的 stale slot → deck size 分歧。
+
+修复方案在 `SplendorBeliefTracker::reconcile_state`：扫描 opp 暗 reserve 时，若 cid 已在 `seen_cards_` 里，把这个 slot 标记为 stale，从当前未见池里重抽一张同 tier 的牌填进去（再标记 changed 以触发重建）。重抽的牌不会和 seen 冲突，opp_hidden_reserved 集合的 tier 分布在所有 sim 里就一致了，deck size 在两个 sim 里都收敛到 truth 的尺寸。
+
+回归脚本：以独立 seed 启动两个 `GameSession`，apply 同一个 selfplay observation_trace，每一步比较 `state_hash_for_perspective`。修复前 60 seed sweep × 多次执行经常 ~3-11 起 drift；修复后连续 10 次 0 drift。
+
+**Coup**（2026-05-07，第三轮 BUG-028 同族 bug）：
+
+强化版 `test_public_hash_excludes_internal_rng.py`（60-seed sweep）暴露了 Coup 的三处遗漏 event。`court_deck` 是 Coup 的 face-down deck，类比 Azul `bag` / Splendor `decks[t]`：内容每个人都不知道，所以 `hash_public_fields()` 只能 hash `court_deck.size()`；`exchange_drawn[]` 是 active player 临时手牌，hash 进 `hash_private_fields(active_player)`。当 perspective 从 court_deck 抽牌、或对手公开归还卡时，AI session 的 sampled world 必须被显式同步到 truth，否则 hash 在“看不见但已观察的轴”上分裂：
+
+1. **`self_exchange_draw`**（post）：perspective 是 Ambassador 交换的 active player，从 `kExchangeReturn1` 之外进入 `kExchangeReturn1` 时触发。perspective 看见自己抽到的 2 张牌，但 AI session 在 sampled court_deck 上抽出了不同的两张。Applier 把 AI sampled 的两张推回 court_deck，删掉 truth 对应的两张（保持 size 不变），把 `exchange_drawn` 钉到 truth。
+2. **`self_influence_redraw`**（post）：`kRevealSlot0/1` 在挑战成功（`card == claimed_character`）分支中，`coup_rules.cpp` line 431 / 509 给 revealer 抽一张新的 influence card；当 revealer == perspective 时，新卡进入 `hash_private_fields(perspective)`，AI sampled 不一致。Applier 同 self_exchange_draw 套路：sampled 的旧 influence 推回 court_deck，删掉 truth 对应的一张，把 `influence[][]` 钉到 truth。
+3. **`public_return_card`**（post）：每个 `kReturn*` action 在 truth 中都把 1 张牌推回 court_deck（legal_actions 保证 returned char 在 exchange_drawn 或 active player hand 里 → 一定 push）。但当 actor 是对手且 randomize_unseen 给对手手牌/exchange_drawn 抽到了不同的多重集，AI session 走 `removed=false` 分支不 push，公共 `court_deck.size()` 漂移。Applier 直接读取 truth 的 `expected_deck_size` 强制对齐。
+
+修复后 60-seed sweep × 4 个游戏（azul / loveletter / splendor / coup）全过；连续 5 次稳定通过。
 
 ### 教训
 
@@ -1378,6 +1394,7 @@ for (int count : bag_counts) h.add(count);
 3. **hash scope 必须和 encoder scope 对齐**：如果 encoder 只看 bag counts，hash 也只能包含 bag counts；如果 hash 包含 encoder 看不到的信息，DAG 会按网络无法区分的状态分裂。
 4. **发现 DAG 复用异常、搜索“很快但棋力弱”、同一观察历史 selfplay/API 策略分布不一致时，应优先审计 public/private hash scope**。
 5. 对每个新游戏应加测试：改变不可观察随机源顺序或 RNG salt，在 public + own private 不变时，`state_hash_for_perspective(p)` 必须不变；同时改变公开可推导的 composition 时 hash 必须变化。
+6. **架构上的预防**：`tests/framework/test_public_hash_excludes_internal_rng.py` 已经从单 seed 强化为 60 seed sweep。BUG-028 同族 bug 的触发本质是 Bernoulli——`randomize_unseen` 把某张未见牌分配到 deck 还是 opp face-down 的概率每次都不同，单 seed 配对在有 bug 的版本上经常恰好 hash 相等而通过。Sweep 把漏检率压到 `p^N`：~2% per-episode 的真实 drift rate × 60 seeds → 可靠失败（P[全过] ≈ 0.3）。任何新游戏注册时这个测试都会自动覆盖；为新隐藏信息游戏加 game_id 进 `HIDDEN_INFO_GAMES` 列表是注册流程的一部分。
 
 ---
 
