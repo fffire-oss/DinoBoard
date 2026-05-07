@@ -1,7 +1,128 @@
 import { createApp } from '/static/general/app.js';
+import { t, register, tList } from '/static/general/i18n.js';
+
+register({
+  zh: {
+    'spl.title': '璀璨宝石',
+    'spl.intro': '拿宝石、买卡、抢贵族，先到15分触发终局',
+    'spl.color_white': '白',
+    'spl.color_blue': '蓝',
+    'spl.color_green': '绿',
+    'spl.color_red': '红',
+    'spl.color_black': '黑',
+    'spl.color_gold': '金',
+    'spl.action_unknown': '动作 #{id}',
+    'spl.action_start': '开局',
+    'spl.move.buy_faceup': '购买 T{tier} #{slot}',
+    'spl.move.reserve_faceup': '保留明牌 T{tier} #{slot}',
+    'spl.move.reserve_deck': '保留牌堆 T{tier}',
+    'spl.move.buy_reserved': '购买保留牌 #{slot}',
+    'spl.move.take_three': '拿三色：{cs}',
+    'spl.move.take_two_diff': '拿两色：{cs}',
+    'spl.move.take_one': '拿一枚：{c}',
+    'spl.move.take_two_same': '拿两枚同色：{c}',
+    'spl.move.choose_noble': '选择贵族 #{slot}',
+    'spl.move.return_token': '返还：{c}',
+    'spl.move.pass': '跳过回合',
+    'spl.bank_title': '银行宝石',
+    'spl.tableau_title': '发展卡',
+    'spl.tableau_full': '桌面开发卡（T3/T2/T1）',
+    'spl.nobles_title': '贵族',
+    'spl.turn_n': '第{n}回合',
+    'spl.return_mode': '返还模式：点击宝石堆返还 1 枚。',
+    'spl.noble_mode': '贵族选择模式：点击可选贵族完成本回合。',
+    'spl.not_your_turn': '当前不是你的回合。',
+    'spl.no_take': '当前无法拿宝石。',
+    'spl.pick_hint': '操作：点击宝石堆选择，三色点三次/同色点两次，然后点确认。',
+    'spl.picked': '已选择：{cs}（可确认或取消）',
+    'spl.confirm_take': '确认拿宝石',
+    'spl.cancel_pick': '取消选择',
+    'spl.pass_btn': '跳过回合',
+    'spl.pending_returns': '当前需返还 {n} 枚宝石',
+    'spl.pending_noble': '当前需要选择一位贵族。',
+    'spl.tier_label': 'Tier {n}',
+    'spl.deck_btn': '保留牌堆 ({n})',
+    'spl.btn_buy': '购买',
+    'spl.btn_reserve': '保留',
+    'spl.btn_op': '操作',
+    'spl.noble_3pt': '贵族 3分',
+    'spl.btn_choose_noble': '选择贵族',
+    'spl.points_suffix': '分',
+    'spl.player_n': '玩家{n}',
+    'spl.player_self_suffix': '（你）',
+    'spl.player_current_suffix': ' · 当前',
+    'spl.stat_meta': '分:{points}  卡:{cards}  贵族:{nobles}',
+    'spl.gems_label': '宝石',
+    'spl.gems_total': '总数:{n}',
+    'spl.bonus_label': '发展卡',
+    'spl.reserve_label': '保留卡 (最多 3 张)',
+    'spl.reserve_empty': '空',
+    'spl.reserve_hidden': '暗保留 T{tier}',
+    'spl.btn_buy_reserved': '购买保留',
+  },
+  en: {
+    'spl.title': 'Splendor',
+    'spl.intro': 'Take gems, buy cards, attract nobles. First to 15 points triggers the endgame.',
+    'spl.color_white': 'White',
+    'spl.color_blue': 'Blue',
+    'spl.color_green': 'Green',
+    'spl.color_red': 'Red',
+    'spl.color_black': 'Black',
+    'spl.color_gold': 'Gold',
+    'spl.action_unknown': 'Action #{id}',
+    'spl.action_start': 'Game start',
+    'spl.move.buy_faceup': 'Buy T{tier} #{slot}',
+    'spl.move.reserve_faceup': 'Reserve face-up T{tier} #{slot}',
+    'spl.move.reserve_deck': 'Reserve top of T{tier} deck',
+    'spl.move.buy_reserved': 'Buy reserved #{slot}',
+    'spl.move.take_three': 'Take 3: {cs}',
+    'spl.move.take_two_diff': 'Take 2 diff: {cs}',
+    'spl.move.take_one': 'Take 1: {c}',
+    'spl.move.take_two_same': 'Take 2 same: {c}',
+    'spl.move.choose_noble': 'Choose noble #{slot}',
+    'spl.move.return_token': 'Return: {c}',
+    'spl.move.pass': 'Pass',
+    'spl.bank_title': 'Bank gems',
+    'spl.tableau_title': 'Development cards',
+    'spl.tableau_full': 'Tableau (T3/T2/T1)',
+    'spl.nobles_title': 'Nobles',
+    'spl.turn_n': 'Turn {n}',
+    'spl.return_mode': 'Return mode: click a stack to return 1 token.',
+    'spl.noble_mode': 'Noble pick: click an available noble to finish the turn.',
+    'spl.not_your_turn': "Not your turn.",
+    'spl.no_take': 'Cannot take gems right now.',
+    'spl.pick_hint': 'Tap stacks to pick (3 different / 2 same), then confirm.',
+    'spl.picked': 'Picked: {cs} (confirm or cancel)',
+    'spl.confirm_take': 'Confirm take',
+    'spl.cancel_pick': 'Cancel pick',
+    'spl.pass_btn': 'Pass',
+    'spl.pending_returns': 'Need to return {n} tokens',
+    'spl.pending_noble': 'Choose a noble to continue.',
+    'spl.tier_label': 'Tier {n}',
+    'spl.deck_btn': 'Reserve deck ({n})',
+    'spl.btn_buy': 'Buy',
+    'spl.btn_reserve': 'Reserve',
+    'spl.btn_op': 'Op',
+    'spl.noble_3pt': 'Noble 3pt',
+    'spl.btn_choose_noble': 'Take noble',
+    'spl.points_suffix': 'pt',
+    'spl.player_n': 'Player {n}',
+    'spl.player_self_suffix': ' (you)',
+    'spl.player_current_suffix': ' · current',
+    'spl.stat_meta': 'pts:{points}  cards:{cards}  nobles:{nobles}',
+    'spl.gems_label': 'Gems',
+    'spl.gems_total': 'total:{n}',
+    'spl.bonus_label': 'Bonuses',
+    'spl.reserve_label': 'Reserved (max 3)',
+    'spl.reserve_empty': 'empty',
+    'spl.reserve_hidden': 'Hidden T{tier}',
+    'spl.btn_buy_reserved': 'Buy reserved',
+  },
+});
 
 const COLOR_NAMES = ['white', 'blue', 'green', 'red', 'black', 'gold'];
-const COLOR_LABELS = ['白', '蓝', '绿', '红', '黑', '金'];
+const COLOR_KEYS = ['spl.color_white','spl.color_blue','spl.color_green','spl.color_red','spl.color_black','spl.color_gold'];
+function colorLabel(c) { return t(COLOR_KEYS[c]); }
 const TAKE_THREE_COMBOS = [
   [0,1,2],[0,1,3],[0,1,4],[0,2,3],[0,2,4],[0,3,4],
   [1,2,3],[1,2,4],[1,3,4],[2,3,4]
@@ -28,20 +149,20 @@ function getStage(gameState) {
 }
 
 function formatActionInfo(info, actionId) {
-  if (!info || !info.type) return '动作 #' + actionId;
+  if (!info || !info.type) return t('spl.action_unknown', { id: actionId });
   switch (info.type) {
-    case 'buy_faceup': return '购买 T' + (info.tier + 1) + ' #' + (info.slot + 1);
-    case 'reserve_faceup': return '保留明牌 T' + (info.tier + 1) + ' #' + (info.slot + 1);
-    case 'reserve_deck': return '保留牌堆 T' + (info.tier + 1);
-    case 'buy_reserved': return '购买保留牌 #' + (info.slot + 1);
-    case 'take_three': return '拿三色：' + (info.colors || []).map(c => COLOR_LABELS[c]).join('+');
-    case 'take_two_different': return '拿两色：' + (info.colors || []).map(c => COLOR_LABELS[c]).join('+');
-    case 'take_one': return '拿一枚：' + COLOR_LABELS[info.color];
-    case 'take_two_same': return '拿两枚同色：' + COLOR_LABELS[info.color];
-    case 'choose_noble': return '选择贵族 #' + (info.noble_slot + 1);
-    case 'return_token': return '返还：' + COLOR_LABELS[info.token];
-    case 'pass': return '跳过回合';
-    default: return '动作 #' + actionId;
+    case 'buy_faceup': return t('spl.move.buy_faceup', { tier: info.tier + 1, slot: info.slot + 1 });
+    case 'reserve_faceup': return t('spl.move.reserve_faceup', { tier: info.tier + 1, slot: info.slot + 1 });
+    case 'reserve_deck': return t('spl.move.reserve_deck', { tier: info.tier + 1 });
+    case 'buy_reserved': return t('spl.move.buy_reserved', { slot: info.slot + 1 });
+    case 'take_three': return t('spl.move.take_three', { cs: (info.colors || []).map(c => colorLabel(c)).join('+') });
+    case 'take_two_different': return t('spl.move.take_two_diff', { cs: (info.colors || []).map(c => colorLabel(c)).join('+') });
+    case 'take_one': return t('spl.move.take_one', { c: colorLabel(info.color) });
+    case 'take_two_same': return t('spl.move.take_two_same', { c: colorLabel(info.color) });
+    case 'choose_noble': return t('spl.move.choose_noble', { slot: info.noble_slot + 1 });
+    case 'return_token': return t('spl.move.return_token', { c: colorLabel(info.token) });
+    case 'pass': return t('spl.move.pass');
+    default: return t('spl.action_unknown', { id: actionId });
   }
 }
 
@@ -128,7 +249,7 @@ function tokenChip(colorIdx, count, options) {
   el.type = 'button';
   el.className = 'token-chip ' + COLOR_NAMES[colorIdx];
   if (options.selected) el.classList.add('selected');
-  el.textContent = COLOR_LABELS[colorIdx] + ':' + count;
+  el.textContent = colorLabel(colorIdx) + ':' + count;
   if (options.onClick && !options.disabled) {
     el.classList.add('clickable');
     el.addEventListener('click', options.onClick);
@@ -151,9 +272,9 @@ function renderDevCard(card, actions) {
   head.className = 'dev-card-head';
   const left = document.createElement('span');
   left.className = 'dev-card-head-left';
-  left.innerHTML = '<span>T' + tier + '</span><span class="bonus-inline ' + COLOR_NAMES[Math.max(0, Math.min(4, bonus))] + '">' + COLOR_LABELS[Math.max(0, Math.min(4, bonus))] + '</span>';
+  left.innerHTML = '<span>T' + tier + '</span><span class="bonus-inline ' + COLOR_NAMES[Math.max(0, Math.min(4, bonus))] + '">' + colorLabel(Math.max(0, Math.min(4, bonus))) + '</span>';
   const right = document.createElement('span');
-  right.textContent = points + '分';
+  right.textContent = points + t('spl.points_suffix');
   head.append(left, right);
   root.appendChild(head);
 
@@ -179,7 +300,7 @@ function renderDevCard(card, actions) {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'card-op-btn';
-      btn.textContent = act.label || '操作';
+      btn.textContent = act.label || t('spl.btn_op');
       btn.disabled = !!act.disabled;
       if (!btn.disabled && act.onClick) {
         btn.addEventListener('click', (ev) => { ev.stopPropagation(); act.onClick(); });
@@ -199,7 +320,7 @@ function renderEmptyBoard(container) {
 
   const bankSection = document.createElement('div');
   bankSection.className = 'bank-area';
-  bankSection.innerHTML = '<h3>银行宝石</h3>';
+  bankSection.innerHTML = '<h3>' + t('spl.bank_title') + '</h3>';
   const bankRow = document.createElement('div');
   bankRow.className = 'bank-row';
   for (let c = 0; c < 6; c++) bankRow.appendChild(tokenChip(c, 0, {}));
@@ -208,7 +329,7 @@ function renderEmptyBoard(container) {
 
   const tableau = document.createElement('div');
   tableau.className = 'tableau-wrap';
-  tableau.innerHTML = '<h3>发展卡</h3>';
+  tableau.innerHTML = '<h3>' + t('spl.tableau_title') + '</h3>';
   const grid = document.createElement('div');
   grid.className = 'tableau-grid-layout';
   for (let tier = 2; tier >= 0; tier--) {
@@ -225,7 +346,7 @@ function renderEmptyBoard(container) {
 
   const nobles = document.createElement('div');
   nobles.className = 'nobles-area';
-  nobles.innerHTML = '<h3>贵族</h3><div class="nobles-row"></div>';
+  nobles.innerHTML = '<h3>' + t('spl.nobles_title') + '</h3><div class="nobles-row"></div>';
   wrap.appendChild(nobles);
 
   container.appendChild(wrap);
@@ -256,14 +377,14 @@ function renderBoard(container, gameState, ctx) {
   const turnBadge = document.createElement('div');
   turnBadge.className = 'turn-badge';
   const plies = game.plies || 0;
-  turnBadge.textContent = '第' + (Math.floor(plies / 2) + 1) + '回合';
+  turnBadge.textContent = t('spl.turn_n', { n: Math.floor(plies / 2) + 1 });
 
   // Bank
   const bankSection = document.createElement('div');
   bankSection.className = 'bank-area';
   const bankHead = document.createElement('div');
   bankHead.className = 'bank-head-line';
-  bankHead.innerHTML = '<h3>银行宝石</h3>';
+  bankHead.innerHTML = '<h3>' + t('spl.bank_title') + '</h3>';
   bankHead.appendChild(turnBadge);
   bankSection.appendChild(bankHead);
 
@@ -285,12 +406,12 @@ function renderBoard(container, gameState, ctx) {
 
   const pickStatus = document.createElement('div');
   pickStatus.className = 'muted inline-title';
-  if (inReturn) pickStatus.textContent = '返还模式：点击宝石堆返还 1 枚。';
-  else if (inNoble) pickStatus.textContent = '贵族选择模式：点击可选贵族完成本回合。';
-  else if (!playing) pickStatus.textContent = '当前不是你的回合。';
-  else if (!hasAnyTakeAction(legalSet)) pickStatus.textContent = '当前无法拿宝石。';
-  else if (gemPick.length === 0) pickStatus.textContent = '操作：点击宝石堆选择，三色点三次/同色点两次，然后点确认。';
-  else pickStatus.textContent = '已选择：' + gemPick.map(c => COLOR_LABELS[c]).join('+') + '（可确认或取消）';
+  if (inReturn) pickStatus.textContent = t('spl.return_mode');
+  else if (inNoble) pickStatus.textContent = t('spl.noble_mode');
+  else if (!playing) pickStatus.textContent = t('spl.not_your_turn');
+  else if (!hasAnyTakeAction(legalSet)) pickStatus.textContent = t('spl.no_take');
+  else if (gemPick.length === 0) pickStatus.textContent = t('spl.pick_hint');
+  else pickStatus.textContent = t('spl.picked', { cs: gemPick.map(c => colorLabel(c)).join('+') });
   bankSection.appendChild(pickStatus);
 
   const opsRow = document.createElement('div');
@@ -300,21 +421,21 @@ function renderBoard(container, gameState, ctx) {
   const confirmBtn = document.createElement('button');
   confirmBtn.type = 'button';
   confirmBtn.className = 'inline-op-btn';
-  confirmBtn.textContent = '确认拿宝石';
+  confirmBtn.textContent = t('spl.confirm_take');
   confirmBtn.disabled = !(playing && !inReturn && !inNoble && takeAid != null);
   confirmBtn.addEventListener('click', () => { if (takeAid != null) ctx.submitAction(takeAid); });
 
   const cancelBtn = document.createElement('button');
   cancelBtn.type = 'button';
   cancelBtn.className = 'inline-op-btn';
-  cancelBtn.textContent = '取消选择';
+  cancelBtn.textContent = t('spl.cancel_pick');
   cancelBtn.disabled = gemPick.length === 0 || inNoble;
   cancelBtn.addEventListener('click', () => { gemPick = []; ctx.rerender(); });
 
   const passBtn = document.createElement('button');
   passBtn.type = 'button';
   passBtn.className = 'inline-op-btn';
-  passBtn.textContent = '跳过回合';
+  passBtn.textContent = t('spl.pass_btn');
   passBtn.disabled = !(playing && legalSet.has(PASS_ACTION) && gemPick.length === 0);
   passBtn.addEventListener('click', () => ctx.submitAction(PASS_ACTION));
 
@@ -323,8 +444,8 @@ function renderBoard(container, gameState, ctx) {
 
   const pendingMsg = document.createElement('div');
   pendingMsg.className = 'muted';
-  if (inReturn) pendingMsg.textContent = '当前需返还 ' + (game.pending_returns || 0) + ' 枚宝石';
-  else if (inNoble) pendingMsg.textContent = '当前需要选择一位贵族。';
+  if (inReturn) pendingMsg.textContent = t('spl.pending_returns', { n: game.pending_returns || 0 });
+  else if (inNoble) pendingMsg.textContent = t('spl.pending_noble');
   bankSection.appendChild(pendingMsg);
 
   wrap.appendChild(bankSection);
@@ -332,7 +453,7 @@ function renderBoard(container, gameState, ctx) {
   // Nobles
   const noblesArea = document.createElement('div');
   noblesArea.className = 'nobles-area';
-  noblesArea.innerHTML = '<h3>贵族</h3>';
+  noblesArea.innerHTML = '<h3>' + t('spl.nobles_title') + '</h3>';
   const noblesRow = document.createElement('div');
   noblesRow.className = 'nobles-row';
   const nobles = game.nobles || [];
@@ -346,7 +467,7 @@ function renderBoard(container, gameState, ctx) {
       card.classList.add('clickable');
       card.addEventListener('click', ((slot) => () => ctx.submitAction(CHOOSE_NOBLE + slot))(ni));
     }
-    card.innerHTML = '<div class="noble-title">贵族 3分</div>';
+    card.innerHTML = '<div class="noble-title">' + t('spl.noble_3pt') + '</div>';
     const reqRow = document.createElement('div');
     reqRow.className = 'cost-row';
     const req = noble.requirements || [];
@@ -363,7 +484,7 @@ function renderBoard(container, gameState, ctx) {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'card-op-btn';
-      btn.textContent = '选择贵族';
+      btn.textContent = t('spl.btn_choose_noble');
       btn.addEventListener('click', (ev) => { ev.stopPropagation(); ctx.submitAction(CHOOSE_NOBLE + ni); });
       card.appendChild(btn);
     }
@@ -375,42 +496,42 @@ function renderBoard(container, gameState, ctx) {
   // Tableau
   const tableauWrap = document.createElement('div');
   tableauWrap.className = 'tableau-wrap';
-  tableauWrap.innerHTML = '<h3>桌面开发卡（T3/T2/T1）</h3>';
+  tableauWrap.innerHTML = '<h3>' + t('spl.tableau_full') + '</h3>';
   const tableauLayout = document.createElement('div');
   tableauLayout.className = 'tableau-grid-layout';
   const tableau = game.tableau || [[], [], []];
   const deckSizes = game.deck_sizes || [0, 0, 0];
 
-  for (let t = 2; t >= 0; t--) {
+  for (let ti = 2; ti >= 0; ti--) {
     const line = document.createElement('div');
     line.className = 'tableau-tier-line';
 
-    const reserveDeckAid = RESERVE_DECK + t;
+    const reserveDeckAid = RESERVE_DECK + ti;
     const deckBtn = document.createElement('button');
     deckBtn.type = 'button';
     deckBtn.className = 'deck-op-btn deck-op-btn-left';
-    deckBtn.textContent = '保留牌堆 (' + deckSizes[t] + ')';
+    deckBtn.textContent = t('spl.deck_btn', { n: deckSizes[ti] });
     deckBtn.disabled = !(playing && legalSet.has(reserveDeckAid));
-    deckBtn.dataset.deck = t;
+    deckBtn.dataset.deck = ti;
     deckBtn.addEventListener('click', () => ctx.submitAction(reserveDeckAid));
     line.appendChild(deckBtn);
 
     const tier = document.createElement('div');
     tier.className = 'tableau-tier';
-    tier.innerHTML = '<div class="tableau-tier-title">Tier ' + (t + 1) + '</div>';
+    tier.innerHTML = '<div class="tableau-tier-title">' + t('spl.tier_label', { n: ti + 1 }) + '</div>';
     const row = document.createElement('div');
     row.className = 'card-row';
-    const cards = tableau[t] || [];
+    const cards = tableau[ti] || [];
     for (let s = 0; s < cards.length; s++) {
-      const buyAid = BUY_FACEUP + t * 4 + s;
-      const resAid = RESERVE_FACEUP + t * 4 + s;
+      const buyAid = BUY_FACEUP + ti * 4 + s;
+      const resAid = RESERVE_FACEUP + ti * 4 + s;
       const buyOk = playing && legalSet.has(buyAid);
       const resOk = playing && legalSet.has(resAid);
       const cardEl = renderDevCard(cards[s], [
-        { label: '购买', disabled: !buyOk, onClick: buyOk ? () => ctx.submitAction(buyAid) : null },
-        { label: '保留', disabled: !resOk, onClick: resOk ? () => ctx.submitAction(resAid) : null },
+        { label: t('spl.btn_buy'), disabled: !buyOk, onClick: buyOk ? () => ctx.submitAction(buyAid) : null },
+        { label: t('spl.btn_reserve'), disabled: !resOk, onClick: resOk ? () => ctx.submitAction(resAid) : null },
       ]);
-      cardEl.dataset.tableau = t + '-' + s;
+      cardEl.dataset.tableau = ti + '-' + s;
       row.appendChild(cardEl);
     }
     while (row.children.length < 4) row.appendChild(renderDevCard(null));
@@ -451,7 +572,7 @@ function renderPlayerArea(container, gameState, ctx) {
     for (let i = 0; i < 2; i++) {
       const card = document.createElement('div');
       card.className = 'player-card';
-      card.innerHTML = '<div class="player-title"><span>玩家' + i + '</span></div>';
+      card.innerHTML = '<div class="player-title"><span>' + t('spl.player_n', { n: i }) + '</span></div>';
       wrap.appendChild(card);
     }
     outer.appendChild(wrap);
@@ -486,8 +607,8 @@ function renderPlayerArea(container, gameState, ctx) {
 
     const title = document.createElement('div');
     title.className = 'player-title';
-    title.innerHTML = '<span>玩家' + p + (isHuman ? '（你）' : '') + (isCurrent ? ' · 当前' : '') + '</span>' +
-      '<span class="player-title-meta">分:' + (pd.points || 0) + '  卡:' + (pd.cards_count || 0) + '  贵族:' + (pd.nobles_count || 0) + '</span>';
+    title.innerHTML = '<span>' + t('spl.player_n', { n: p }) + (isHuman ? t('spl.player_self_suffix') : '') + (isCurrent ? t('spl.player_current_suffix') : '') + '</span>' +
+      '<span class="player-title-meta">' + t('spl.stat_meta', { points: pd.points || 0, cards: pd.cards_count || 0, nobles: pd.nobles_count || 0 }) + '</span>';
     card.appendChild(title);
 
     // Gems
@@ -495,7 +616,7 @@ function renderPlayerArea(container, gameState, ctx) {
     gemsGroup.className = 'player-stat-group';
     const gems = pd.gems || [];
     const gemsTotal = gems.reduce((s, v) => s + (v || 0), 0);
-    gemsGroup.innerHTML = '<div class="player-stat-label">宝石 <span class="player-stat-extra">总数:' + gemsTotal + '</span></div>';
+    gemsGroup.innerHTML = '<div class="player-stat-label">' + t('spl.gems_label') + ' <span class="player-stat-extra">' + t('spl.gems_total', { n: gemsTotal }) + '</span></div>';
     const gemsRow = document.createElement('div');
     gemsRow.className = 'token-row';
     for (let c = 0; c < 6; c++) {
@@ -509,14 +630,14 @@ function renderPlayerArea(container, gameState, ctx) {
     // Bonuses
     const bonusGroup = document.createElement('div');
     bonusGroup.className = 'player-stat-group';
-    bonusGroup.innerHTML = '<div class="player-stat-label">发展卡</div>';
+    bonusGroup.innerHTML = '<div class="player-stat-label">' + t('spl.bonus_label') + '</div>';
     const bonusRow = document.createElement('div');
     bonusRow.className = 'bonus-row';
     const bonuses = pd.bonuses || [];
     for (let c = 0; c < 5; c++) {
       const chip = document.createElement('span');
       chip.className = 'bonus-rect ' + COLOR_NAMES[c];
-      chip.textContent = COLOR_LABELS[c] + ':' + (bonuses[c] || 0);
+      chip.textContent = colorLabel(c) + ':' + (bonuses[c] || 0);
       bonusRow.appendChild(chip);
     }
     bonusGroup.appendChild(bonusRow);
@@ -526,7 +647,7 @@ function renderPlayerArea(container, gameState, ctx) {
     // when the player reserves a card mid-game.
     const reserveGroup = document.createElement('div');
     reserveGroup.className = 'player-stat-group reserve-group';
-    reserveGroup.innerHTML = '<div class="player-stat-label">保留卡 (最多 3 张)</div>';
+    reserveGroup.innerHTML = '<div class="player-stat-label">' + t('spl.reserve_label') + '</div>';
     const reserveRow = document.createElement('div');
     reserveRow.className = 'reserve-row';
     const reserved = pd.reserved || [];
@@ -536,7 +657,7 @@ function renderPlayerArea(container, gameState, ctx) {
         const empty = document.createElement('div');
         empty.className = 'reserve-slot-empty';
         empty.dataset.reserved = p + '-' + ri;
-        empty.textContent = '空';
+        empty.textContent = t('spl.reserve_empty');
         reserveRow.appendChild(empty);
         continue;
       }
@@ -548,7 +669,7 @@ function renderPlayerArea(container, gameState, ctx) {
         const hidden = document.createElement('div');
         hidden.className = 'reserve-hidden';
         hidden.dataset.reserved = p + '-' + ri;
-        hidden.textContent = '暗保留 T' + (item.tier || '?');
+        hidden.textContent = t('spl.reserve_hidden', { tier: item.tier || '?' });
         reserveRow.appendChild(hidden);
         continue;
       }
@@ -559,7 +680,7 @@ function renderPlayerArea(container, gameState, ctx) {
       // for a face-down reserve.
       const isActingSeat = playing && p === cp;
       const canBuy = isActingSeat && legalSet.has(buyResAid);
-      const actions = canBuy ? [{ label: '购买保留', onClick: () => ctx.submitAction(buyResAid) }] : [];
+      const actions = canBuy ? [{ label: t('spl.btn_buy_reserved'), onClick: () => ctx.submitAction(buyResAid) }] : [];
       const resCardEl = renderDevCard(item, actions);
       resCardEl.dataset.reserved = p + '-' + ri;
       reserveRow.appendChild(resCardEl);
@@ -575,7 +696,7 @@ function renderPlayerArea(container, gameState, ctx) {
 }
 
 function formatMove(actionInfo, actionId) {
-  if (!actionInfo && (actionId === null || actionId === undefined)) return '开局';
+  if (!actionInfo && (actionId === null || actionId === undefined)) return t('spl.action_start');
   return formatActionInfo(actionInfo, actionId);
 }
 
@@ -584,7 +705,7 @@ function formatMove(actionInfo, actionId) {
 function makeFlyingToken(colorIdx) {
   const el = document.createElement('div');
   el.className = 'anim-flying-token ' + COLOR_NAMES[colorIdx];
-  el.textContent = COLOR_LABELS[colorIdx];
+  el.textContent = colorLabel(colorIdx);
   return el;
 }
 
@@ -896,15 +1017,15 @@ function gemReturnSteps(steps, prev, next, actor) {
 
 createApp({
   gameId: 'splendor',
-  gameTitle: '璀璨宝石',
-  gameIntro: '拿宝石、买卡、抢贵族，先到15分触发终局',
+  gameTitle: t('spl.title'),
+  gameIntro: t('spl.intro'),
   players: { min: 2, max: 4 },
   renderBoard,
   renderPlayerArea,
   describeTransition,
   formatOpponentMove: formatMove,
   formatSuggestedMove: formatMove,
-  getPlayerSymbol: (humanPlayer) => '玩家' + humanPlayer,
+  getPlayerSymbol: (humanPlayer) => t('spl.player_n', { n: humanPlayer }),
   difficulties: ['heuristic', 'casual', 'expert'],
   defaultDifficulty: 'expert',
 });

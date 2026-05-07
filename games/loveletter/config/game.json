@@ -1,6 +1,7 @@
 {
   "game_id": "loveletter",
   "display_name": "\u60c5\u4e66",
+  "display_name_en": "Love Letter",
   "has_web": true,
   "players": {
     "min": 2,

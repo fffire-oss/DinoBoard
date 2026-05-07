@@ -1,3 +1,5 @@
+import { t } from './i18n.js';
+
 export function createModal() {
   const backdrop = document.createElement('div');
   backdrop.className = 'general-modal-backdrop hidden';
@@ -6,9 +8,9 @@ export function createModal() {
       <div class="general-modal-title"></div>
       <div class="general-modal-text"></div>
       <div style="display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap;">
-        <button class="general-modal-ok-btn" data-modal="replay" data-mobile-hide style="background:#0ea5e9;">查看录像</button>
-        <button class="general-modal-ok-btn" data-modal="restart" style="background:#16a34a;">再来一局</button>
-        <button class="general-modal-ok-btn" data-modal="ok">确定</button>
+        <button class="general-modal-ok-btn" data-modal="replay" data-mobile-hide style="background:#0ea5e9;">${t('modal.btn_replay')}</button>
+        <button class="general-modal-ok-btn" data-modal="restart" style="background:#16a34a;">${t('modal.btn_restart')}</button>
+        <button class="general-modal-ok-btn" data-modal="ok">${t('modal.btn_ok')}</button>
       </div>
     </div>
   `;

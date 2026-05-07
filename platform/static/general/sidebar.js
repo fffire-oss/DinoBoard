@@ -1,4 +1,5 @@
 import { apiGet } from './api.js';
+import { t, getLang, setLang } from './i18n.js';
 
 const SHOW_REPLAY_KEY = 'dinoboard.showReplayPanelAlways';
 
@@ -33,7 +34,11 @@ function saveShowWinrate(gameId, flag) {
 export function createSidebar(sidebarEl, config, callbacks) {
   const difficulties = config.difficulties || ['heuristic', 'casual', 'expert'];
   const defaultDiff = config.defaultDifficulty || 'expert';
-  const diffLabels = { heuristic: '启发式', casual: '体验', expert: '专家' };
+  const diffLabels = {
+    heuristic: t('sidebar.diff_heuristic'),
+    casual: t('sidebar.diff_casual'),
+    expert: t('sidebar.diff_expert'),
+  };
   const players = config.players || { min: 2, max: 2 };
   const showPlayerCount = players.max > 2;
 
@@ -42,53 +47,62 @@ export function createSidebar(sidebarEl, config, callbacks) {
     const btns = [];
     for (let n = players.min; n <= players.max; n++) {
       const active = n === players.min ? ' active' : '';
-      btns.push(`<button class="side-btn${active}" data-players="${n}" type="button">${n}人</button>`);
+      btns.push(`<button class="side-btn${active}" data-players="${n}" type="button">${t('sidebar.players_n', { n })}</button>`);
     }
     playerCountHtml = `
-      <label>人数</label>
+      <label>${t('sidebar.label_players')}</label>
       <div class="player-count-grid">${btns.join('')}</div>`;
   }
 
   sidebarEl.innerHTML = `
-    <h1><a href="/" style="color: inherit; text-decoration: none;" title="返回首页">DinoBoard</a></h1>
+    <h1>
+      <a href="/" style="color: inherit; text-decoration: none;" title="${t('sidebar.title_link_title')}">DinoBoard</a>
+      <button class="lang-toggle" id="lang-toggle" type="button" title="${t('sidebar.lang_btn_title')}">${t('sidebar.lang_btn')}</button>
+    </h1>
     <div class="game-switcher-wrap">
-      <label for="game-selector">切换游戏</label>
+      <label for="game-selector">${t('sidebar.switch_game_label')}</label>
       <select id="game-selector"></select>
     </div>
     <div class="card">
-      <h2>开局</h2>
+      <h2>${t('sidebar.start_card_title')}</h2>
       ${playerCountHtml}
-      <label>座次</label>
+      <label>${t('sidebar.label_seat')}</label>
       <div id="seat-section"></div>
-      <label>难度</label>
+      <label>${t('sidebar.label_difficulty')}</label>
       <div class="difficulty-grid">
         ${difficulties.map(d =>
           `<button class="side-btn${d === defaultDiff ? ' active' : ''}" data-diff="${d}" type="button">${diffLabels[d] || d}</button>`
         ).join('')}
       </div>
-      <button id="btn-start">开始对局</button>
+      <button id="btn-start">${t('sidebar.btn_start')}</button>
       <div id="start-msg" class="muted"></div>
     </div>
     <div class="card">
-      <h2>高级功能</h2>
-      <button id="btn-undo">悔棋</button>
+      <h2>${t('sidebar.advanced_card_title')}</h2>
+      <button id="btn-undo">${t('sidebar.btn_undo')}</button>
       <div id="force-section">
-        <button id="btn-force">替对手落子</button>
+        <button id="btn-force">${t('sidebar.btn_force')}</button>
       </div>
-      <button id="btn-hint">智能提示</button>
-      <button id="btn-load-replay" data-mobile-hide>加载录像</button>
+      <button id="btn-hint">${t('sidebar.btn_hint')}</button>
+      <button id="btn-load-replay" data-mobile-hide>${t('sidebar.btn_load_replay')}</button>
       <input type="file" id="replay-file-input" accept=".json" style="display:none" data-mobile-hide>
       <label class="side-toggle" data-mobile-hide>
         <input type="checkbox" id="toggle-show-replay">
-        <span>对局中显示录像栏</span>
+        <span>${t('sidebar.toggle_show_replay')}</span>
       </label>
       <label class="side-toggle">
         <input type="checkbox" id="toggle-show-winrate">
-        <span>显示胜率预估</span>
+        <span>${t('sidebar.toggle_show_winrate')}</span>
       </label>
       <div id="ops-msg" class="muted"></div>
     </div>
   `;
+
+  // Wire language toggle (page reload swaps everything to the other lang).
+  const langBtn = sidebarEl.querySelector('#lang-toggle');
+  if (langBtn) {
+    langBtn.addEventListener('click', () => setLang(getLang() === 'zh' ? 'en' : 'zh'));
+  }
 
   let sideMode = '0';
   let difficulty = defaultDiff;
@@ -99,9 +113,9 @@ export function createSidebar(sidebarEl, config, callbacks) {
     const btns = [];
     for (let i = 0; i < numPlayers; i++) {
       const active = i === 0 ? ' active' : '';
-      btns.push(`<button class="side-btn${active}" data-seat="${i}" type="button">玩家${i}</button>`);
+      btns.push(`<button class="side-btn${active}" data-seat="${i}" type="button">${t('sidebar.seat_player', { n: i })}</button>`);
     }
-    btns.push('<button class="side-btn" data-seat="random" type="button">随机</button>');
+    btns.push(`<button class="side-btn" data-seat="random" type="button">${t('sidebar.seat_random')}</button>`);
     section.innerHTML = `<div class="side-grid">${btns.join('')}</div>`;
     sideMode = '0';
 
@@ -165,11 +179,11 @@ export function createSidebar(sidebarEl, config, callbacks) {
       return;
     }
     if (!aiPlayers || aiPlayers.length <= 1) {
-      section.innerHTML = '<button id="btn-force">替对手落子</button>';
+      section.innerHTML = `<button id="btn-force">${t('sidebar.btn_force')}</button>`;
     } else {
       const btns = aiPlayers.map(p => {
-        const label = config.getPlayerSymbol ? config.getPlayerSymbol(p) : '玩家' + p;
-        return `<button class="btn-force-player" data-force-player="${p}">替${label}落子</button>`;
+        const label = config.getPlayerSymbol ? config.getPlayerSymbol(p) : t('app.player_n', { n: p });
+        return `<button class="btn-force-player" data-force-player="${p}">${t('sidebar.btn_force_player', { label })}</button>`;
       });
       section.innerHTML = btns.join('');
     }
@@ -194,12 +208,12 @@ export function createSidebar(sidebarEl, config, callbacks) {
       try {
         const data = JSON.parse(reader.result);
         if ((!data.frames || !data.frames.length) && !data.action_history) {
-          callbacks.onLoadReplay(null, '录像文件中没有 frames 或 action_history');
+          callbacks.onLoadReplay(null, t('sidebar.replay_no_frames'));
           return;
         }
         callbacks.onLoadReplay(data);
       } catch (e) {
-        callbacks.onLoadReplay(null, '无法解析 JSON: ' + e.message);
+        callbacks.onLoadReplay(null, t('sidebar.replay_parse_error', { msg: e.message }));
       }
     };
     reader.readAsText(file);
@@ -278,11 +292,12 @@ export function createSidebar(sidebarEl, config, callbacks) {
 async function loadGameSwitcher(sel, currentGameId) {
   try {
     const data = await apiGet('/api/games/available');
+    const lang = getLang();
     for (const g of data.games) {
       if (!g.has_web) continue;
       const opt = document.createElement('option');
       opt.value = g.game_id;
-      opt.textContent = g.display_name;
+      opt.textContent = (lang === 'en' && g.display_name_en) ? g.display_name_en : g.display_name;
       if (g.game_id === currentGameId) opt.selected = true;
       sel.appendChild(opt);
     }

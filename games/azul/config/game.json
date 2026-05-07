@@ -1,6 +1,7 @@
 {
   "game_id": "azul",
   "display_name": "\u82b1\u7816\u7269\u8bed",
+  "display_name_en": "Azul",
   "has_web": true,
   "players": {
     "min": 2,

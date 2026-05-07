@@ -1,13 +1,187 @@
 import { createApp } from '/static/general/app.js';
+import { t, register } from '/static/general/i18n.js';
 
-const CHAR_LABELS = ['公爵', '刺客', '队长', '大使', '伯爵夫人'];
+register({
+  zh: {
+    'coup.title': '政变',
+    'coup.intro': '点动作面板宣告操作；阻挡/质疑会自动进入对应阶段',
+    'coup.char_duke': '公爵',
+    'coup.char_assassin': '刺客',
+    'coup.char_captain': '队长',
+    'coup.char_ambassador': '大使',
+    'coup.char_contessa': '伯爵夫人',
+    'coup.stage_0': '声明行动',
+    'coup.stage_1': '质疑行动',
+    'coup.stage_2': '解决质疑',
+    'coup.stage_3': '失去影响力',
+    'coup.stage_4': '反制',
+    'coup.stage_5': '质疑反制',
+    'coup.stage_6': '解决反制质疑',
+    'coup.stage_7': '失去影响力(反制)',
+    'coup.stage_8': '交换还牌1',
+    'coup.stage_9': '交换还牌2',
+    'coup.stage_10': '失去影响力(行动)',
+    'coup.player_n': '玩家{n}',
+    'coup.player_n_eliminated': '玩家{n} (淘汰)',
+    'coup.coins': '💰 {n}',
+    'coup.reveal_panel_prove': '亮牌证明',
+    'coup.reveal_panel_lose': '选择失去影响力',
+    'coup.idle_wait_opp': '等待对手行动...',
+    'coup.idle_wait_player': '等待玩家{n}行动...',
+    'coup.choose_action': '选择行动',
+    'coup.act_income_label': '收入',
+    'coup.act_income_desc': '+1💰',
+    'coup.act_foreign_aid_label': '外援',
+    'coup.act_foreign_aid_desc': '+2💰',
+    'coup.act_tax_label': '征税',
+    'coup.act_tax_desc': '+3💰 (公爵)',
+    'coup.act_exchange_label': '交换',
+    'coup.act_exchange_desc': '换牌 (大使)',
+    'coup.act_coup_label': '政变',
+    'coup.act_coup_desc': '-7💰 (不可阻挡)',
+    'coup.act_assassinate_label': '暗杀',
+    'coup.act_assassinate_desc': '-3💰 (刺客)',
+    'coup.act_steal_label': '偷窃',
+    'coup.act_steal_desc': '偷2💰 (队长)',
+    'coup.click_target_player': '请点击目标玩家',
+    'coup.challenge_q': '是否质疑?',
+    'coup.challenge_yes': '质疑!',
+    'coup.allow': '允许',
+    'coup.counter_q': '是否反制?',
+    'coup.block_duke': '反制 (公爵)',
+    'coup.block_contessa': '反制 (伯爵夫人)',
+    'coup.block_ambassador': '反制 (大使)',
+    'coup.block_captain': '反制 (队长)',
+    'coup.allow_no_block': '不反制',
+    'coup.exchange_return_1': '点击手牌还回第1张',
+    'coup.exchange_return_2': '点击手牌还回第2张',
+    'coup.exchange_hint_1': '选择还回第1张牌',
+    'coup.exchange_hint_2': '选择还回第2张牌',
+    'coup.you_eliminated': '你已被淘汰',
+    'coup.action_unknown': '动作 #{id}',
+    'coup.action_start': '开局',
+    'coup.move_income': '收入 (+1💰)',
+    'coup.move_foreign_aid': '外援 (+2💰)',
+    'coup.move_coup': '政变 → 玩家{target}',
+    'coup.move_tax': '征税 [公爵] (+3💰)',
+    'coup.move_assassinate': '暗杀 → 玩家{target} [刺客]',
+    'coup.move_steal': '偷窃 → 玩家{target} [队长]',
+    'coup.move_exchange': '交换 [大使]',
+    'coup.move_challenge': '质疑!',
+    'coup.move_allow': '允许',
+    'coup.move_block': '反制 [{role}]',
+    'coup.move_allow_no_block': '不反制',
+    'coup.move_reveal': '亮牌 第{n}张',
+    'coup.move_lose_influence': '失去影响力 第{n}张',
+    'coup.move_return_card': '还 {role}',
+    'coup.challenge_modal_title': '质疑 · 对方亮牌',
+    'coup.challenge_caption': '玩家{n} 亮出 {role}',
+    'coup.challenge_failed_suffix': '，质疑失败（你将失去影响力）',
+    'coup.challenge_succeeded_suffix': '，质疑成功（对手将失去影响力）',
+    'coup.stage_pill_default': '阶段：--',
+    'coup.stage_pill_label': '阶段：{name}',
+    'coup.deck_pill': '牌堆：{n}',
+    'coup.stage_dash': '--',
+  },
+  en: {
+    'coup.title': 'Coup',
+    'coup.intro': 'Click an action button to declare; blocks/challenges enter their stages automatically.',
+    'coup.char_duke': 'Duke',
+    'coup.char_assassin': 'Assassin',
+    'coup.char_captain': 'Captain',
+    'coup.char_ambassador': 'Ambassador',
+    'coup.char_contessa': 'Contessa',
+    'coup.stage_0': 'Declare action',
+    'coup.stage_1': 'Challenge action',
+    'coup.stage_2': 'Resolve challenge',
+    'coup.stage_3': 'Lose influence',
+    'coup.stage_4': 'Block',
+    'coup.stage_5': 'Challenge block',
+    'coup.stage_6': 'Resolve block challenge',
+    'coup.stage_7': 'Lose influence (block)',
+    'coup.stage_8': 'Exchange return 1',
+    'coup.stage_9': 'Exchange return 2',
+    'coup.stage_10': 'Lose influence (action)',
+    'coup.player_n': 'Player {n}',
+    'coup.player_n_eliminated': 'Player {n} (out)',
+    'coup.coins': '💰 {n}',
+    'coup.reveal_panel_prove': 'Reveal to prove',
+    'coup.reveal_panel_lose': 'Choose card to lose',
+    'coup.idle_wait_opp': 'Waiting for opponent...',
+    'coup.idle_wait_player': 'Waiting for player {n}...',
+    'coup.choose_action': 'Choose an action',
+    'coup.act_income_label': 'Income',
+    'coup.act_income_desc': '+1💰',
+    'coup.act_foreign_aid_label': 'Foreign Aid',
+    'coup.act_foreign_aid_desc': '+2💰',
+    'coup.act_tax_label': 'Tax',
+    'coup.act_tax_desc': '+3💰 (Duke)',
+    'coup.act_exchange_label': 'Exchange',
+    'coup.act_exchange_desc': 'swap cards (Ambassador)',
+    'coup.act_coup_label': 'Coup',
+    'coup.act_coup_desc': '-7💰 (unblockable)',
+    'coup.act_assassinate_label': 'Assassinate',
+    'coup.act_assassinate_desc': '-3💰 (Assassin)',
+    'coup.act_steal_label': 'Steal',
+    'coup.act_steal_desc': 'take 2💰 (Captain)',
+    'coup.click_target_player': 'Click a target player',
+    'coup.challenge_q': 'Challenge?',
+    'coup.challenge_yes': 'Challenge!',
+    'coup.allow': 'Allow',
+    'coup.counter_q': 'Block?',
+    'coup.block_duke': 'Block (Duke)',
+    'coup.block_contessa': 'Block (Contessa)',
+    'coup.block_ambassador': 'Block (Ambassador)',
+    'coup.block_captain': 'Block (Captain)',
+    'coup.allow_no_block': 'Do not block',
+    'coup.exchange_return_1': 'Click a card to return as #1',
+    'coup.exchange_return_2': 'Click a card to return as #2',
+    'coup.exchange_hint_1': 'Choose card to return (#1)',
+    'coup.exchange_hint_2': 'Choose card to return (#2)',
+    'coup.you_eliminated': 'You are eliminated',
+    'coup.action_unknown': 'Action #{id}',
+    'coup.action_start': 'Game start',
+    'coup.move_income': 'Income (+1💰)',
+    'coup.move_foreign_aid': 'Foreign Aid (+2💰)',
+    'coup.move_coup': 'Coup → player {target}',
+    'coup.move_tax': 'Tax [Duke] (+3💰)',
+    'coup.move_assassinate': 'Assassinate → player {target} [Assassin]',
+    'coup.move_steal': 'Steal → player {target} [Captain]',
+    'coup.move_exchange': 'Exchange [Ambassador]',
+    'coup.move_challenge': 'Challenge!',
+    'coup.move_allow': 'Allow',
+    'coup.move_block': 'Block [{role}]',
+    'coup.move_allow_no_block': 'Do not block',
+    'coup.move_reveal': 'Reveal card #{n}',
+    'coup.move_lose_influence': 'Lose influence #{n}',
+    'coup.move_return_card': 'Return {role}',
+    'coup.challenge_modal_title': 'Challenge · Reveal',
+    'coup.challenge_caption': 'Player {n} reveals {role}',
+    'coup.challenge_failed_suffix': ' — challenge failed (you will lose influence)',
+    'coup.challenge_succeeded_suffix': ' — challenge succeeded (opponent will lose influence)',
+    'coup.stage_pill_default': 'Stage: --',
+    'coup.stage_pill_label': 'Stage: {name}',
+    'coup.deck_pill': 'Deck: {n}',
+    'coup.stage_dash': '--',
+  },
+});
+
+const CHAR_KEYS = ['coup.char_duke', 'coup.char_assassin', 'coup.char_captain', 'coup.char_ambassador', 'coup.char_contessa'];
 const CHAR_COLORS = ['#c8a', '#e55', '#58c', '#5a8', '#ea8'];
 
-const STAGE_NAMES = [
-  '声明行动', '质疑行动', '解决质疑', '失去影响力',
-  '反制', '质疑反制', '解决反制质疑', '失去影响力(反制)',
-  '交换还牌1', '交换还牌2', '失去影响力(行动)',
-];
+function charLabel(c) {
+  if (c < 0 || c >= CHAR_KEYS.length) return '';
+  return t(CHAR_KEYS[c]);
+}
+
+function stageName(s) {
+  if (s == null || s < 0 || s > 10) return t('coup.stage_dash');
+  return t('coup.stage_' + s);
+}
+
+function playerLabel(n) {
+  return t('coup.player_n', { n });
+}
 
 const INCOME = 0, FOREIGN_AID = 1;
 const COUP_OFF = 2, COUP_COUNT = 4;
@@ -89,14 +263,15 @@ function renderBoard(container, gs, ctx) {
 
     const nameRow = document.createElement('div');
     nameRow.className = 'coup-pname';
-    nameRow.textContent = '玩家' + pi;
-    if (!p.alive) nameRow.textContent += ' (淘汰)';
+    nameRow.textContent = p.alive
+      ? playerLabel(pi)
+      : t('coup.player_n_eliminated', { n: pi });
     el.appendChild(nameRow);
 
     const coinsEl = document.createElement('div');
     coinsEl.className = 'coup-coins';
     coinsEl.setAttribute('data-coins', String(pi));
-    coinsEl.textContent = '💰 ' + p.coins;
+    coinsEl.textContent = t('coup.coins', { n: p.coins });
     el.appendChild(coinsEl);
 
     const infArea = document.createElement('div');
@@ -108,7 +283,7 @@ function renderBoard(container, gs, ctx) {
       card.setAttribute('data-influence', pi + '-' + sl);
       if (inf.revealed) {
         card.classList.add('revealed');
-        card.textContent = CHAR_LABELS[inf.character];
+        card.textContent = charLabel(inf.character);
         card.style.borderColor = CHAR_COLORS[inf.character];
       } else {
         card.classList.add('hidden');
@@ -134,9 +309,9 @@ function renderBoard(container, gs, ctx) {
   } else if (playing && stage === 4) {
     panel = renderCounterPanel(st, legalSet, ctx);
   } else if (playing && (stage === 2 || stage === 6)) {
-    panel = renderRevealPanel(st, legalSet, humanPlayer, ctx, '亮牌证明');
+    panel = renderRevealPanel(st, legalSet, humanPlayer, ctx, t('coup.reveal_panel_prove'));
   } else if (playing && (stage === 3 || stage === 7 || stage === 10)) {
-    panel = renderRevealPanel(st, legalSet, humanPlayer, ctx, '选择失去影响力');
+    panel = renderRevealPanel(st, legalSet, humanPlayer, ctx, t('coup.reveal_panel_lose'));
   } else if (playing && (stage === 8 || stage === 9)) {
     panel = renderExchangePanel(st, legalSet, ctx);
   } else {
@@ -158,8 +333,8 @@ function renderIdlePanel(st, humanPlayer) {
   title.className = 'coup-panel-title';
   const actor = (st.active_player != null) ? st.active_player : st.current_player;
   title.textContent = actor === humanPlayer
-    ? '等待对手行动...'
-    : '等待玩家' + actor + '行动...';
+    ? t('coup.idle_wait_opp')
+    : t('coup.idle_wait_player', { n: actor });
   panel.appendChild(title);
 
   // Empty button row matching the real panels' layout — gives the panel
@@ -182,7 +357,7 @@ function renderDeclareActions(st, legalSet, humanPlayer, ctx) {
 
   const title = document.createElement('div');
   title.className = 'coup-panel-title';
-  title.textContent = '选择行动';
+  title.textContent = t('coup.choose_action');
   panel.appendChild(title);
 
   const btns = document.createElement('div');
@@ -193,10 +368,10 @@ function renderDeclareActions(st, legalSet, humanPlayer, ctx) {
   // are still rendered in their slot, only greyed out. This keeps the
   // action bar shape stable across turns so the layout doesn't jump.
   const actions = [
-    { id: INCOME, label: '收入', desc: '+1💰', type: 'safe' },
-    { id: FOREIGN_AID, label: '外援', desc: '+2💰', type: 'safe' },
-    { id: TAX, label: '征税', desc: '+3💰 (公爵)', type: 'bluff' },
-    { id: EXCHANGE, label: '交换', desc: '换牌 (大使)', type: 'bluff' },
+    { id: INCOME, labelKey: 'coup.act_income_label', descKey: 'coup.act_income_desc', type: 'safe' },
+    { id: FOREIGN_AID, labelKey: 'coup.act_foreign_aid_label', descKey: 'coup.act_foreign_aid_desc', type: 'safe' },
+    { id: TAX, labelKey: 'coup.act_tax_label', descKey: 'coup.act_tax_desc', type: 'bluff' },
+    { id: EXCHANGE, labelKey: 'coup.act_exchange_label', descKey: 'coup.act_exchange_desc', type: 'bluff' },
   ];
 
   for (const a of actions) {
@@ -204,8 +379,8 @@ function renderDeclareActions(st, legalSet, humanPlayer, ctx) {
     const btn = document.createElement('button');
     btn.className = 'coup-action-btn ' + a.type;
     btn.disabled = !legal;
-    btn.innerHTML = '<span class="coup-btn-label">' + a.label + '</span>'
-      + '<span class="coup-btn-desc">' + a.desc + '</span>';
+    btn.innerHTML = '<span class="coup-btn-label">' + t(a.labelKey) + '</span>'
+      + '<span class="coup-btn-desc">' + t(a.descKey) + '</span>';
     if (legal) {
       btn.addEventListener('click', () => {
         resetPending();
@@ -216,22 +391,22 @@ function renderDeclareActions(st, legalSet, humanPlayer, ctx) {
   }
 
   const targetActions = [
-    { type: 'coup', label: '政变', desc: '-7💰 (不可阻挡)', off: COUP_OFF, count: COUP_COUNT, cls: 'coup-act' },
-    { type: 'assassinate', label: '暗杀', desc: '-3💰 (刺客)', off: ASSASSINATE_OFF, count: ASSASSINATE_COUNT, cls: 'bluff' },
-    { type: 'steal', label: '偷窃', desc: '偷2💰 (队长)', off: STEAL_OFF, count: STEAL_COUNT, cls: 'bluff' },
+    { type: 'coup', labelKey: 'coup.act_coup_label', descKey: 'coup.act_coup_desc', off: COUP_OFF, count: COUP_COUNT, cls: 'coup-act' },
+    { type: 'assassinate', labelKey: 'coup.act_assassinate_label', descKey: 'coup.act_assassinate_desc', off: ASSASSINATE_OFF, count: ASSASSINATE_COUNT, cls: 'bluff' },
+    { type: 'steal', labelKey: 'coup.act_steal_label', descKey: 'coup.act_steal_desc', off: STEAL_OFF, count: STEAL_COUNT, cls: 'bluff' },
   ];
 
   for (const ta of targetActions) {
     let hasAny = false;
-    for (let t = 0; t < 4; t++) {
-      if (legalSet.has(ta.off + t)) { hasAny = true; break; }
+    for (let ti = 0; ti < 4; ti++) {
+      if (legalSet.has(ta.off + ti)) { hasAny = true; break; }
     }
     const btn = document.createElement('button');
     btn.className = 'coup-action-btn ' + ta.cls;
     btn.disabled = !hasAny;
     if (pendingActionType === ta.type) btn.classList.add('selected');
-    btn.innerHTML = '<span class="coup-btn-label">' + ta.label + '</span>'
-      + '<span class="coup-btn-desc">' + ta.desc + '</span>';
+    btn.innerHTML = '<span class="coup-btn-label">' + t(ta.labelKey) + '</span>'
+      + '<span class="coup-btn-desc">' + t(ta.descKey) + '</span>';
     if (hasAny) {
       btn.addEventListener('click', () => {
         if (pendingActionType === ta.type) {
@@ -252,7 +427,7 @@ function renderDeclareActions(st, legalSet, humanPlayer, ctx) {
   // appears / disappears.
   const hint = document.createElement('div');
   hint.className = 'coup-pending-hint';
-  hint.textContent = pendingActionType ? '请点击目标玩家' : ' ';
+  hint.textContent = pendingActionType ? t('coup.click_target_player') : ' ';
   if (!pendingActionType) hint.style.visibility = 'hidden';
   panel.appendChild(hint);
 
@@ -265,7 +440,7 @@ function renderChallengePanel(legalSet, ctx) {
 
   const title = document.createElement('div');
   title.className = 'coup-panel-title';
-  title.textContent = '是否质疑？';
+  title.textContent = t('coup.challenge_q');
   panel.appendChild(title);
 
   const btns = document.createElement('div');
@@ -274,14 +449,14 @@ function renderChallengePanel(legalSet, ctx) {
   if (legalSet.has(CHALLENGE)) {
     const btn = document.createElement('button');
     btn.className = 'coup-action-btn challenge';
-    btn.textContent = '质疑!';
+    btn.textContent = t('coup.challenge_yes');
     btn.addEventListener('click', () => ctx.submitAction(CHALLENGE));
     btns.appendChild(btn);
   }
   if (legalSet.has(ALLOW)) {
     const btn = document.createElement('button');
     btn.className = 'coup-action-btn allow';
-    btn.textContent = '允许';
+    btn.textContent = t('coup.allow');
     btn.addEventListener('click', () => ctx.submitAction(ALLOW));
     btns.appendChild(btn);
   }
@@ -296,24 +471,24 @@ function renderCounterPanel(st, legalSet, ctx) {
 
   const title = document.createElement('div');
   title.className = 'coup-panel-title';
-  title.textContent = '是否反制？';
+  title.textContent = t('coup.counter_q');
   panel.appendChild(title);
 
   const btns = document.createElement('div');
   btns.className = 'coup-action-btns';
 
   const blocks = [
-    { id: BLOCK_DUKE, label: '反制 (公爵)', cls: 'block' },
-    { id: BLOCK_CONTESSA, label: '反制 (伯爵夫人)', cls: 'block' },
-    { id: BLOCK_AMBASSADOR, label: '反制 (大使)', cls: 'block' },
-    { id: BLOCK_CAPTAIN, label: '反制 (队长)', cls: 'block' },
+    { id: BLOCK_DUKE, labelKey: 'coup.block_duke', cls: 'block' },
+    { id: BLOCK_CONTESSA, labelKey: 'coup.block_contessa', cls: 'block' },
+    { id: BLOCK_AMBASSADOR, labelKey: 'coup.block_ambassador', cls: 'block' },
+    { id: BLOCK_CAPTAIN, labelKey: 'coup.block_captain', cls: 'block' },
   ];
 
   for (const b of blocks) {
     if (!legalSet.has(b.id)) continue;
     const btn = document.createElement('button');
     btn.className = 'coup-action-btn ' + b.cls;
-    btn.textContent = b.label;
+    btn.textContent = t(b.labelKey);
     btn.addEventListener('click', () => ctx.submitAction(b.id));
     btns.appendChild(btn);
   }
@@ -321,7 +496,7 @@ function renderCounterPanel(st, legalSet, ctx) {
   if (legalSet.has(ALLOW_NO_BLOCK)) {
     const btn = document.createElement('button');
     btn.className = 'coup-action-btn allow';
-    btn.textContent = '不反制';
+    btn.textContent = t('coup.allow_no_block');
     btn.addEventListener('click', () => ctx.submitAction(ALLOW_NO_BLOCK));
     btns.appendChild(btn);
   }
@@ -353,7 +528,7 @@ function renderRevealPanel(st, legalSet, humanPlayer, ctx, titleText) {
     const btn = document.createElement('button');
     btn.className = 'coup-action-btn card-choice';
     btn.style.borderColor = CHAR_COLORS[inf.character];
-    btn.textContent = CHAR_LABELS[inf.character];
+    btn.textContent = charLabel(inf.character);
     btn.addEventListener('click', () => ctx.submitAction(revealId));
     btns.appendChild(btn);
   }
@@ -371,7 +546,9 @@ function renderExchangePanel(st, legalSet, ctx) {
 
   const title = document.createElement('div');
   title.className = 'coup-panel-title';
-  title.textContent = st.stage === 8 ? '点击手牌还回第1张' : '点击手牌还回第2张';
+  title.textContent = st.stage === 8
+    ? t('coup.exchange_return_1')
+    : t('coup.exchange_return_2');
   panel.appendChild(title);
 
   const btns = document.createElement('div');
@@ -399,7 +576,7 @@ function renderPlayerArea(container, gs, ctx) {
   if (!p.alive) {
     const dead = document.createElement('div');
     dead.className = 'coup-dead-msg';
-    dead.textContent = '你已被淘汰';
+    dead.textContent = t('coup.you_eliminated');
     area.appendChild(dead);
     container.appendChild(area);
     return;
@@ -407,7 +584,7 @@ function renderPlayerArea(container, gs, ctx) {
 
   const coinsEl = document.createElement('div');
   coinsEl.className = 'coup-my-coins';
-  coinsEl.textContent = '💰 ' + p.coins;
+  coinsEl.textContent = t('coup.coins', { n: p.coins });
   area.appendChild(coinsEl);
 
   const hand = document.createElement('div');
@@ -454,7 +631,9 @@ function renderPlayerArea(container, gs, ctx) {
   if (inExchange) {
     const hint = document.createElement('div');
     hint.className = 'coup-exchange-hint';
-    hint.textContent = st.stage === 8 ? '选择还回第1张牌' : '选择还回第2张牌';
+    hint.textContent = st.stage === 8
+      ? t('coup.exchange_hint_1')
+      : t('coup.exchange_hint_2');
     area.appendChild(hint);
   }
 
@@ -471,7 +650,7 @@ function buildMyCard(character, revealed, slot, kind) {
   card.setAttribute('data-mycard', kind + '-' + slot);
   if (revealed) {
     card.classList.add('revealed');
-    card.textContent = CHAR_LABELS[character];
+    card.textContent = charLabel(character);
     card.style.borderColor = '#555';
     return card;
   }
@@ -479,7 +658,7 @@ function buildMyCard(character, revealed, slot, kind) {
   card.style.background = 'linear-gradient(135deg, ' + CHAR_COLORS[character] + '22, #1e1e3a)';
   const name = document.createElement('div');
   name.className = 'coup-mycard-name';
-  name.textContent = CHAR_LABELS[character];
+  name.textContent = charLabel(character);
   card.appendChild(name);
   return card;
 }
@@ -492,37 +671,41 @@ function wireReturnClick(card, character, legalSet, ctx) {
 }
 
 // Map C++-side English character names (from coup_register.cpp's
-// `claimed` / `character_name` fields) to Chinese for display.
-const CHAR_CN = {
-  'Duke': '公爵',
-  'Assassin': '刺客',
-  'Captain': '队长',
-  'Ambassador': '大使',
-  'Contessa': '伯爵夫人',
+// `claimed` / `character_name` fields) to localized labels for display.
+const CHAR_NAME_TO_INDEX = {
+  'Duke': 0,
+  'Assassin': 1,
+  'Captain': 2,
+  'Ambassador': 3,
+  'Contessa': 4,
 };
-function charCN(name) { return CHAR_CN[name] || name || ''; }
+function charNameLocalized(name) {
+  const idx = CHAR_NAME_TO_INDEX[name];
+  if (idx == null) return name || '';
+  return charLabel(idx);
+}
 
 function formatMove(info, actionId) {
   if (!info || !info.type) {
-    if (actionId === null || actionId === undefined) return '开局';
-    return '动作 #' + actionId;
+    if (actionId === null || actionId === undefined) return t('coup.action_start');
+    return t('coup.action_unknown', { id: actionId });
   }
   switch (info.type) {
-    case 'income': return '收入 (+1💰)';
-    case 'foreign_aid': return '外援 (+2💰)';
-    case 'coup': return '政变 → 玩家' + info.target;
-    case 'tax': return '征税 [公爵] (+3💰)';
-    case 'assassinate': return '暗杀 → 玩家' + info.target + ' [刺客]';
-    case 'steal': return '偷窃 → 玩家' + info.target + ' [队长]';
-    case 'exchange': return '交换 [大使]';
-    case 'challenge': return '质疑!';
-    case 'allow': return '允许';
-    case 'block': return '反制 [' + charCN(info.claimed) + ']';
-    case 'allow_no_block': return '不反制';
-    case 'reveal': return '亮牌 第' + (info.slot + 1) + '张';
-    case 'lose_influence': return '失去影响力 第' + (info.slot + 1) + '张';
-    case 'return_card': return '还 ' + charCN(info.character_name);
-    default: return '动作 #' + actionId;
+    case 'income': return t('coup.move_income');
+    case 'foreign_aid': return t('coup.move_foreign_aid');
+    case 'coup': return t('coup.move_coup', { target: info.target });
+    case 'tax': return t('coup.move_tax');
+    case 'assassinate': return t('coup.move_assassinate', { target: info.target });
+    case 'steal': return t('coup.move_steal', { target: info.target });
+    case 'exchange': return t('coup.move_exchange');
+    case 'challenge': return t('coup.move_challenge');
+    case 'allow': return t('coup.move_allow');
+    case 'block': return t('coup.move_block', { role: charNameLocalized(info.claimed) });
+    case 'allow_no_block': return t('coup.move_allow_no_block');
+    case 'reveal': return t('coup.move_reveal', { n: info.slot + 1 });
+    case 'lose_influence': return t('coup.move_lose_influence', { n: info.slot + 1 });
+    case 'return_card': return t('coup.move_return_card', { role: charNameLocalized(info.character_name) });
+    default: return t('coup.action_unknown', { id: actionId });
   }
 }
 
@@ -658,7 +841,7 @@ function describeTransition(prevState, newState, actionInfo, actionId) {
         if (isHuman && charId >= 0) {
           el.style.borderColor = CHAR_COLORS[charId];
           el.style.background = 'linear-gradient(135deg, ' + CHAR_COLORS[charId] + '55, #1e1e3a)';
-          el.innerHTML = '<div style="font-size:13px; font-weight:700;">' + CHAR_LABELS[charId] + '</div>';
+          el.innerHTML = '<div style="font-size:13px; font-weight:700;">' + charLabel(charId) + '</div>';
         } else {
           el.style.background = '#2a2a4a';
           el.style.borderColor = '#555';
@@ -737,7 +920,7 @@ function buildReshuffleStep(revealer, slot, revealedChar) {
           el.style.borderColor = CHAR_COLORS[revealedChar];
           el.style.background = 'linear-gradient(135deg, ' + CHAR_COLORS[revealedChar] + '55, #1e1e3a)';
           el.innerHTML = '<div style="font-size:13px; font-weight:700;">'
-            + CHAR_LABELS[revealedChar] + '</div>';
+            + charLabel(revealedChar) + '</div>';
           return el;
         },
       },
@@ -785,18 +968,18 @@ function buildChallengeRevealStep(revealer, revealedChar, prevSt) {
 
   const caption = document.createElement('div');
   caption.style.cssText = 'font-size:14px; color:#e2e8f0; text-align:center;';
-  let captionText = '玩家' + revealer + ' 亮出 ' + CHAR_LABELS[revealedChar];
+  let captionText = t('coup.challenge_caption', { n: revealer, role: charLabel(revealedChar) });
   if (claimedRole != null) {
     captionText += matched
-      ? '，质疑失败（你将失去影响力）'
-      : '，质疑成功（对手将失去影响力）';
+      ? t('coup.challenge_failed_suffix')
+      : t('coup.challenge_succeeded_suffix');
   }
   caption.textContent = captionText;
   body.appendChild(caption);
 
   return {
     type: 'reveal',
-    title: '质疑 · 对方亮牌',
+    title: t('coup.challenge_modal_title'),
     body,
   };
 }
@@ -834,27 +1017,27 @@ const stageExtension = {
   render(el, gameState) {
     const st = gameState && gameState.state ? gameState.state : null;
     if (!st) {
-      el.textContent = '阶段：--';
+      el.textContent = t('coup.stage_pill_default');
       return;
     }
     const stage = st.stage != null ? st.stage : 0;
-    const deck = st.deck_size != null ? st.deck_size : '--';
-    el.innerHTML = '<span class="coup-stage">阶段：' + (STAGE_NAMES[stage] || '--') + '</span>'
-      + '<span class="coup-deck">牌堆：' + deck + '</span>';
+    const deck = st.deck_size != null ? st.deck_size : t('coup.stage_dash');
+    el.innerHTML = '<span class="coup-stage">' + t('coup.stage_pill_label', { name: stageName(stage) }) + '</span>'
+      + '<span class="coup-deck">' + t('coup.deck_pill', { n: deck }) + '</span>';
   },
 };
 
 createApp({
   gameId: 'coup',
-  gameTitle: '政变',
-  gameIntro: '点动作面板宣告操作；阻挡/质疑会自动进入对应阶段',
+  gameTitle: t('coup.title'),
+  gameIntro: t('coup.intro'),
   players: { min: 2, max: 4 },
   renderBoard,
   renderPlayerArea,
   describeTransition,
   formatOpponentMove: formatMove,
   formatSuggestedMove: formatMove,
-  getPlayerSymbol: (p) => '玩家' + p,
+  getPlayerSymbol: (p) => playerLabel(p),
   difficulties: ['heuristic', 'casual', 'expert'],
   defaultDifficulty: 'expert',
   extensions: [stageExtension],

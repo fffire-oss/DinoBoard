@@ -1,5 +1,35 @@
 import { createApp } from '/static/general/app.js';
 import { apiGet, API_BASE } from '/static/general/api.js';
+import { t, register } from '/static/general/i18n.js';
+
+register({
+  zh: {
+    'quo.title': '步步为营',
+    'quo.intro': '先到达对侧底线获胜，可放墙但必须保留双方通路。',
+    'quo.action_unknown': '动作 #{id}',
+    'quo.action_start': '开局',
+    'quo.move_to': '走子到 ({row}, {col})',
+    'quo.place_h': '放横墙 @ ({row}, {col})',
+    'quo.place_v': '放竖墙 @ ({row}, {col})',
+    'quo.player_a': 'A（黑）',
+    'quo.player_b': 'B（红）',
+    'quo.walls_default': '墙剩余：--',
+    'quo.walls_count': '墙剩余：A={a} / B={b}',
+  },
+  en: {
+    'quo.title': 'Quoridor',
+    'quo.intro': 'First to reach the opposite baseline wins. Place walls but always leave a path for both pawns.',
+    'quo.action_unknown': 'Action #{id}',
+    'quo.action_start': 'Game start',
+    'quo.move_to': 'move to ({row}, {col})',
+    'quo.place_h': 'place horizontal wall @ ({row}, {col})',
+    'quo.place_v': 'place vertical wall @ ({row}, {col})',
+    'quo.player_a': 'A (black)',
+    'quo.player_b': 'B (red)',
+    'quo.walls_default': 'Walls left: --',
+    'quo.walls_count': 'Walls left: A={a} / B={b}',
+  },
+});
 
 const BOARD_SIZE = 9;
 
@@ -7,17 +37,17 @@ function rcKey(r, c) { return r + ',' + c; }
 
 function formatMove(info, actionId) {
   if (!info) {
-    if (actionId !== null && actionId !== undefined) return '动作 #' + actionId;
-    return '开局';
+    if (actionId !== null && actionId !== undefined) return t('quo.action_unknown', { id: actionId });
+    return t('quo.action_start');
   }
   const type = String(info.type || '');
   const row = Number(info.row != null ? info.row : -1);
   const col = Number(info.col != null ? info.col : -1);
-  if (type === 'move') return '走子到 (' + (row + 1) + ', ' + (col + 1) + ')';
-  if (type === 'hwall') return '放横墙 @ (' + (row + 1) + ', ' + (col + 1) + ')';
-  if (type === 'vwall') return '放竖墙 @ (' + (row + 1) + ', ' + (col + 1) + ')';
-  if (actionId !== null && actionId !== undefined) return '动作 #' + actionId;
-  return '开局';
+  if (type === 'move') return t('quo.move_to', { row: row + 1, col: col + 1 });
+  if (type === 'hwall') return t('quo.place_h', { row: row + 1, col: col + 1 });
+  if (type === 'vwall') return t('quo.place_v', { row: row + 1, col: col + 1 });
+  if (actionId !== null && actionId !== undefined) return t('quo.action_unknown', { id: actionId });
+  return t('quo.action_start');
 }
 
 function buildLegalMaps(legalActions) {
@@ -330,24 +360,24 @@ function describeTransition(prevState, newState, actionInfo, actionId) {
 const wallsExtension = {
   render(el, gameState) {
     if (!gameState || !gameState.state) {
-      el.textContent = '墙剩余：--';
+      el.textContent = t('quo.walls_default');
       return;
     }
     const wr = gameState.state.walls_remaining || [0, 0];
-    el.textContent = '墙剩余：A=' + wr[0] + ' / B=' + wr[1];
+    el.textContent = t('quo.walls_count', { a: wr[0], b: wr[1] });
   }
 };
 
 createApp({
   gameId: 'quoridor',
-  gameTitle: '步步为营',
-  gameIntro: '先到达对侧底线获胜，可放墙但必须保留双方通路。',
+  gameTitle: t('quo.title'),
+  gameIntro: t('quo.intro'),
   players: { min: 2, max: 2 },
   renderBoard,
   describeTransition,
   formatOpponentMove: formatMove,
   formatSuggestedMove: formatMove,
-  getPlayerSymbol: (humanPlayer) => humanPlayer === 0 ? 'A（黑）' : 'B（红）',
+  getPlayerSymbol: (humanPlayer) => humanPlayer === 0 ? t('quo.player_a') : t('quo.player_b'),
   onReplayFrames(frames) { replayFramesRef = frames; },
   onGameStart() { replayFramesRef = null; },
   extensions: [wallsExtension],

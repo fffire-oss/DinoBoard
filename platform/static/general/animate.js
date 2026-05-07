@@ -1,3 +1,5 @@
+import { t } from './i18n.js';
+
 /**
  * General-purpose animation engine for game transitions.
  *
@@ -183,7 +185,7 @@ async function stepReveal(step) {
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = 'anim-reveal-btn';
-  btn.textContent = step.buttonText || '知道了';
+  btn.textContent = step.buttonText || t('animate.reveal_btn_ack');
   panel.appendChild(btn);
   backdrop.appendChild(panel);
   document.body.appendChild(backdrop);

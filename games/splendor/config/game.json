@@ -1,6 +1,7 @@
 {
   "game_id": "splendor",
   "display_name": "\u7480\u74a8\u5b9d\u77f3",
+  "display_name_en": "Splendor",
   "has_web": true,
   "players": {
     "min": 2,

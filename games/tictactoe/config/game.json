@@ -1,6 +1,7 @@
 {
   "game_id": "tictactoe",
   "display_name": "井字棋",
+  "display_name_en": "Tic-Tac-Toe",
   "players": {
     "min": 2,
     "max": 2

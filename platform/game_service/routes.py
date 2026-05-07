@@ -57,6 +57,7 @@ def available_games():
         games.append({
             "game_id": gid,
             "display_name": cfg.get("display_name", gid),
+            "display_name_en": cfg.get("display_name_en", cfg.get("display_name", gid)),
             "players": cfg["players"],
             "has_web": has_web,
         })

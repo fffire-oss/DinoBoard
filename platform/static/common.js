@@ -9,9 +9,11 @@
     el.className = 'zoom-controls';
     el.id = 'zoom-controls';
     el.innerHTML =
-      '<button id="btn-zoom-out" class="zoom-btn" type="button" title="缩小">-</button>' +
+      // common.js is the legacy non-module zoom path. Live UI uses layout.js
+      // (ES module). We don't run i18n here — these tooltips stay neutral.
+      '<button id="btn-zoom-out" class="zoom-btn" type="button" title="−">-</button>' +
       '<span id="zoom-value" class="zoom-value">100%</span>' +
-      '<button id="btn-zoom-in" class="zoom-btn" type="button" title="放大">+</button>';
+      '<button id="btn-zoom-in" class="zoom-btn" type="button" title="+">+</button>';
     document.body.appendChild(el);
 
     var zoom = parseInt(localStorage.getItem(ZOOM_KEY) || '100', 10);

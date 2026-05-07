@@ -46,6 +46,27 @@ body {
 .sidebar h1 {
   margin: 8px 0 14px;
   font-size: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sidebar h1 .lang-toggle {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border: 1px solid #94a3b8;
+  background: transparent;
+  color: #e5e7eb;
+  border-radius: 999px;
+  cursor: pointer;
+  line-height: 1.2;
+}
+
+.sidebar h1 .lang-toggle:hover {
+  background: #e5e7eb;
+  color: #1f2937;
 }
 
 .game-switcher-wrap {

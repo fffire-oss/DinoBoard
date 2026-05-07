@@ -1,6 +1,7 @@
 {
   "game_id": "coup",
   "display_name": "\u653f\u53d8",
+  "display_name_en": "Coup",
   "has_web": true,
   "players": {
     "min": 2,

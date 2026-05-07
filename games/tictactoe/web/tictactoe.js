@@ -1,4 +1,22 @@
 import { createApp } from '/static/general/app.js';
+import { t, register } from '/static/general/i18n.js';
+
+register({
+  zh: {
+    'ttt.title': '井字棋',
+    'ttt.intro': '在 3x3 棋盘上先连成一条线即可获胜',
+    'ttt.move_rc': '第{row}行第{col}列',
+    'ttt.action_unknown': '动作 {id}',
+    'ttt.action_start': '开局',
+  },
+  en: {
+    'ttt.title': 'Tic-Tac-Toe',
+    'ttt.intro': "First to make a line of 3 on the 3×3 board wins",
+    'ttt.move_rc': 'row {row}, col {col}',
+    'ttt.action_unknown': 'Action {id}',
+    'ttt.action_start': 'Game start',
+  },
+});
 
 const WIN_LINES = [
   [0,1,2],[3,4,5],[6,7,8],
@@ -59,10 +77,10 @@ function renderBoard(container, gameState, ctx) {
 
 function formatMove(actionInfo, actionId) {
   if (actionInfo && actionInfo.row !== undefined) {
-    return '第' + (actionInfo.row + 1) + '行第' + (actionInfo.col + 1) + '列';
+    return t('ttt.move_rc', { row: actionInfo.row + 1, col: actionInfo.col + 1 });
   }
-  if (actionId !== null && actionId !== undefined) return '动作 ' + actionId;
-  return '开局';
+  if (actionId !== null && actionId !== undefined) return t('ttt.action_unknown', { id: actionId });
+  return t('ttt.action_start');
 }
 
 function describeTransition(prevState, newState, actionInfo, actionId) {
@@ -77,8 +95,8 @@ function describeTransition(prevState, newState, actionInfo, actionId) {
 
 createApp({
   gameId: 'tictactoe',
-  gameTitle: '井字棋',
-  gameIntro: '在 3x3 棋盘上先连成一条线即可获胜',
+  gameTitle: t('ttt.title'),
+  gameIntro: t('ttt.intro'),
   players: { min: 2, max: 2 },
   renderBoard,
   describeTransition,

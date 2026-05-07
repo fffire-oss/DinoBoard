@@ -1,18 +1,142 @@
 import { createApp } from '/static/general/app.js';
+import { t, register } from '/static/general/i18n.js';
 
-const CARD_LABELS = ['', '侍卫', '牧师', '男爵', '侍女', '王子', '国王', '伯爵夫人', '公主'];
+register({
+  zh: {
+    'll.title': '情书',
+    'll.intro': '点你的手牌或抽到的牌出牌；卫兵/王子/国王等需要先选目标对手再确认',
+    'll.card_1': '侍卫',
+    'll.card_2': '牧师',
+    'll.card_3': '男爵',
+    'll.card_4': '侍女',
+    'll.card_5': '王子',
+    'll.card_6': '国王',
+    'll.card_7': '伯爵夫人',
+    'll.card_8': '公主',
+    'll.effect_1': '猜对手手牌',
+    'll.effect_2': '偷看对手手牌',
+    'll.effect_3': '比较手牌大小',
+    'll.effect_4': '保护自己一轮',
+    'll.effect_5': '迫使弃牌重摸',
+    'll.effect_6': '交换手牌',
+    'll.effect_7': '另一张为王子或国王时必须弃置',
+    'll.effect_8': '弃出即淘汰',
+    'll.deck_remaining': '牌堆剩余: {n}',
+    'll.face_up_removed': ' | 公开移除: {list}',
+    'll.face_up_entry': '{name}({id})',
+    'll.player_n': '玩家{n}',
+    'll.eliminated': '淘汰',
+    'll.protected_status': '保护中',
+    'll.in_turn': '行动中',
+    'll.you_eliminated': '你已被淘汰',
+    'll.guess_modal_title': '猜测玩家{n} 的手牌',
+    'll.no_legal_guess': '没有可猜的牌',
+    'll.change_target': '换一个目标',
+    'll.action_unknown': '动作 #{id}',
+    'll.action_start': '开局',
+    'll.card_invalid': '{card}（无效）',
+    'll.guard_text': '{card} → 玩家{target} 猜 {guess}',
+    'll.priest_text': '{card} → 偷看玩家{target}',
+    'll.baron_text': '{card} → 比较玩家{target}',
+    'll.handmaid_text': '{card}（保护）',
+    'll.prince_text': '{card} → 玩家{target} 弃牌',
+    'll.king_text': '{card} → 与玩家{target} 交换',
+    'll.countess_text': '{card}（弃出）',
+    'll.princess_text': '{card}（弃出即淘汰）',
+    'll.target_hint_prince': '请点击目标玩家（可点击你自己）',
+    'll.target_hint_self_invalid': '所有对手被保护，点击自己弃出无效',
+    'll.target_hint_default': '请点击目标玩家',
+    'll.guess_hint_target': '猜测玩家{n} 的手牌',
+    'll.priest_modal_title': '牧师 · 偷看手牌',
+    'll.baron_modal_title': '男爵 · 比较手牌',
+    'll.peek_summary': '只有你看到了这张牌。',
+    'll.player_hand_label': '玩家{n}的手牌',
+    'll.player_hand_label_sp': '玩家{n} 的手牌',
+    'll.baron_tie': '平局，双方都不淘汰',
+    'll.baron_human_actor_won': '你的牌更大，玩家{target} 被淘汰',
+    'll.baron_human_actor_lost': '玩家{target} 的牌更大，你被淘汰',
+    'll.baron_human_target_lost': '玩家{actor} 的牌更大，你被淘汰',
+    'll.baron_human_target_won': '你的牌更大，玩家{actor} 被淘汰',
+    'll.showdown_prefix': '终局底牌 ',
+    'll.showdown_entry': '玩家{n}：{card}',
+    'll.player_symbol': '玩家{n}',
+  },
+  en: {
+    'll.title': 'Love Letter',
+    'll.intro': 'Click your hand or drawn card to play; Guard/Prince/King etc. need a target opponent first.',
+    'll.card_1': 'Guard',
+    'll.card_2': 'Priest',
+    'll.card_3': 'Baron',
+    'll.card_4': 'Handmaid',
+    'll.card_5': 'Prince',
+    'll.card_6': 'King',
+    'll.card_7': 'Countess',
+    'll.card_8': 'Princess',
+    'll.effect_1': "Guess opponent's hand",
+    'll.effect_2': "Peek at opponent's hand",
+    'll.effect_3': 'Compare hands',
+    'll.effect_4': 'Protect self one round',
+    'll.effect_5': 'Force discard and redraw',
+    'll.effect_6': 'Swap hands',
+    'll.effect_7': 'Must discard if other card is Prince or King',
+    'll.effect_8': 'Eliminated if discarded',
+    'll.deck_remaining': 'Deck: {n}',
+    'll.face_up_removed': ' | Removed face-up: {list}',
+    'll.face_up_entry': '{name}({id})',
+    'll.player_n': 'Player {n}',
+    'll.eliminated': 'Out',
+    'll.protected_status': 'Protected',
+    'll.in_turn': 'Acting',
+    'll.you_eliminated': 'You are eliminated',
+    'll.guess_modal_title': "Guess player {n}'s hand",
+    'll.no_legal_guess': 'No legal guesses',
+    'll.change_target': 'Choose another target',
+    'll.action_unknown': 'Action #{id}',
+    'll.action_start': 'Game start',
+    'll.card_invalid': '{card} (invalid)',
+    'll.guard_text': '{card} → player {target} guess {guess}',
+    'll.priest_text': '{card} → peek player {target}',
+    'll.baron_text': '{card} → compare with player {target}',
+    'll.handmaid_text': '{card} (protected)',
+    'll.prince_text': '{card} → player {target} discards',
+    'll.king_text': '{card} → swap with player {target}',
+    'll.countess_text': '{card} (discarded)',
+    'll.princess_text': '{card} (discarded — eliminated)',
+    'll.target_hint_prince': 'Click a target player (you may click yourself)',
+    'll.target_hint_self_invalid': 'All opponents protected — click yourself to discard with no effect',
+    'll.target_hint_default': 'Click a target player',
+    'll.guess_hint_target': "Guess player {n}'s hand",
+    'll.priest_modal_title': 'Priest · Peek',
+    'll.baron_modal_title': 'Baron · Compare',
+    'll.peek_summary': 'Only you saw this card.',
+    'll.player_hand_label': "Player {n}'s hand",
+    'll.player_hand_label_sp': "Player {n}'s hand",
+    'll.baron_tie': 'Tie — neither is eliminated',
+    'll.baron_human_actor_won': 'Your card is higher; player {target} is eliminated',
+    'll.baron_human_actor_lost': "Player {target}'s card is higher; you are eliminated",
+    'll.baron_human_target_lost': "Player {actor}'s card is higher; you are eliminated",
+    'll.baron_human_target_won': 'Your card is higher; player {actor} is eliminated',
+    'll.showdown_prefix': 'Final hands ',
+    'll.showdown_entry': 'Player {n}: {card}',
+    'll.player_symbol': 'P{n}',
+  },
+});
+
 const CARD_VALUES = ['', '1', '2', '3', '4', '5', '6', '7', '8'];
-const CARD_EFFECTS = [
-  '',
-  '猜对手手牌',
-  '偷看对手手牌',
-  '比较手牌大小',
-  '保护自己一轮',
-  '迫使弃牌重摸',
-  '交换手牌',
-  '另一张为王子或国王时必须弃置',
-  '弃出即淘汰',
-];
+
+function cardLabel(c) {
+  if (c <= 0 || c > 8) return '';
+  return t('ll.card_' + c);
+}
+
+function cardEffect(c) {
+  if (c <= 0 || c > 8) return '';
+  return t('ll.effect_' + c);
+}
+
+function playerLabel(n) {
+  return t('ll.player_n', { n });
+}
 
 const GUARD_OFF = 0, PRIEST_OFF = 28, BARON_OFF = 32;
 const HANDMAID_ACT = 36, PRINCE_OFF = 37, KING_OFF = 41;
@@ -58,13 +182,13 @@ function getTargetsForCard(card, legalSet) {
   const targets = new Set();
   for (const aid of legalSet) {
     if (cardOfAction(aid) !== card) continue;
-    let t = -1;
-    if (card === 1) t = Math.floor((aid - GUARD_OFF) / 7);
-    else if (card === 2) t = aid - PRIEST_OFF;
-    else if (card === 3) t = aid - BARON_OFF;
-    else if (card === 5) t = aid - PRINCE_OFF;
-    else if (card === 6) t = aid - KING_OFF;
-    if (t >= 0) targets.add(t);
+    let tg = -1;
+    if (card === 1) tg = Math.floor((aid - GUARD_OFF) / 7);
+    else if (card === 2) tg = aid - PRIEST_OFF;
+    else if (card === 3) tg = aid - BARON_OFF;
+    else if (card === 5) tg = aid - PRINCE_OFF;
+    else if (card === 6) tg = aid - KING_OFF;
+    if (tg >= 0) targets.add(tg);
   }
   return targets;
 }
@@ -115,10 +239,12 @@ function renderBoard(container, gs, ctx) {
   const deckInfo = document.createElement('div');
   deckInfo.className = 'll-deck-info';
   deckInfo.setAttribute('data-deck', '');
-  deckInfo.textContent = '牌堆剩余: ' + st.deck_size;
+  deckInfo.textContent = t('ll.deck_remaining', { n: st.deck_size });
   if (st.face_up_removed && st.face_up_removed.length > 0) {
-    const removed = st.face_up_removed.map(c => CARD_LABELS[c] + '(' + c + ')').join(', ');
-    deckInfo.textContent += ' | 公开移除: ' + removed;
+    const removed = st.face_up_removed
+      .map(c => t('ll.face_up_entry', { name: cardLabel(c), id: c }))
+      .join(', ');
+    deckInfo.textContent += t('ll.face_up_removed', { list: removed });
   }
   board.appendChild(deckInfo);
 
@@ -162,22 +288,22 @@ function renderBoard(container, gs, ctx) {
 
     const nameEl = document.createElement('div');
     nameEl.className = 'll-opp-name';
-    nameEl.textContent = '玩家' + pi;
+    nameEl.textContent = playerLabel(pi);
     opp.appendChild(nameEl);
 
     const statusEl = document.createElement('div');
     statusEl.className = 'll-opp-status';
     if (!p.alive) {
       statusEl.classList.add('status-eliminated');
-      statusEl.textContent = '淘汰';
+      statusEl.textContent = t('ll.eliminated');
     } else if (p.protected) {
       statusEl.classList.add('status-protected');
-      statusEl.textContent = '保护中';
+      statusEl.textContent = t('ll.protected_status');
     } else if (pi === currentPlayer) {
       statusEl.classList.add('status-turn');
-      statusEl.textContent = '行动中';
+      statusEl.textContent = t('ll.in_turn');
     } else {
-      statusEl.textContent = ' ';
+      statusEl.textContent = ' ';
     }
     opp.appendChild(statusEl);
 
@@ -218,7 +344,7 @@ function renderBoard(container, gs, ctx) {
 
     const title = document.createElement('div');
     title.className = 'll-guess-modal-title';
-    title.textContent = '猜测玩家' + pendingTarget + ' 的手牌';
+    title.textContent = t('ll.guess_modal_title', { n: pendingTarget });
     modal.appendChild(title);
 
     const grid = document.createElement('div');
@@ -232,7 +358,7 @@ function renderBoard(container, gs, ctx) {
       btn.className = 'll-guess-btn ll-guess-btn-card card-' + g;
       btn.innerHTML =
         '<div class="ll-guess-btn-value">' + g + '</div>' +
-        '<div class="ll-guess-btn-name">' + CARD_LABELS[g] + '</div>';
+        '<div class="ll-guess-btn-name">' + cardLabel(g) + '</div>';
       btn.addEventListener('click', () => {
         // Close the modal BEFORE submitting: submitAction kicks off
         // describeTransition which pops a bubble over the actor, and an
@@ -251,7 +377,7 @@ function renderBoard(container, gs, ctx) {
       // Shouldn't happen — clear pending and let player retry.
       const empty = document.createElement('div');
       empty.className = 'll-guess-empty';
-      empty.textContent = '没有可猜的牌';
+      empty.textContent = t('ll.no_legal_guess');
       modal.appendChild(empty);
     }
 
@@ -260,7 +386,7 @@ function renderBoard(container, gs, ctx) {
     const cancel = document.createElement('button');
     cancel.type = 'button';
     cancel.className = 'll-guess-cancel';
-    cancel.textContent = '换一个目标';
+    cancel.textContent = t('ll.change_target');
     cancel.addEventListener('click', () => {
       pendingTarget = -1;
       ctx.rerender();
@@ -295,7 +421,7 @@ function buildDiscardPile(discards, playerIdx) {
     card.appendChild(v);
     const n = document.createElement('div');
     n.className = 'll-discard-card-name';
-    n.textContent = CARD_LABELS[c];
+    n.textContent = cardLabel(c);
     card.appendChild(n);
     wrap.appendChild(card);
   }
@@ -358,7 +484,7 @@ function renderPlayerArea(container, gs, ctx) {
   if (!pd.alive) {
     const dead = document.createElement('div');
     dead.className = 'll-dead-msg';
-    dead.textContent = '你已被淘汰';
+    dead.textContent = t('ll.you_eliminated');
     area.appendChild(dead);
     container.appendChild(area);
     return;
@@ -391,14 +517,14 @@ function renderPlayerArea(container, gs, ctx) {
     hint.className = 'll-pending-hint';
     if (needsGuess(pendingCard)) {
       hint.textContent = pendingTarget >= 0
-        ? '猜测玩家' + pendingTarget + ' 的手牌'
-        : '请点击目标玩家';
+        ? t('ll.guess_hint_target', { n: pendingTarget })
+        : t('ll.target_hint_default');
     } else if (needsTarget(pendingCard)) {
       hint.textContent = selfIsValidTarget && pendingCard === 5
-        ? '请点击目标玩家（可点击你自己）'
+        ? t('ll.target_hint_prince')
         : selfIsValidTarget
-          ? '所有对手被保护，点击自己弃出无效'
-          : '请点击目标玩家';
+          ? t('ll.target_hint_self_invalid')
+          : t('ll.target_hint_default');
     }
     area.appendChild(hint);
   }
@@ -420,12 +546,12 @@ function createCardElement(cardValue, playing, legalSet) {
 
   const name = document.createElement('div');
   name.className = 'll-card-name';
-  name.textContent = CARD_LABELS[cardValue];
+  name.textContent = cardLabel(cardValue);
   el.appendChild(name);
 
   const effect = document.createElement('div');
   effect.className = 'll-card-effect';
-  effect.textContent = CARD_EFFECTS[cardValue];
+  effect.textContent = cardEffect(cardValue);
   el.appendChild(effect);
 
   if (pendingCard === cardValue) {
@@ -454,7 +580,7 @@ function createCardElement(cardValue, playing, legalSet) {
         // is a legitimate Prince play, not a forced no-op.
         const tgts = getTargetsForCard(cardValue, legalSet);
         const humanPlayer = currentCtx.state.humanPlayer;
-        const hasOppTarget = [...tgts].some(t => t !== humanPlayer);
+        const hasOppTarget = [...tgts].some(tg => tg !== humanPlayer);
         if (!hasOppTarget && tgts.has(humanPlayer)) {
           // Guard's self-fallback uses guess=2 (lowest legal guess);
           // Priest/Baron/King ignore guess (-1 sentinel passes through
@@ -482,13 +608,15 @@ function createCardElement(cardValue, playing, legalSet) {
 
 function formatMove(info, actionId, actor) {
   if (!info || !info.type) {
-    if (actionId === null || actionId === undefined) return '开局';
-    return '动作 #' + actionId;
+    if (actionId === null || actionId === undefined) return t('ll.action_start');
+    return t('ll.action_unknown', { id: actionId });
   }
   // C++ emits English card_name/guess_name — translate at the JS layer
-  // via CARD_LABELS so no English leaks into bubbles or the info panel.
-  const cardName = (info.card && CARD_LABELS[info.card]) || '';
-  const guessName = (typeof info.guess === 'number' && CARD_LABELS[info.guess]) || info.guess;
+  // via cardLabel so no English leaks into bubbles or the info panel.
+  const cardName = cardLabel(info.card || 0);
+  const guessName = (typeof info.guess === 'number')
+    ? cardLabel(info.guess)
+    : (info.guess || '');
   // Self-target on a non-self-targeting card is the engine's no-op fallback
   // (every opponent Handmaid-protected). The bubble should say "无效"
   // instead of pretending the player meant to target themselves with a
@@ -499,27 +627,27 @@ function formatMove(info, actionId, actor) {
     (info.type === 'guard' || info.type === 'priest' ||
      info.type === 'baron' || info.type === 'king');
   if (selfFallback) {
-    return cardName + '（无效）';
+    return t('ll.card_invalid', { card: cardName });
   }
   switch (info.type) {
     case 'guard':
-      return cardName + ' → 玩家' + info.target + ' 猜 ' + guessName;
+      return t('ll.guard_text', { card: cardName, target: info.target, guess: guessName });
     case 'priest':
-      return cardName + ' → 偷看玩家' + info.target;
+      return t('ll.priest_text', { card: cardName, target: info.target });
     case 'baron':
-      return cardName + ' → 比较玩家' + info.target;
+      return t('ll.baron_text', { card: cardName, target: info.target });
     case 'handmaid':
-      return cardName + '（保护）';
+      return t('ll.handmaid_text', { card: cardName });
     case 'prince':
-      return cardName + ' → 玩家' + info.target + ' 弃牌';
+      return t('ll.prince_text', { card: cardName, target: info.target });
     case 'king':
-      return cardName + ' → 与玩家' + info.target + ' 交换';
+      return t('ll.king_text', { card: cardName, target: info.target });
     case 'countess':
-      return cardName + '（弃出）';
+      return t('ll.countess_text', { card: cardName });
     case 'princess':
-      return cardName + '（弃出即淘汰）';
+      return t('ll.princess_text', { card: cardName });
     default:
-      return '动作 #' + actionId;
+      return t('ll.action_unknown', { id: actionId });
   }
 }
 
@@ -572,7 +700,7 @@ function describeTransition(prevState, newState, actionInfo, actionId) {
     v.textContent = CARD_VALUES[cardValue];
     const n = document.createElement('div');
     n.className = 'll-discard-card-name';
-    n.textContent = CARD_LABELS[cardValue];
+    n.textContent = cardLabel(cardValue);
     card.appendChild(v);
     card.appendChild(n);
     // Insert before the incoming anchor so the pile grows leftward of it,
@@ -686,7 +814,7 @@ function buildShowdownStep(newState, actor, humanPlayer) {
         v.textContent = CARD_VALUES[card];
         const n = document.createElement('div');
         n.className = 'll-discard-card-name';
-        n.textContent = CARD_LABELS[card];
+        n.textContent = cardLabel(card);
         cardEl.appendChild(v);
         cardEl.appendChild(n);
         incoming.parentNode.insertBefore(cardEl, incoming);
@@ -719,7 +847,6 @@ function buildRevealStep(prevState, newState, actionInfo, actor, humanPlayer) {
   if (type === 'baron' && !humanIsActor && !humanIsTarget) return null;
 
   const prevPlayers = prevState.state.players || [];
-  const newPlayers = (newState && newState.state && newState.state.players) || [];
 
   const targetPrevHand = prevPlayers[target] ? prevPlayers[target].hand : 0;
 
@@ -727,10 +854,10 @@ function buildRevealStep(prevState, newState, actionInfo, actor, humanPlayer) {
     if (targetPrevHand <= 0) return null;
     return {
       type: 'reveal',
-      title: '牧师 · 偷看手牌',
+      title: t('ll.priest_modal_title'),
       body: revealBody([
-        { label: '玩家' + target + '的手牌', card: targetPrevHand },
-      ], '只有你看到了这张牌。'),
+        { label: t('ll.player_hand_label', { n: target }), card: targetPrevHand },
+      ], t('ll.peek_summary')),
     };
   }
 
@@ -750,17 +877,21 @@ function buildRevealStep(prevState, newState, actionInfo, actor, humanPlayer) {
   const humanSide = humanIsActor ? 'actor' : 'target';
   // "outcomeText" from the human's perspective: won / lost / tied.
   const outcomeText = tie
-    ? '平局，双方都不淘汰'
+    ? t('ll.baron_tie')
     : (humanSide === 'actor'
-        ? (actorWon ? '你的牌更大，玩家' + target + ' 被淘汰' : '玩家' + target + ' 的牌更大，你被淘汰')
-        : (actorWon ? '玩家' + actor + ' 的牌更大，你被淘汰' : '你的牌更大，玩家' + actor + ' 被淘汰'));
+        ? (actorWon
+            ? t('ll.baron_human_actor_won', { target })
+            : t('ll.baron_human_actor_lost', { target }))
+        : (actorWon
+            ? t('ll.baron_human_target_lost', { actor })
+            : t('ll.baron_human_target_won', { actor })));
 
   return {
     type: 'reveal',
-    title: '男爵 · 比较手牌',
+    title: t('ll.baron_modal_title'),
     body: revealBody([
-      { label: '玩家' + actor + ' 的手牌', card: actorKept },
-      { label: '玩家' + target + ' 的手牌', card: targetPrevHand },
+      { label: t('ll.player_hand_label_sp', { n: actor }), card: actorKept },
+      { label: t('ll.player_hand_label_sp', { n: target }), card: targetPrevHand },
     ], outcomeText),
   };
 }
@@ -812,7 +943,7 @@ function revealBody(cards, summaryText) {
     val.textContent = CARD_VALUES[c.card];
     const name = document.createElement('div');
     name.className = 'll-reveal-card-name';
-    name.textContent = CARD_LABELS[c.card];
+    name.textContent = cardLabel(c.card);
     card.appendChild(val);
     card.appendChild(name);
     item.appendChild(card);
@@ -844,28 +975,28 @@ const showdownExtension = {
     for (let pi = 0; pi < players.length; pi++) {
       const p = players[pi];
       if (!p.alive || !p.hand || p.hand <= 0) continue;
-      parts.push('玩家' + pi + '：' + CARD_LABELS[p.hand]);
+      parts.push(t('ll.showdown_entry', { n: pi, card: cardLabel(p.hand) }));
     }
     if (!parts.length) {
       el.style.display = 'none';
       return;
     }
     el.style.display = '';
-    el.textContent = '终局底牌 ' + parts.join('  ');
+    el.textContent = t('ll.showdown_prefix') + parts.join('  ');
   }
 };
 
 createApp({
   gameId: 'loveletter',
-  gameTitle: '情书',
-  gameIntro: '点你的手牌或抽到的牌出牌；卫兵/王子/国王等需要先选目标对手再确认',
+  gameTitle: t('ll.title'),
+  gameIntro: t('ll.intro'),
   players: { min: 2, max: 4 },
   renderBoard,
   renderPlayerArea,
   describeTransition,
   formatOpponentMove: formatMove,
   formatSuggestedMove: formatMove,
-  getPlayerSymbol: (p) => '玩家' + p,
+  getPlayerSymbol: (p) => t('ll.player_symbol', { n: p }),
   extensions: [showdownExtension],
   difficulties: ['heuristic', 'casual', 'expert'],
   defaultDifficulty: 'expert',

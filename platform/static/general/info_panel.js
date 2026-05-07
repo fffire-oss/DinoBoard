@@ -1,16 +1,18 @@
+import { t } from './i18n.js';
+
 export function createInfoPanel(infoCol, config) {
   const panel = document.createElement('div');
   panel.className = 'info-panel';
   // 4 pills: turn, opponent-move, AI-winrate, AI-suggest. Each pill has a
   // fixed prefix label so the semantics are clear even when the value
-  // part is empty/--. The "对手动作" pill shows only what the opponent
-  // last played (human's own moves don't appear here); transient app
-  // messages ("已悔棋", "替X落子", etc.) go to sidebar.setOpsMsg.
+  // part is empty/--. The opponent-action pill shows only what the
+  // opponent last played (human's own moves don't appear here);
+  // transient app messages go to sidebar.setOpsMsg.
   panel.innerHTML = `
-    <div class="info-pill" id="info-turn">当前轮到：--</div>
-    <div class="info-pill" id="info-opp">对手动作：--</div>
-    <div class="info-pill" id="info-winrate">你的预估胜率：--</div>
-    <div class="info-pill" id="info-suggest">智能提示：--</div>
+    <div class="info-pill" id="info-turn">${t('info.turn_default')}</div>
+    <div class="info-pill" id="info-opp">${t('info.opp_default')}</div>
+    <div class="info-pill" id="info-winrate">${t('info.winrate_default')}</div>
+    <div class="info-pill" id="info-suggest">${t('info.suggest_default')}</div>
   `;
   infoCol.appendChild(panel);
 
@@ -26,7 +28,7 @@ export function createInfoPanel(infoCol, config) {
   };
 
   function formatWinrate(wr) {
-    if (wr === null || wr === undefined) return '--';
+    if (wr === null || wr === undefined) return t('info.dash');
     return (Math.max(0, Math.min(1, wr)) * 100).toFixed(1) + '%';
   }
 
@@ -38,7 +40,7 @@ export function createInfoPanel(infoCol, config) {
     setStatus(_text) {},
     // Shows the opponent's latest action. `null`/empty resets to "--".
     setMessage(text) {
-      els.opp.textContent = '对手动作：' + (text && text.length ? text : '--');
+      els.opp.textContent = t('info.opp_prefix') + (text && text.length ? text : t('info.dash'));
     },
     // wr is human's predicted win rate in [0, 1] or null. proven, when truthy,
     // means a tail solver supplied this number (0 / 1 / 0.5 are exact, not
@@ -46,16 +48,18 @@ export function createInfoPanel(infoCol, config) {
     // in the live path proven=true always implies the human is on the
     // losing side (wr ≈ 0). Draw outcomes pass proven='draw'.
     setWinrate(wr, proven) {
-      const base = '你的预估胜率：' + formatWinrate(wr);
+      const base = t('info.winrate_prefix') + formatWinrate(wr);
       if (proven === 'draw') {
-        els.winrate.textContent = base + '（残局已求解：平局）';
+        els.winrate.textContent = base + t('info.tail_solved_draw_suffix');
       } else if (proven) {
-        els.winrate.textContent = base + '（残局已求解）';
+        els.winrate.textContent = base + t('info.tail_solved_suffix');
       } else {
         els.winrate.textContent = base;
       }
     },
-    setSuggest(text) { els.suggest.textContent = '智能提示：' + (text || '--'); },
+    setSuggest(text) {
+      els.suggest.textContent = t('info.suggest_prefix') + (text || t('info.dash'));
+    },
     setVisible(visible) {
       panel.style.display = visible ? '' : 'none';
     },
@@ -70,10 +74,10 @@ export function createInfoPanel(infoCol, config) {
       }
     },
     reset() {
-      els.turn.textContent = '当前轮到：--';
-      els.opp.textContent = '对手动作：--';
-      els.winrate.textContent = '你的预估胜率：--';
-      els.suggest.textContent = '智能提示：--';
+      els.turn.textContent = t('info.turn_default');
+      els.opp.textContent = t('info.opp_default');
+      els.winrate.textContent = t('info.winrate_default');
+      els.suggest.textContent = t('info.suggest_default');
     },
   };
 }

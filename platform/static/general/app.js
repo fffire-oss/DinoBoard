@@ -6,6 +6,8 @@ import { createReplayController } from './replay.js';
 import { createPipelinePoller } from './pipeline.js';
 import { createModal } from './modal.js';
 import { playTransition } from './animate.js';
+import { t } from './i18n.js';
+import './i18n_strings.js';
 
 export function createApp(config) {
   const state = {
@@ -158,14 +160,12 @@ export function createApp(config) {
   }
 
   // Display label for a seat index. We're a generic platform — the seat
-  // could be human or AI, controlled remotely or locally. Use "玩家N"
-  // (0-indexed, no space) to match the rest of the codebase
-  // (sidebar.js force buttons, per-game web/*.js seat labels). The
-  // human's own seat shows "你" since that's still the most natural
-  // self-reference in the current single-user-vs-AI deployment.
+  // could be human or AI. The human's own seat shows "你"/"You" since
+  // that's the natural self-reference in the current single-user-vs-AI
+  // deployment.
   function playerLabel(idx) {
-    if (idx === state.humanPlayer) return '你';
-    return '玩家' + idx;
+    if (idx === state.humanPlayer) return t('app.player_self');
+    return t('app.player_n', { n: idx });
   }
 
   function updateInfoPanel() {
@@ -177,11 +177,14 @@ export function createApp(config) {
     const gs = state.gameState;
 
     if (gs.is_terminal) {
-      infoPanel.setTurn('对局结束');
+      infoPanel.setTurn(t('app.terminal_turn'));
       let resultText;
-      if (gs.winner < 0) resultText = '结果：平局';
-      else if (gs.winner === state.humanPlayer) resultText = '结果：你赢了！';
-      else resultText = '结果：玩家' + gs.winner + ' 获胜';
+      if (gs.winner < 0) resultText = t('app.terminal_draw_msg');
+      else if (gs.winner === state.humanPlayer) resultText = t('app.terminal_win_msg');
+      else {
+        const label = config.getPlayerSymbol ? config.getPlayerSymbol(gs.winner) : t('app.player_n', { n: gs.winner });
+        resultText = t('app.terminal_loss_msg', { label });
+      }
       sidebar.setOpsMsg(resultText);
       infoPanel.setWinrate(
         sidebar.getShowWinrate() ? state.lastAiWinrate : null,
@@ -191,11 +194,11 @@ export function createApp(config) {
     }
 
     if (poller.isPolling()) {
-      infoPanel.setTurn('当前轮到：' + playerLabel(gs.current_player) + '（思考中...）');
+      infoPanel.setTurn(t('info.turn_prefix') + playerLabel(gs.current_player) + t('app.thinking_suffix'));
     } else if (state.forceMode) {
-      infoPanel.setTurn('替对手落子中（请操作）');
+      infoPanel.setTurn(t('app.force_mode_label'));
     } else {
-      infoPanel.setTurn('当前轮到：' + playerLabel(gs.current_player));
+      infoPanel.setTurn(t('info.turn_prefix') + playerLabel(gs.current_player));
     }
 
     if (gs.last_action_info && config.formatOpponentMove) {
@@ -209,23 +212,25 @@ export function createApp(config) {
 
   function updateReplayInfo(frame) {
     if (frame.__terminal_display) {
-      infoPanel.setTurn('录像回放 · 终局画面');
-      infoPanel.setMessage('终局');
+      infoPanel.setTurn(t('app.replay_turn_terminal'));
+      infoPanel.setMessage(t('app.replay_terminal_msg'));
       infoPanel.setWinrate(null);
       infoPanel.setSuggest(null);
       return;
     }
     const actor = resolveActorName(frame.actor);
-    infoPanel.setTurn('录像回放 · ' + actor);
+    infoPanel.setTurn(t('app.replay_turn', { actor }));
 
     const actorIdx = (typeof frame.actor === 'string' && frame.actor.startsWith('player_'))
       ? parseInt(frame.actor.slice('player_'.length), 10) : null;
-    let moveText = frame.actor === 'start' ? '开局' : (
+    let moveText = frame.actor === 'start' ? t('app.replay_move_start') : (
       config.formatOpponentMove
         ? config.formatOpponentMove(frame.action_info, frame.action_id, actorIdx)
-        : (frame.action_id !== null && frame.action_id !== undefined ? '动作 ' + frame.action_id : '')
+        : (frame.action_id !== null && frame.action_id !== undefined
+            ? t('app.replay_action_unknown', { id: frame.action_id })
+            : '')
     );
-    if (frame.is_terminal) moveText += ' · 终局';
+    if (frame.is_terminal) moveText += ' ' + t('app.terminal_suffix_dot');
     infoPanel.setMessage(moveText);
 
     const a = frame.analysis;
@@ -234,10 +239,10 @@ export function createApp(config) {
       if (frame.action_id !== a.best_action && a.best_action_info) {
         const bestText = config.formatSuggestedMove
           ? config.formatSuggestedMove(a.best_action_info, a.best_action, actorIdx)
-          : '动作 ' + a.best_action;
+          : t('app.replay_action_unknown', { id: a.best_action });
         infoPanel.setSuggest(bestText);
       } else {
-        infoPanel.setSuggest('最优着法');
+        infoPanel.setSuggest(t('app.replay_optimal'));
       }
     } else {
       infoPanel.setWinrate(null);
@@ -249,12 +254,12 @@ export function createApp(config) {
     const gs = state.gameState;
     const showReplay = state.difficulty === 'expert';
     if (gs.winner < 0) {
-      modal.show('平局', '本局结束，结果为平局。', showReplay);
+      modal.show(t('app.modal_draw_title'), t('app.modal_draw_text'), showReplay);
     } else if (gs.winner === state.humanPlayer) {
-      modal.show('你赢了！', '恭喜，你赢得了本局比赛！', showReplay);
+      modal.show(t('app.modal_win_title'), t('app.modal_win_text'), showReplay);
     } else {
-      const label = config.getPlayerSymbol ? config.getPlayerSymbol(gs.winner) : '玩家' + gs.winner;
-      modal.show(label + ' 获胜', label + ' 赢得了本局比赛。', showReplay);
+      const label = config.getPlayerSymbol ? config.getPlayerSymbol(gs.winner) : t('app.player_n', { n: gs.winner });
+      modal.show(t('app.modal_loss_title', { label }), t('app.modal_loss_text', { label }), showReplay);
     }
   }
 
@@ -307,9 +312,17 @@ export function createApp(config) {
       if (config.onGameStart) config.onGameStart();
       sidebar.rebuildForceButtons(state.aiPlayers);
 
-      const diffLabels = { heuristic: '启发式', casual: '体验', expert: '专家' };
-      const seatLabel = config.getPlayerSymbol ? config.getPlayerSymbol(humanPlayer) : '玩家' + humanPlayer;
-      sidebar.setStartMsg('已开局（' + numPlayers + '人），你是' + seatLabel + '，难度=' + (diffLabels[difficulty] || difficulty));
+      const diffLabels = {
+        heuristic: t('sidebar.diff_heuristic'),
+        casual: t('sidebar.diff_casual'),
+        expert: t('sidebar.diff_expert'),
+      };
+      const seatLabel = config.getPlayerSymbol ? config.getPlayerSymbol(humanPlayer) : t('app.player_n', { n: humanPlayer });
+      sidebar.setStartMsg(t('app.start_msg', {
+        n: numPlayers,
+        seat: seatLabel,
+        diff: diffLabels[difficulty] || difficulty,
+      }));
       // Brief operation hint shown until the opponent makes the first
       // move — gives a fresh restart some context instead of a blank pill.
       // Cleared on the first opp action / undo / force.
@@ -359,7 +372,7 @@ export function createApp(config) {
         state.forceMode = false;
         state.busy = false;
         render();
-        sidebar.setOpsMsg('已完成替对手落子');
+        sidebar.setOpsMsg(t('app.force_done'));
         return;
       }
 
@@ -370,7 +383,7 @@ export function createApp(config) {
         await pollPipeline();
       }
     } catch (e) {
-      sidebar.setOpsMsg('错误：' + e.message);
+      sidebar.setOpsMsg(t('app.error_prefix', { msg: e.message }));
       state.busy = false;
       updateSidebarButtons();
     }
@@ -379,7 +392,7 @@ export function createApp(config) {
   function pollOnce() {
     const thinkingLabel = () => {
       const cp = state.gameState ? state.gameState.current_player : -1;
-      return '当前轮到：' + playerLabel(cp) + '（思考中...）';
+      return t('info.turn_prefix') + playerLabel(cp) + t('app.thinking_suffix');
     };
     return new Promise(resolve => {
       infoPanel.setTurn(thinkingLabel());
@@ -396,8 +409,8 @@ export function createApp(config) {
           if (analysis && state.difficulty === 'expert' && sidebar.getShowWinrate()) {
             const drop = analysis.drop_score;
             if (drop !== undefined && drop !== null && drop >= 5) {
-              const label = drop >= 10 ? '严重失误' : '失误';
-              sidebar.setOpsMsg(label + '：掉分 ' + drop.toFixed(1) + '%');
+              const label = drop >= 10 ? t('app.blunder_label') : t('app.mistake_label');
+              sidebar.setOpsMsg(t('app.mistake_msg', { label, drop: drop.toFixed(1) }));
             }
           }
         },
@@ -412,12 +425,12 @@ export function createApp(config) {
         },
         onTimeout(data) {
           state.gameState = data;
-          sidebar.setOpsMsg('对手思考超时');
+          sidebar.setOpsMsg(t('app.opp_thinking_timeout'));
           render();
           resolve(null);
         },
         onError(e) {
-          sidebar.setOpsMsg('错误：' + e.message);
+          sidebar.setOpsMsg(t('app.error_prefix', { msg: e.message }));
           apiGet(API_BASE + '/' + state.sessionId).then(data => {
             state.gameState = data;
             render();
@@ -481,7 +494,7 @@ export function createApp(config) {
   async function handleUndo() {
     if (!state.sessionId || state.busy || state.replayMode) return;
     if (state.gameState.is_terminal) {
-      sidebar.setOpsMsg('对局已结束，无法悔棋');
+      sidebar.setOpsMsg(t('app.cant_undo_terminal'));
       return;
     }
 
@@ -509,7 +522,7 @@ export function createApp(config) {
       if (config.onUndo) config.onUndo();
       state.busy = false;
       render();
-      sidebar.setOpsMsg('已悔棋');
+      sidebar.setOpsMsg(t('app.undone'));
     } catch (e) {
       sidebar.setOpsMsg(e.message);
       state.busy = false;
@@ -520,7 +533,7 @@ export function createApp(config) {
   async function handleForce(targetPlayer) {
     if (!state.sessionId || state.busy || state.replayMode) return;
     if (state.gameState.is_terminal) {
-      sidebar.setOpsMsg('对局已结束');
+      sidebar.setOpsMsg(t('app.cant_force_terminal'));
       return;
     }
 
@@ -551,13 +564,13 @@ export function createApp(config) {
         state.forceMode = true;
         state.busy = false;
         render();
-        const name = config.getPlayerSymbol ? config.getPlayerSymbol(cp) : '玩家' + cp;
+        const name = config.getPlayerSymbol ? config.getPlayerSymbol(cp) : t('app.player_n', { n: cp });
         // Brief flow hint — user already clicked the button, so just
         // tell them what's expected next. (Re-undo cancels.)
-        sidebar.setOpsMsg('替' + name + '落子：直接在棋盘上点击其动作即可，悔棋可取消');
+        sidebar.setOpsMsg(t('app.force_hint', { label: name }));
       } else {
         state.busy = false;
-        sidebar.setOpsMsg('无法回退到该对手的回合');
+        sidebar.setOpsMsg(t('app.force_unreachable'));
       }
     } catch (e) {
       sidebar.setOpsMsg(e.message);
@@ -569,13 +582,13 @@ export function createApp(config) {
   async function handleHint() {
     if (!state.sessionId || state.busy || state.replayMode) return;
     if (state.gameState.is_terminal) {
-      sidebar.setOpsMsg('对局已结束');
+      sidebar.setOpsMsg(t('app.cant_force_terminal'));
       return;
     }
     if (state.hintPending || poller.isPolling()) return;
 
     state.hintPending = true;
-    infoPanel.setSuggest('局面分析中...');
+    infoPanel.setSuggest(t('app.hint_pending'));
     try {
       const data = await apiPost(API_BASE + '/' + state.sessionId + '/ai-hint', {});
       if (!state.hintPending) return;
@@ -583,7 +596,7 @@ export function createApp(config) {
       const hintActor = state.gameState ? state.gameState.current_player : null;
       const text = config.formatSuggestedMove
         ? config.formatSuggestedMove(data.action_info, data.action, hintActor)
-        : '动作 ' + data.action;
+        : t('replay.action_unknown', { id: data.action });
       infoPanel.setSuggest(text);
     } catch (e) {
       if (!state.hintPending) return;
@@ -604,7 +617,7 @@ export function createApp(config) {
       const data = await replay.enter(state.sessionId);
       replayMeta = extractPlayersMeta(data);
     } catch (e) {
-      sidebar.setOpsMsg('加载录像失败：' + e.message);
+      sidebar.setOpsMsg(t('app.replay_load_failed', { msg: e.message }));
       state.replayMode = false;
       updateSidebarButtons();
     }
@@ -620,7 +633,7 @@ export function createApp(config) {
   let replayMeta = null;
 
   function resolveActorName(actor) {
-    if (actor === 'start') return '开局';
+    if (actor === 'start') return t('replay.action_start');
     if (replayMeta) {
       const info = replayMeta[actor];
       if (info) return info.name || actor;
@@ -640,14 +653,14 @@ export function createApp(config) {
   }
 
   function buildReplayHeader(meta) {
-    if (!meta) return '录像回放';
+    if (!meta) return t('app.replay_default_header');
     const names = [];
     for (let i = 0; ; i++) {
       const key = 'player_' + i;
       if (!meta[key]) break;
       names.push(meta[key].name || key);
     }
-    return names.length > 0 ? names.join(' vs ') : '录像回放';
+    return names.length > 0 ? names.join(' vs ') : t('app.replay_default_header');
   }
 
   async function handleLoadReplay(data, error) {
@@ -668,7 +681,7 @@ export function createApp(config) {
       updateSidebarButtons();
       replay.enterWithFrames(data.frames);
     } else if (data.action_history) {
-      sidebar.setOpsMsg(header + '（生成帧中…）');
+      sidebar.setOpsMsg(header + t('app.replay_building_suffix'));
       try {
         const resp = await fetch('/api/replay/build', {
           method: 'POST',
@@ -679,7 +692,7 @@ export function createApp(config) {
             action_history: data.action_history,
           }),
         });
-        if (!resp.ok) throw new Error('生成帧失败: ' + resp.status);
+        if (!resp.ok) throw new Error(t('app.replay_build_failed_status', { status: resp.status }));
         const built = await resp.json();
         modal.hide();
         state.replayMode = true;
@@ -687,10 +700,10 @@ export function createApp(config) {
         replay.enterWithFrames(built.frames);
         sidebar.setOpsMsg(header);
       } catch (e) {
-        sidebar.setOpsMsg('生成帧失败：' + e.message);
+        sidebar.setOpsMsg(t('app.replay_build_failed', { msg: e.message }));
       }
     } else {
-      sidebar.setOpsMsg('录像文件格式错误：缺少 frames 或 action_history');
+      sidebar.setOpsMsg(t('app.replay_format_error'));
     }
   }
 

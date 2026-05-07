@@ -34,6 +34,18 @@
 .dino-logo .eye { fill: #0f3554; }
 .dino-logo .eye-shine { fill: #ffffff; }
 .dino-logo .mouth { fill: none; stroke: #0f3554; stroke-width: 2; stroke-linecap: round; }
+.lang-toggle {
+  font-size: 13px;
+  font-weight: 600;
+  padding: 4px 12px;
+  border: 1px solid #0f3554;
+  background: #ffffff;
+  color: #0f3554;
+  border-radius: 999px;
+  cursor: pointer;
+  line-height: 1.2;
+}
+.lang-toggle:hover { background: #0f3554; color: #ffffff; }
 .home-subtitle {
   color: #64748b;
   margin-bottom: 32px;
@@ -109,12 +121,25 @@
       <path class="mouth" d="M52 24 Q 55 25.5 57 23.5"/>
     </svg>
     DinoBoard
+    <button id="lang-toggle" class="lang-toggle" type="button"></button>
   </h2>
-  <div class="home-subtitle">通用桌游智能平台</div>
+  <div id="home-subtitle" class="home-subtitle"></div>
   <div id="games" class="game-grid"></div>
 </main>
 
-<script>
+<script type="module">
+import { t, getLang, setLang } from '/static/general/i18n.js';
+import '/static/general/i18n_strings.js';
+
+const lang = getLang();
+document.title = 'DinoBoard';
+document.getElementById('home-subtitle').textContent = t('home.subtitle');
+
+const langBtn = document.getElementById('lang-toggle');
+langBtn.textContent = t('home.lang_btn');
+langBtn.title = t('home.lang_btn_title');
+langBtn.addEventListener('click', () => setLang(lang === 'zh' ? 'en' : 'zh'));
+
 async function init() {
   const resp = await fetch('/api/games/available');
   const data = await resp.json();
@@ -130,17 +155,20 @@ async function init() {
 
     const title = document.createElement('div');
     title.className = 'game-title';
-    title.textContent = game.display_name;
+    const nameEn = game.display_name_en;
+    title.textContent = (lang === 'en' && nameEn) ? nameEn : game.display_name;
 
     const info = document.createElement('div');
     info.className = 'game-info';
     const p = game.players;
-    info.textContent = p.min === p.max ? p.min + ' 人' : p.min + ' - ' + p.max + ' 人';
+    info.textContent = p.min === p.max
+        ? t('home.players_exact', { n: p.min })
+        : t('home.players_range', { min: p.min, max: p.max });
 
     if (!game.has_web) {
       const badge = document.createElement('div');
       badge.className = 'badge';
-      badge.textContent = '即将上线';
+      badge.textContent = t('home.coming_soon');
       card.appendChild(badge);
     }
 

@@ -1,3 +1,5 @@
+import { t } from './i18n.js';
+
 const API_BASE = '/api/games';
 
 // Retry network-level failures (connection reset, middlebox timeout,
@@ -15,7 +17,7 @@ async function fetchWithRetry(url, init, { retries = 3, backoffMs = 500 } = {}) 
     }
   }
   const msg = lastErr && lastErr.message ? lastErr.message : 'network error';
-  throw new Error(`网络连接失败（${msg}）。可能是手机切换 WiFi/4G 或连接中断，稍候重试。`);
+  throw new Error(t('api.network_failed', { msg }));
 }
 
 export async function apiGet(url) {

@@ -1,7 +1,58 @@
 import { createApp } from '/static/general/app.js';
+import { t, register } from '/static/general/i18n.js';
+
+register({
+  zh: {
+    'azul.title': '花砖物语',
+    'azul.intro': '先选择来源再选择目标行',
+    'azul.color_blue': '蓝',
+    'azul.color_yellow': '黄',
+    'azul.color_red': '红',
+    'azul.color_black': '黑',
+    'azul.color_white': '白',
+    'azul.factory_n': '工厂 {n}',
+    'azul.factory_short': '工厂{n}',
+    'azul.center_pool': '中心池',
+    'azul.floor_label': '地板',
+    'azul.player_n': '玩家{n}',
+    'azul.player_self_suffix': '（你）',
+    'azul.player_score_suffix': ' · 分数: {n}',
+    'azul.action_unknown': '动作 #{id}',
+    'azul.action_start': '开局',
+    'azul.row_n': '第{n}行',
+    'azul.move_arrow': '{src} {color} → {target}',
+    'azul.selection_hint': '已选 {src} {color} — 点击目标行/地板',
+    'azul.bag_default': '袋中剩余：--',
+    'azul.bag_count': '袋中剩余：{parts}',
+  },
+  en: {
+    'azul.title': 'Azul',
+    'azul.intro': 'Pick a source, then pick a target row',
+    'azul.color_blue': 'Blue',
+    'azul.color_yellow': 'Yellow',
+    'azul.color_red': 'Red',
+    'azul.color_black': 'Black',
+    'azul.color_white': 'White',
+    'azul.factory_n': 'Factory {n}',
+    'azul.factory_short': 'Factory {n}',
+    'azul.center_pool': 'Center pool',
+    'azul.floor_label': 'Floor',
+    'azul.player_n': 'Player {n}',
+    'azul.player_self_suffix': ' (you)',
+    'azul.player_score_suffix': ' · score: {n}',
+    'azul.action_unknown': 'Action #{id}',
+    'azul.action_start': 'Game start',
+    'azul.row_n': 'Row {n}',
+    'azul.move_arrow': '{src} {color} → {target}',
+    'azul.selection_hint': 'Picked {src} {color} — tap a target row or floor',
+    'azul.bag_default': 'Bag: --',
+    'azul.bag_count': 'Bag: {parts}',
+  },
+});
 
 const TILE_COLORS = ['blue', 'yellow', 'red', 'black', 'white'];
-const TILE_LABELS = ['蓝', '黄', '红', '黑', '白'];
+const TILE_LABEL_KEYS = ['azul.color_blue','azul.color_yellow','azul.color_red','azul.color_black','azul.color_white'];
+function tileLabel(c) { return t(TILE_LABEL_KEYS[c]); }
 const TILE_CLASSES = ['tile-blue', 'tile-yellow', 'tile-red', 'tile-black', 'tile-white'];
 const FLOOR_PENALTIES = [-1, -1, -2, -2, -2, -3, -3];
 
@@ -106,7 +157,7 @@ function renderEmptyBoard(container) {
     factoryEl.className = 'factory';
     const title = document.createElement('div');
     title.className = 'factory-title';
-    title.textContent = '工厂 ' + (fi + 1);
+    title.textContent = t('azul.factory_n', { n: fi + 1 });
     factoryEl.appendChild(title);
     const tilesGrid = document.createElement('div');
     tilesGrid.className = 'factory-tiles';
@@ -119,7 +170,7 @@ function renderEmptyBoard(container) {
   pool.className = 'center-pool';
   const centerTitle = document.createElement('div');
   centerTitle.className = 'center-title';
-  centerTitle.textContent = '中心池';
+  centerTitle.textContent = t('azul.center_pool');
   pool.appendChild(centerTitle);
   const tilesWrap = document.createElement('div');
   tilesWrap.className = 'center-tiles';
@@ -168,8 +219,8 @@ function renderBoard(container, gameState, ctx) {
   // a selection doesn't push the rest of the board down by one row.
   if (ctx && ctx.setInfoStatus) {
     if (selectedSource >= 0 && selectedColor >= 0) {
-      const srcName = selectedSource === centerSource ? '中心池' : '工厂' + (selectedSource + 1);
-      ctx.setInfoStatus('已选 ' + srcName + ' ' + TILE_LABELS[selectedColor] + ' — 点击目标行/地板');
+      const srcName = selectedSource === centerSource ? t('azul.center_pool') : t('azul.factory_short', { n: selectedSource + 1 });
+      ctx.setInfoStatus(t('azul.selection_hint', { src: srcName, color: tileLabel(selectedColor) }));
     } else {
       ctx.setInfoStatus(null);
     }
@@ -190,7 +241,7 @@ function renderBoard(container, gameState, ctx) {
 
     const title = document.createElement('div');
     title.className = 'factory-title';
-    title.textContent = '工厂 ' + (fi + 1);
+    title.textContent = t('azul.factory_n', { n: fi + 1 });
     factoryEl.appendChild(title);
 
     const tilesGrid = document.createElement('div');
@@ -228,7 +279,7 @@ function renderBoard(container, gameState, ctx) {
 
   const centerTitle = document.createElement('div');
   centerTitle.className = 'center-title';
-  centerTitle.textContent = '中心池';
+  centerTitle.textContent = t('azul.center_pool');
   pool.appendChild(centerTitle);
 
   const center = game.center || [];
@@ -295,7 +346,7 @@ function renderEmptyPlayerArea(container, numPlayers) {
     const boardEl = document.createElement('div');
     boardEl.className = 'player-board';
     const titleEl = document.createElement('h3');
-    titleEl.textContent = '玩家' + pi;
+    titleEl.textContent = t('azul.player_n', { n: pi });
     boardEl.appendChild(titleEl);
 
     const gridEl = document.createElement('div');
@@ -331,7 +382,7 @@ function renderEmptyPlayerArea(container, numPlayers) {
     floorArea.className = 'floor-area';
     const floorLabel = document.createElement('span');
     floorLabel.className = 'floor-label';
-    floorLabel.textContent = '地板';
+    floorLabel.textContent = t('azul.floor_label');
     floorArea.appendChild(floorLabel);
     const floorRow = document.createElement('div');
     floorRow.className = 'floor-row';
@@ -386,8 +437,8 @@ function renderPlayerArea(container, gameState, ctx) {
     // "当前" dropped — active-turn is already signaled by the .active-turn
     // class on .player-board (visual highlight). Duplicating it in the
     // title just adds noise.
-    titleEl.textContent = '玩家' + pi + (isHuman ? '（你）' : '') +
-      ' · 分数: ' + (pd.score || 0);
+    titleEl.textContent = t('azul.player_n', { n: pi }) + (isHuman ? t('azul.player_self_suffix') : '') +
+      t('azul.player_score_suffix', { n: pd.score || 0 });
     boardEl.appendChild(titleEl);
 
     const shouldHighlight = hasSelection && canPlay && ((isHuman && !appState.forceMode) || (appState.forceMode && isCurrent));
@@ -469,7 +520,7 @@ function renderPlayerArea(container, gameState, ctx) {
 
     const floorLabel = document.createElement('span');
     floorLabel.className = 'floor-label';
-    floorLabel.textContent = '地板';
+    floorLabel.textContent = t('azul.floor_label');
     floorArea.appendChild(floorLabel);
 
     const floorRow = document.createElement('div');
@@ -1076,26 +1127,26 @@ function describeTransition(prevState, newState, actionInfo, actionId) {
 }
 
 function formatMove(actionInfo, aid) {
-  if (!actionInfo && (aid === null || aid === undefined)) return '开局';
-  if (!actionInfo) return '动作 #' + aid;
-  const srcName = actionInfo.is_center ? '中心池' : '工厂' + (actionInfo.source + 1);
-  const colorName = TILE_LABELS[actionInfo.color] || '?';
-  const targetName = actionInfo.target_line < NUM_COLORS ? '第' + (actionInfo.target_line + 1) + '行' : '地板';
-  return srcName + ' ' + colorName + ' → ' + targetName;
+  if (!actionInfo && (aid === null || aid === undefined)) return t('azul.action_start');
+  if (!actionInfo) return t('azul.action_unknown', { id: aid });
+  const srcName = actionInfo.is_center ? t('azul.center_pool') : t('azul.factory_short', { n: actionInfo.source + 1 });
+  const colorName = tileLabel(actionInfo.color) || '?';
+  const targetName = actionInfo.target_line < NUM_COLORS ? t('azul.row_n', { n: actionInfo.target_line + 1 }) : t('azul.floor_label');
+  return t('azul.move_arrow', { src: srcName, color: colorName, target: targetName });
 }
 
 const bagExtension = {
   render(el, gameState) {
     if (!gameState || !gameState.state) {
-      el.textContent = '袋中剩余：--';
+      el.textContent = t('azul.bag_default');
       return;
     }
     const bagCounts = gameState.state.bag_counts || [];
     const parts = [];
     for (let c = 0; c < NUM_COLORS; c++) {
-      parts.push(TILE_LABELS[c] + (bagCounts[c] || 0));
+      parts.push(tileLabel(c) + (bagCounts[c] || 0));
     }
-    el.textContent = '袋中剩余：' + parts.join(' ');
+    el.textContent = t('azul.bag_count', { parts: parts.join(' ') });
   }
 };
 
@@ -1105,8 +1156,8 @@ const bagExtension = {
 
 createApp({
   gameId: 'azul',
-  gameTitle: '花砖物语',
-  gameIntro: '先选择来源再选择目标行',
+  gameTitle: t('azul.title'),
+  gameIntro: t('azul.intro'),
   players: { min: 2, max: 4 },
   renderBoard,
   renderPlayerArea,

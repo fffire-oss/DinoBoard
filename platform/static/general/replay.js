@@ -1,4 +1,5 @@
 import { apiGet, API_BASE } from './api.js';
+import { t } from './i18n.js';
 
 export function createReplayController(infoCol, config) {
   const panel = document.createElement('div');
@@ -6,14 +7,14 @@ export function createReplayController(infoCol, config) {
   panel.hidden = true;
   panel.innerHTML = `
     <div class="analysis-controls">
-      <button class="replay-btn" data-action="first" type="button">回到最初</button>
-      <button class="replay-btn" data-action="play" type="button">播放</button>
-      <button class="replay-btn" data-action="prev" type="button">上一步</button>
-      <button class="replay-btn" data-action="next" type="button">下一步</button>
-      <button class="replay-btn" data-action="warn" type="button">跳到失误</button>
-      <button class="replay-btn" data-action="blunder" type="button">跳到严重失误</button>
+      <button class="replay-btn" data-action="first" type="button">${t('replay.btn_first')}</button>
+      <button class="replay-btn" data-action="play" type="button">${t('replay.btn_play')}</button>
+      <button class="replay-btn" data-action="prev" type="button">${t('replay.btn_prev')}</button>
+      <button class="replay-btn" data-action="next" type="button">${t('replay.btn_next')}</button>
+      <button class="replay-btn" data-action="warn" type="button">${t('replay.btn_warn')}</button>
+      <button class="replay-btn" data-action="blunder" type="button">${t('replay.btn_blunder')}</button>
     </div>
-    <div class="analysis-step-card" id="analysis-step">--</div>
+    <div class="analysis-step-card" id="analysis-step">${t('replay.dash')}</div>
     <div class="analysis-list" id="analysis-list"></div>
   `;
   infoCol.appendChild(panel);
@@ -46,18 +47,18 @@ export function createReplayController(infoCol, config) {
   // list item. Missing analysis/suggestion slots render as "—" so every
   // card has the same line count — the CSS height is then a simple
   // constant and doesn't jitter between frames.
-  //   Line 1: 帧数-玩家-行动（合并在一行）
-  //   Line 2: 胜率-掉点
-  //   Line 3: 智能推荐行动
+  //   Line 1: frame index · player · move (joined by ·)
+  //   Line 2: win rate · drop
+  //   Line 3: recommended move
   function frameLines(frame) {
     const total = frames.length;
     const idx = frames.indexOf(frame);
 
     if (frame.__terminal_display) {
       return {
-        line1: '帧 ' + (idx + 1) + '/' + total + ' · 终局画面',
-        line2: '—',
-        line3: '—',
+        line1: t('replay.frame_terminal', { idx: idx + 1, total }),
+        line2: t('replay.dash'),
+        line3: t('replay.dash'),
       };
     }
 
@@ -71,37 +72,37 @@ export function createReplayController(infoCol, config) {
       ? parseInt(frame.actor.slice('player_'.length), 10) : null;
     const moveText = config.formatOpponentMove
       ? config.formatOpponentMove(frame.action_info, frame.action_id, actorIdx)
-      : (frame.action_id !== null && frame.action_id !== undefined ? '动作 ' + frame.action_id : '开局');
-    const move = frame.actor === 'start' ? '开局' : moveText;
+      : (frame.action_id !== null && frame.action_id !== undefined
+          ? t('replay.action_unknown', { id: frame.action_id })
+          : t('replay.action_start'));
+    const move = frame.actor === 'start' ? t('replay.action_start') : moveText;
 
     // tail-solve flag lives on ai_stats of the AI frame. We use it as a
-    // line-1 badge on the AI frame ("AI 这步用了 tail solver"), and we
+    // line-1 badge on the AI frame ("AI used the tail solver"), and we
     // *propagate the verdict* to line 2 of the IMMEDIATELY PRECEDING human
     // frame — the human's move set up the proven losing position, so
-    // "胜率 X%（残局已求解）" belongs on their analysis row. The AI frame
-    // itself doesn't need a line-2 winrate; it's not an interesting datum
-    // ("AI proved itself wins" is what the badge already says), and a "0%"
-    // there read confusingly as "AI's winrate is 0%". Keep AI line-2 as "—".
+    // "Win rate X% (tail solved)" belongs on their analysis row. The AI
+    // frame itself doesn't need a line-2 winrate; "0%" there reads
+    // confusingly as "AI's winrate is 0%". Keep AI line-2 as "—".
     const aiStats = frame.ai_stats || null;
     const tailSolved = !!(aiStats && aiStats.tail_solved);
 
     // Lookahead: if the next frame is an AI tail-solve adoption, surface
-    // the verdict on this (human) frame. This is the only place we need
-    // the next-frame info; computing it once here keeps the rule local.
+    // the verdict on this (human) frame.
     const nextFrame = (idx + 1 < frames.length) ? frames[idx + 1] : null;
     const nextAiStats = nextFrame ? (nextFrame.ai_stats || null) : null;
     const nextTailSolved = !!(nextAiStats && nextAiStats.tail_solved);
     const nextTailOutcome = nextAiStats ? nextAiStats.tail_solve_outcome : 0;
 
-    const parts1 = ['帧 ' + (idx + 1) + '/' + total];
+    const parts1 = [t('replay.frame_count', { idx: idx + 1, total })];
     if (actor) parts1.push(actor);
-    parts1.push(frame.is_terminal ? move + ' · 终局' : move);
-    if (tailSolved) parts1.push('残局已求解');
+    parts1.push(frame.is_terminal ? move + ' · ' + t('replay.terminal_suffix') : move);
+    if (tailSolved) parts1.push(t('replay.tail_solved'));
     const line1 = parts1.join(' · ');
 
     const a = frame.analysis;
-    let line2 = '—';
-    let line3 = '—';
+    let line2 = t('replay.dash');
+    let line3 = t('replay.dash');
     if (nextTailSolved && !tailSolved) {
       // Human frame preceding an AI tail-solve adoption: the AI proved a
       // forced outcome from this position. Translate the AI-POV outcome
@@ -113,29 +114,29 @@ export function createReplayController(infoCol, config) {
         // ProvenWin (AI) → human loses. AI only adopts on this branch in
         // the live path, so this is the dominant case.
         humanWrPct = '0.0%';
-        suffix = '残局已求解';
+        suffix = t('replay.tail_solved_paren');
       } else if (nextTailOutcome === 2) {
         humanWrPct = '100.0%';
-        suffix = '残局已求解';
+        suffix = t('replay.tail_solved_paren');
       } else if (nextTailOutcome === 3) {
         humanWrPct = '50.0%';
-        suffix = '残局已求解：平局';
+        suffix = t('replay.tail_solved_draw_paren');
       } else {
         humanWrPct = '--';
-        suffix = '残局已求解';
+        suffix = t('replay.tail_solved_paren');
       }
-      line2 = '胜率 ' + humanWrPct + '（' + suffix + '）';
+      line2 = t('replay.winrate_proven', { wr: humanWrPct, suffix });
     } else if (a) {
       const wr = (a.best_win_rate * 100).toFixed(1) + '%';
       const drop = a.drop_score.toFixed(1) + '%';
-      line2 = '胜率 ' + wr + ' · 掉点 ' + drop;
+      line2 = t('replay.winrate_drop', { wr, drop });
       if (frame.action_id !== a.best_action && a.best_action_info) {
         const bestText = config.formatSuggestedMove
           ? config.formatSuggestedMove(a.best_action_info, a.best_action, actorIdx)
-          : '动作 ' + a.best_action;
-        line3 = '推荐 ' + bestText;
+          : t('replay.action_unknown', { id: a.best_action });
+        line3 = t('replay.recommend', { move: bestText });
       } else if (frame.action_id === a.best_action) {
-        line3 = '（最优着法）';
+        line3 = t('replay.optimal_inline');
       }
     }
     return { line1, line2, line3 };
@@ -157,7 +158,7 @@ export function createReplayController(infoCol, config) {
     // next/warn/blunder get re-enabled below. Without this, play stays
     // disabled after loading a replay file.
     btns.play.disabled = false;
-    btns.play.textContent = playing ? '暂停' : '播放';
+    btns.play.textContent = playing ? t('replay.btn_pause') : t('replay.btn_play');
 
     let hasBlunder = false, hasWarn = false;
     for (const f of frames) {
@@ -247,16 +248,16 @@ export function createReplayController(infoCol, config) {
   btns.warn.addEventListener('click', () => jumpToSeverity(5));
 
   function renderEmpty() {
-    stepEl.textContent = '暂未加载录像';
+    stepEl.textContent = t('replay.empty_title');
     listEl.innerHTML = '';
     const hint = document.createElement('div');
     hint.className = 'analysis-item';
     hint.style.cursor = 'default';
     hint.style.opacity = '0.65';
-    hint.textContent = '对局结束后在弹窗选择“查看录像”，或从侧边栏加载录像文件';
+    hint.textContent = t('replay.empty_hint');
     listEl.appendChild(hint);
     for (const k of Object.keys(btns)) btns[k].disabled = true;
-    btns.play.textContent = '播放';
+    btns.play.textContent = t('replay.btn_play');
   }
 
   function applyVisibility() {

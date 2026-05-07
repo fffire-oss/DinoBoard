@@ -1,12 +1,14 @@
+import { t } from './i18n.js';
+
 const ZOOM_KEY = 'dino_board_zoom';
 
 function injectZoomControls(target) {
   const el = document.createElement('div');
   el.className = 'zoom-controls';
   el.innerHTML =
-    '<button class="zoom-btn" data-zoom="out" type="button" title="缩小">−</button>' +
+    '<button class="zoom-btn" data-zoom="out" type="button" title="' + t('layout.zoom_out_title') + '">−</button>' +
     '<span class="zoom-value">100%</span>' +
-    '<button class="zoom-btn" data-zoom="in" type="button" title="放大">+</button>';
+    '<button class="zoom-btn" data-zoom="in" type="button" title="' + t('layout.zoom_in_title') + '">+</button>';
   document.body.appendChild(el);
 
   // Default 60% on phone-size viewports — desktop game boards (Azul 4p,
@@ -80,7 +82,7 @@ export function buildLayout() {
   const toggle = document.createElement('button');
   toggle.className = 'sidebar-toggle';
   toggle.type = 'button';
-  toggle.title = '收起/展开侧边栏';
+  toggle.title = t('layout.sidebar_toggle_title');
   toggle.textContent = '◀';
   document.body.appendChild(toggle);
 
