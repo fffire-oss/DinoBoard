@@ -89,6 +89,13 @@ class IBeliefTracker {
   // returns an empty map for trackers that hold no explicit state.
   virtual AnyMap serialize() const { return {}; }
 
+  // The seat this tracker was init'd for (or -1 if not yet init'd).
+  // Encoders that consume tracker knowledge MUST gate on this — using a
+  // tracker bound to perspective P while encoding from seat Q's view
+  // leaks P's private knowledge into Q's features (BUG / OB-002).
+  // Default returns -1; trackers that store a perspective override.
+  virtual int perspective_player() const { return -1; }
+
   // Reconcile public state fields after applying an observation. Called at
   // the end of apply_observation in the API path (py_engine), AFTER the
   // event applier has done its per-event work. Gives the tracker a chance

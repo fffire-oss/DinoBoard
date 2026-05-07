@@ -52,6 +52,7 @@ class LoveLetterBeliefTracker final : public IBeliefTracker {
       const std::vector<PublicEvent>& post_events) override;
   void randomize_unseen(IGameState& state, std::mt19937& rng) const override;
   AnyMap serialize() const override;
+  int perspective_player() const override { return perspective_player_; }
 
   std::int8_t known_hand(int player) const {
     if (player < 0 || player >= Cfg::kPlayers) return 0;

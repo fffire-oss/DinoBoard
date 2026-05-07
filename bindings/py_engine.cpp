@@ -571,6 +571,69 @@ py::dict run_heuristic_episode_py(
   return result_to_py(result);
 }
 
+// Encode the bundle's initial state from a specific perspective seat,
+// optionally after init'ing the bundle's belief tracker for a possibly
+// DIFFERENT perspective and applying a sequence of (actor, action) public
+// events on that tracker. Used by OB-002 regression test: a tracker bound
+// to seat A who learned an opponent's hand via Priest must not leak that
+// knowledge into encode_private for seat B.
+py::dict encode_state_for_perspective_py(
+    const std::string& game_id,
+    std::uint64_t seed,
+    int encode_player,
+    int tracker_perspective,
+    py::list event_actions) {
+  py::gil_scoped_release release;
+
+  auto bundle = GameRegistry::instance().create_game(game_id, seed);
+  if (encode_player < 0 || encode_player >= bundle.state->num_players()) {
+    py::gil_scoped_acquire acquire;
+    throw std::runtime_error("encode_state_for_perspective: encode_player out of range");
+  }
+
+  // Drive both bundle.state (truth) and bundle.belief_tracker (perspective
+  // observer) forward by replaying actions. This populates tracker's
+  // known_hand from real public events (e.g. Priest reveals) without us
+  // synthesizing event payloads by hand.
+  bool tracker_init_done = false;
+  if (bundle.belief_tracker && tracker_perspective >= 0 &&
+      bundle.initial_observation_extractor) {
+    auto obs = bundle.initial_observation_extractor(*bundle.state, tracker_perspective);
+    bundle.belief_tracker->init(tracker_perspective, obs);
+    tracker_init_done = true;
+  }
+
+  py::gil_scoped_acquire acquire_for_list;
+  std::vector<std::pair<int, ActionId>> pairs;
+  pairs.reserve(py::len(event_actions));
+  for (auto h : event_actions) {
+    auto t = h.cast<py::tuple>();
+    pairs.emplace_back(t[0].cast<int>(), t[1].cast<ActionId>());
+  }
+  py::gil_scoped_release release2;
+
+  for (const auto& [actor, action] : pairs) {
+    auto before = bundle.state->clone_state();
+    bundle.rules->do_action_fast(*bundle.state, action);
+    if (tracker_init_done && bundle.public_event_extractor) {
+      auto ev = bundle.public_event_extractor(*before, action, *bundle.state, tracker_perspective);
+      bundle.belief_tracker->observe_public_event(actor, action, ev.pre_events, ev.post_events);
+    }
+  }
+
+  std::vector<float> public_features, private_features;
+  bundle.encoder->encode_public(*bundle.state, encode_player, &public_features);
+  bundle.encoder->encode_private(*bundle.state, encode_player, &private_features);
+
+  py::gil_scoped_acquire acquire;
+  py::dict out;
+  out["public_features"] = public_features;
+  out["private_features"] = private_features;
+  out["tracker_perspective"] =
+      bundle.belief_tracker ? bundle.belief_tracker->perspective_player() : -1;
+  return out;
+}
+
 py::dict encode_state_py(
     const std::string& game_id,
     std::uint64_t seed) {
@@ -1282,6 +1345,13 @@ PYBIND11_MODULE(dinoboard_engine, m) {
   m.def("encode_state", &encode_state_py,
       py::arg("game_id"),
       py::arg("seed") = 0xC0FFEE);
+
+  m.def("encode_state_for_perspective", &encode_state_for_perspective_py,
+      py::arg("game_id"),
+      py::arg("seed") = 0xC0FFEE,
+      py::arg("encode_player") = 0,
+      py::arg("tracker_perspective") = -1,
+      py::arg("event_actions") = py::list());
 
   m.def("tail_solve", &tail_solve_py,
       py::arg("game_id"),

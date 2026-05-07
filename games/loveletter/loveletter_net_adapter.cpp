@@ -74,8 +74,12 @@ void LoveLetterFeatureEncoder<NPlayers>::encode_private(
   // construction to a specific perspective. If `player` matches that
   // perspective, use tracker's knowledge; otherwise, output zeros for opp
   // hands (we don't have `player`'s tracker, and we must not leak opp
-  // private info into a non-owner's private encoding).
-  const bool use_tracker = (tracker_ != nullptr);
+  // private info into a non-owner's private encoding). When MCTS descends
+  // into nodes whose current_player differs from the search root, encoding
+  // for that seat with the root's tracker would inject root's private
+  // knowledge into a non-owner's features (OB-002). Gate explicitly.
+  const bool use_tracker =
+      (tracker_ != nullptr && tracker_->perspective_player() == player);
 
   for (int pi = 0; pi < NPlayers; ++pi) {
     const int pid = (player + pi) % NPlayers;
