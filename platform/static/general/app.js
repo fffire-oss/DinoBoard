@@ -190,7 +190,7 @@ export function createApp(config) {
     }
 
     if (gs.last_action_info && config.formatOpponentMove) {
-      infoPanel.setMessage(config.formatOpponentMove(gs.last_action_info, gs.last_action_id));
+      infoPanel.setMessage(config.formatOpponentMove(gs.last_action_info, gs.last_action_id, gs.last_action_actor));
     }
 
     infoPanel.setWinrate(
@@ -209,9 +209,11 @@ export function createApp(config) {
     const actor = resolveActorName(frame.actor);
     infoPanel.setTurn('录像回放 · ' + actor);
 
+    const actorIdx = (typeof frame.actor === 'string' && frame.actor.startsWith('player_'))
+      ? parseInt(frame.actor.slice('player_'.length), 10) : null;
     let moveText = frame.actor === 'start' ? '开局' : (
       config.formatOpponentMove
-        ? config.formatOpponentMove(frame.action_info, frame.action_id)
+        ? config.formatOpponentMove(frame.action_info, frame.action_id, actorIdx)
         : (frame.action_id !== null && frame.action_id !== undefined ? '动作 ' + frame.action_id : '')
     );
     if (frame.is_terminal) moveText += ' · 终局';
@@ -222,7 +224,7 @@ export function createApp(config) {
       infoPanel.setWinrate(a.best_win_rate);
       if (frame.action_id !== a.best_action && a.best_action_info) {
         const bestText = config.formatSuggestedMove
-          ? config.formatSuggestedMove(a.best_action_info, a.best_action)
+          ? config.formatSuggestedMove(a.best_action_info, a.best_action, actorIdx)
           : '动作 ' + a.best_action;
         infoPanel.setSuggest(bestText);
       } else {
@@ -341,6 +343,7 @@ export function createApp(config) {
       // it's our turn / AI is thinking.
       state.gameState.last_action_info = null;
       state.gameState.last_action_id = null;
+      state.gameState.last_action_actor = null;
 
       if (state.forceMode) {
         state.forceMode = false;
@@ -417,12 +420,16 @@ export function createApp(config) {
       if (!result) break;
 
       const prevState = state.gameState;
+      // Actor of the just-finished AI move = whoever was current before the
+      // move. Some games (Love Letter) need actor in formatMove to detect
+      // self-target no-op fallbacks.
+      const aiActor = prevState ? prevState.current_player : null;
       // Update the opponent-action pill BEFORE animation starts so the
       // player can read what the opponent did while watching the move
       // animate (instead of discovering it only after the animation
       // finishes and the state re-renders).
       if (result.aiActionInfo && config.formatOpponentMove) {
-        infoPanel.setMessage(config.formatOpponentMove(result.aiActionInfo, result.aiAction));
+        infoPanel.setMessage(config.formatOpponentMove(result.aiActionInfo, result.aiAction, aiActor));
       }
       await animateTransition(prevState, result.data, result.aiActionInfo, result.aiAction);
 
@@ -434,6 +441,7 @@ export function createApp(config) {
       // pill updates each AI move.
       state.gameState.last_action_info = result.aiActionInfo;
       state.gameState.last_action_id = result.aiAction;
+      state.gameState.last_action_actor = aiActor;
       if (state.difficulty === 'expert') {
         state.lastAiWinrate = result.humanWinrate;
         state.lastAiWinrateProven = result.humanWinrateProven || null;
@@ -553,8 +561,10 @@ export function createApp(config) {
     try {
       const data = await apiPost(API_BASE + '/' + state.sessionId + '/ai-hint', {});
       if (!state.hintPending) return;
+      // Hint is for the player whose turn it currently is — usually the human.
+      const hintActor = state.gameState ? state.gameState.current_player : null;
       const text = config.formatSuggestedMove
-        ? config.formatSuggestedMove(data.action_info, data.action)
+        ? config.formatSuggestedMove(data.action_info, data.action, hintActor)
         : '动作 ' + data.action;
       infoPanel.setSuggest(text);
     } catch (e) {

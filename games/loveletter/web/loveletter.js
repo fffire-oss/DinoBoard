@@ -234,7 +234,11 @@ function renderBoard(container, gs, ctx) {
         '<div class="ll-guess-btn-value">' + g + '</div>' +
         '<div class="ll-guess-btn-name">' + CARD_LABELS[g] + '</div>';
       btn.addEventListener('click', () => {
+        // Close the modal BEFORE submitting: submitAction kicks off
+        // describeTransition which pops a bubble over the actor, and an
+        // open guess-modal overlay would sit on top and hide it.
         resetPending();
+        ctx.rerender();
         ctx.submitAction(aid);
       });
       grid.appendChild(btn);
@@ -476,7 +480,7 @@ function createCardElement(cardValue, playing, legalSet) {
   return el;
 }
 
-function formatMove(info, actionId) {
+function formatMove(info, actionId, actor) {
   if (!info || !info.type) {
     if (actionId === null || actionId === undefined) return '开局';
     return '动作 #' + actionId;
@@ -485,6 +489,18 @@ function formatMove(info, actionId) {
   // via CARD_LABELS so no English leaks into bubbles or the info panel.
   const cardName = (info.card && CARD_LABELS[info.card]) || '';
   const guessName = (typeof info.guess === 'number' && CARD_LABELS[info.guess]) || info.guess;
+  // Self-target on a non-self-targeting card is the engine's no-op fallback
+  // (every opponent Handmaid-protected). The bubble should say "无效"
+  // instead of pretending the player meant to target themselves with a
+  // particular guess/effect — that's confusing.
+  const selfFallback =
+    typeof actor === 'number' && actor >= 0 &&
+    typeof info.target === 'number' && info.target === actor &&
+    (info.type === 'guard' || info.type === 'priest' ||
+     info.type === 'baron' || info.type === 'king');
+  if (selfFallback) {
+    return cardName + '（无效）';
+  }
   switch (info.type) {
     case 'guard':
       return cardName + ' → 玩家' + info.target + ' 猜 ' + guessName;
@@ -532,7 +548,7 @@ function describeTransition(prevState, newState, actionInfo, actionId) {
   playGroup.children.push({
     type: 'popup',
     target: actorSelector(actor, humanPlayer),
-    content: formatMove(actionInfo, actionId),
+    content: formatMove(actionInfo, actionId, actor),
     className: 'action-bubble',
     width: 220,
     height: 36,

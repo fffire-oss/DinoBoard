@@ -156,8 +156,22 @@ board_ai::HeuristicResult heuristic_random(
 //   2. A challenged claim is verified: claimer briefly shows the card, the
 //      card is shuffled back to deck, and a new one is drawn. `revealed`
 //      doesn't flip, but the role is publicly known.
-// We emit `card_revealed` in both cases so the belief tracker can null out
-// per-player role signals correctly.
+//
+// Both cases need TWO event kinds to drive the AI session correctly:
+//
+//   - pre `truth_reveal` (player, slot, role): emitted BEFORE the action.
+//     Applied via apply_coup_event to overwrite `influence[player][slot]` in
+//     the AI session's sampled world to the truth role. Without this, the
+//     AI's internal `do_action_fast` branches differently across MCTS-sampled
+//     worlds — one world thinks the challenge succeeds (matching claim →
+//     reshuffle) while another thinks it fails (mismatch → lose influence).
+//     The downstream public `revealed[]` flag thus differs across worlds and
+//     splits the information set's hash. This is BUG-028's family of issue
+//     (silent state-hash drift; no crash, just weaker MCTS). Override-in-
+//     place pins the action's branch to truth, so all sampled worlds collapse
+//     to the same successor public state.
+//   - post `card_revealed` (player, role): advisory signal for the belief
+//     tracker (signals_[][] update). No state mutation.
 //
 // We also emit `exchange_complete` when an Ambassador exchange cycle
 // finishes, so the tracker can reset all of that player's signals.
@@ -174,7 +188,18 @@ PublicEventTrace extract_coup_events(
   const auto& da = sa.data;
   PublicEventTrace out;
 
-  auto emit_reveal = [&](int player, int role) {
+  auto emit_truth_reveal_pre = [&](int player, int slot, int role) {
+    if (player < 0 || player >= NPlayers) return;
+    if (slot < 0 || slot >= 2) return;
+    if (role < 0 || role >= kCharacterCount) return;
+    AnyMap payload;
+    payload["player"] = std::any(player);
+    payload["slot"] = std::any(slot);
+    payload["role"] = std::any(role);
+    out.pre_events.push_back({"truth_reveal", std::move(payload)});
+  };
+
+  auto emit_reveal_post = [&](int player, int role) {
     if (player < 0 || player >= NPlayers) return;
     if (role < 0 || role >= kCharacterCount) return;
     AnyMap payload;
@@ -183,19 +208,45 @@ PublicEventTrace extract_coup_events(
     out.post_events.push_back({"card_revealed", std::move(payload)});
   };
 
-  // Case 1: any revealed flag flipped from false to true.
-  for (int p = 0; p < NPlayers; ++p) {
-    for (int sl = 0; sl < 2; ++sl) {
-      if (!db.revealed[p][sl] && da.revealed[p][sl]) {
-        emit_reveal(p, static_cast<int>(db.influence[p][sl]));
-      }
+  // Case 1: lose-influence — kLoseSlot0/1 in any lose stage flips
+  // revealed=true and exposes the role. Pre-emit truth_reveal so the AI
+  // session's influence[][] matches truth before do_action_fast.
+  if (action == kLoseSlot0 || action == kLoseSlot1) {
+    int slot = (action == kLoseSlot0) ? 0 : 1;
+    int loser = db.current_player;
+    if (loser >= 0 && loser < NPlayers && !db.revealed[loser][slot]) {
+      emit_truth_reveal_pre(loser, slot, static_cast<int>(db.influence[loser][slot]));
     }
   }
 
-  // Case 2: successful challenge reveal — stage kResolveChallengeAction /
-  // kResolveChallengeCounter with a RevealSlot action, the shown card
-  // matched the claim and was reshuffled away. Observable role:
-  // before.influence[revealer][slot].
+  // Case 2: challenge reveal — kRevealSlot0/1 in challenge resolution
+  // stages exposes the role regardless of whether the challenge succeeds
+  // (role==claim, reshuffled) or fails (role!=claim, marked revealed).
+  // Either branch requires the AI to see the truth role to take the same
+  // branch as ground truth.
+  if (action == kRevealSlot0 || action == kRevealSlot1) {
+    int slot = (action == kRevealSlot0) ? 0 : 1;
+    int revealer = -1;
+    if (db.stage == CoupStage::kResolveChallengeAction) {
+      revealer = db.active_player;
+    } else if (db.stage == CoupStage::kResolveChallengeCounter) {
+      revealer = db.blocker;
+    }
+    if (revealer >= 0 && revealer < NPlayers && !db.revealed[revealer][slot]) {
+      emit_truth_reveal_pre(revealer, slot, static_cast<int>(db.influence[revealer][slot]));
+    }
+  }
+
+  // Tracker-facing post events (Case 1: revealed flag flipped).
+  for (int p = 0; p < NPlayers; ++p) {
+    for (int sl = 0; sl < 2; ++sl) {
+      if (!db.revealed[p][sl] && da.revealed[p][sl]) {
+        emit_reveal_post(p, static_cast<int>(db.influence[p][sl]));
+      }
+    }
+  }
+  // Tracker-facing post event (Case 2: successful challenge reveal,
+  // observable role survives only in `before` — `revealed` doesn't flip).
   if (action == kRevealSlot0 || action == kRevealSlot1) {
     int slot = (action == kRevealSlot0) ? 0 : 1;
     int revealer = -1;
@@ -206,8 +257,7 @@ PublicEventTrace extract_coup_events(
     }
     if (revealer >= 0 && revealer < NPlayers &&
         !db.revealed[revealer][slot] && !da.revealed[revealer][slot]) {
-      // Success case: role shown publicly, card reshuffled.
-      emit_reveal(revealer, static_cast<int>(db.influence[revealer][slot]));
+      emit_reveal_post(revealer, static_cast<int>(db.influence[revealer][slot]));
     }
   }
 
@@ -256,23 +306,36 @@ void apply_coup_initial_observation(IGameState& state, int perspective, const An
   }
 }
 
-// apply_event stub: the AI session advances its own state via do_action_fast
-// in the non-deterministic world sampled by randomize_unseen, then applies
-// events to overwrite public facts. For Coup, randomize_unseen already
-// produces the right public state since revealed cards stay in state, and
-// the API needs no further event-side mutation for per-action fidelity.
-// We still need to supply a non-empty applier so the framework's event
-// pipeline is live — tracker receives events through observe_public_event.
+// Apply event handler. truth_reveal (pre) overrides influence[][] in the
+// AI session's sampled world to the truth role just before do_action_fast,
+// so all randomize_unseen worlds branch identically through the reveal/
+// lose-influence resolution. card_revealed and exchange_complete (post)
+// are advisory signals for the belief tracker, not state mutations.
 template <int NPlayers>
 void apply_coup_event(
-    IGameState& /*state*/,
-    EventPhase /*phase*/,
-    const std::string& /*kind*/,
-    const AnyMap& /*payload*/) {
-  // No-op: Coup events are advisory signals for the tracker, not state
-  // mutations. The ground-truth flow (challenge reveal, lose influence,
-  // exchange reshuffle) is already captured by do_action_fast under the
-  // sampled world from randomize_unseen.
+    IGameState& state,
+    EventPhase phase,
+    const std::string& kind,
+    const AnyMap& payload) {
+  using namespace board_ai::coup;
+  if (phase == EventPhase::kPreAction && kind == "truth_reveal") {
+    auto& s = board_ai::checked_cast<CoupState<NPlayers>>(state);
+    auto& d = s.data;
+    auto it_p = payload.find("player");
+    auto it_s = payload.find("slot");
+    auto it_r = payload.find("role");
+    if (it_p == payload.end() || it_s == payload.end() || it_r == payload.end()) return;
+    int p = std::any_cast<int>(it_p->second);
+    int slot = std::any_cast<int>(it_s->second);
+    int role = std::any_cast<int>(it_r->second);
+    if (p < 0 || p >= NPlayers) return;
+    if (slot < 0 || slot >= 2) return;
+    if (role < 0 || role >= kCharacterCount) return;
+    if (d.revealed[p][slot]) return;
+    d.influence[p][slot] = static_cast<CharId>(role);
+    return;
+  }
+  // card_revealed / exchange_complete: tracker-only, no state mutation.
 }
 
 template <int NPlayers>

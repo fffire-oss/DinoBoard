@@ -64,8 +64,13 @@ export function createReplayController(infoCol, config) {
     const actorName = resolveActor ? resolveActor(frame.actor) : frame.actor;
     const actor = frame.actor === 'start' ? '' : actorName;
 
+    // frame.actor is "player_<N>" or "start"; parse the numeric seat for
+    // games whose formatMove needs actor (e.g. Love Letter self-target
+    // no-op fallback detection).
+    const actorIdx = (typeof frame.actor === 'string' && frame.actor.startsWith('player_'))
+      ? parseInt(frame.actor.slice('player_'.length), 10) : null;
     const moveText = config.formatOpponentMove
-      ? config.formatOpponentMove(frame.action_info, frame.action_id)
+      ? config.formatOpponentMove(frame.action_info, frame.action_id, actorIdx)
       : (frame.action_id !== null && frame.action_id !== undefined ? '动作 ' + frame.action_id : '开局');
     const move = frame.actor === 'start' ? '开局' : moveText;
 
@@ -114,7 +119,7 @@ export function createReplayController(infoCol, config) {
       line2 = '胜率 ' + wr + ' · 掉点 ' + drop;
       if (frame.action_id !== a.best_action && a.best_action_info) {
         const bestText = config.formatSuggestedMove
-          ? config.formatSuggestedMove(a.best_action_info, a.best_action)
+          ? config.formatSuggestedMove(a.best_action_info, a.best_action, actorIdx)
           : '动作 ' + a.best_action;
         line3 = '推荐 ' + bestText;
       } else if (frame.action_id === a.best_action) {
