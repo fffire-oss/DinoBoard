@@ -110,13 +110,14 @@ def test_snapshot_applier_round_trip_at_each_ply(game_id):
         game_id, seed=9999, model_path="", use_filter=False)
     obs_gs.apply_initial_observation(perspective, ep["initial_observation"])
     for i, step in enumerate(trace):
+        # apply_observation now auto-invokes the applier when snapshot is
+        # supplied. We still do a redundant explicit apply_public_snapshot
+        # to verify the applier is a correct inverse of the extractor
+        # independently of apply_observation's full flow.
         obs_gs.apply_observation(
             step["action"], pre_events=step["pre_events"],
-            post_events=step["post_events"])
-        # After apply_observation (still going through do_action_fast+events
-        # in stage 1), now force the applier to overwrite public fields
-        # from the truth snapshot. observer's hash-for-own-perspective MUST
-        # match truth's.
+            post_events=step["post_events"],
+            public_snapshot=step["public_snapshot"])
         snap = step["public_snapshot"]
         obs_gs.apply_public_snapshot(snap)
 

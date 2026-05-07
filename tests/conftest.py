@@ -197,7 +197,8 @@ def assert_api_belief_matches_selfplay(
     for step in trace:
         api_gs.apply_observation(
             step["action"], pre_events=step["pre_events"],
-            post_events=step["post_events"])
+            post_events=step["post_events"],
+            public_snapshot=step.get("public_snapshot", {}))
         assert api_gs.get_belief_snapshot() == step["belief_snapshot_after"], \
             f"[{game_id}] belief diverged at ply {step['ply']}"
 
@@ -219,7 +220,8 @@ def assert_api_belief_matches_selfplay(
     for step in trace:
         api2.apply_observation(
             step["action"], pre_events=step["pre_events"],
-            post_events=step["post_events"])
+            post_events=step["post_events"],
+            public_snapshot=step.get("public_snapshot", {}))
         gt2.apply_action(step["action"])
         if api2.is_terminal or gt2.is_terminal:
             continue

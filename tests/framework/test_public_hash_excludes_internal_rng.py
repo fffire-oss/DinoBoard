@@ -123,10 +123,12 @@ def test_public_hash_invariant_under_internal_rng(game_id):
         for step in trace:
             sess_a.apply_observation(
                 step["action"], pre_events=step["pre_events"],
-                post_events=step["post_events"])
+                post_events=step["post_events"],
+                public_snapshot=step.get("public_snapshot", {}))
             sess_b.apply_observation(
                 step["action"], pre_events=step["pre_events"],
-                post_events=step["post_events"])
+                post_events=step["post_events"],
+                public_snapshot=step.get("public_snapshot", {}))
             h_a = sess_a.state_hash_for_perspective(perspective)
             h_b = sess_b.state_hash_for_perspective(perspective)
             if h_a != h_b:

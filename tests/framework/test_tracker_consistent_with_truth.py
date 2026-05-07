@@ -126,6 +126,7 @@ def test_tracker_known_facts_match_truth(game_id: str, seed: int):
             action,
             pre_events=step["pre_events"],
             post_events=step["post_events"],
+            public_snapshot=step.get("public_snapshot", {}),
         )
         if gt2.is_terminal:
             # No post-state to check — terminal state's hidden info is

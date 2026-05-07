@@ -128,6 +128,7 @@ def test_api_mcts_policy_matches_selfplay(game_id):
             step["action"],
             pre_events=step["pre_events"],
             post_events=step["post_events"],
+            public_snapshot=step.get("public_snapshot", {}),
         )
         ply_i += 1
 

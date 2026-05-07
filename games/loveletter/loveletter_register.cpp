@@ -563,16 +563,6 @@ PublicEventTrace extract_events(
     out.post_events.emplace_back("drawn_override", std::move(payload));
   }
 
-  // Legacy truth-sync post-event — scheduled for deletion in BG-008
-  // Phase 2 stage 2 once apply_observation actually invokes
-  // public_state_applier (the snapshot covers winner/terminal already).
-  // Keeping it for now so 60-seed sweep stays green during Phase 2.
-  if (da.terminal && !db.terminal) {
-    AnyMap payload;
-    payload["winner"] = std::any(static_cast<int>(da.winner));
-    out.post_events.emplace_back("round_end", std::move(payload));
-  }
-
   // BG-008 Phase 2: populate full public snapshot from post-action truth.
   // The applier writes every hash_public_fields-relevant field back; once
   // apply_observation starts invoking public_state_applier (stage 2), the
@@ -746,12 +736,6 @@ void apply_event(IGameState& state, EventPhase /*phase*/,
   } else if (kind == "drawn_override") {
     const int card = std::any_cast<int>(payload.at("card"));
     d.drawn_card = static_cast<std::int8_t>(card);
-  } else if (kind == "round_end") {
-    // Legacy, slated for deletion in Phase 2 stage 2 (apply_public_state
-    // covers it).
-    const int winner = std::any_cast<int>(payload.at("winner"));
-    d.winner = static_cast<std::int8_t>(winner);
-    d.terminal = true;
   } else {
     throw std::runtime_error("loveletter: unknown event kind '" + kind + "'");
   }

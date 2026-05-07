@@ -935,9 +935,14 @@ class GameSessionWrapper {
   // poison the session's winner).
   //
   // `pre_events` / `post_events` are lists of {"kind": str, "payload": dict}.
+  // `public_snapshot` (BG-008 Phase 2) is an optional truth-side dump of
+  // all public fields; when non-empty + game has public_state_applier,
+  // it OVERWRITES session state_'s public fields (bypassing the need
+  // for do_action_fast's public outputs to be correct on sampled hidden).
   void apply_observation(ActionId action,
                          py::list pre_events,
-                         py::list post_events) {
+                         py::list post_events,
+                         py::dict public_snapshot) {
     if (!bundle_->public_event_applier) {
       throw std::runtime_error(
           "apply_observation: game '" + game_id_ +
@@ -956,6 +961,14 @@ class GameSessionWrapper {
     convert(pre_events, pre_list);
     convert(post_events, post_list);
 
+    // Convert snapshot dict BEFORE releasing GIL.
+    AnyMap snap_map;
+    bool have_snapshot = false;
+    if (public_snapshot && py::len(public_snapshot) > 0) {
+      snap_map = py_dict_to_any_map(public_snapshot);
+      have_snapshot = true;
+    }
+
     py::gil_scoped_release release;
     external_obs_mode_ = true;
     const int actor = bundle_->state->current_player();
@@ -966,6 +979,18 @@ class GameSessionWrapper {
     for (const auto& [kind, payload] : post_list) {
       bundle_->public_event_applier(*bundle_->state, EventPhase::kPostAction, kind, payload);
     }
+
+    // BG-008 Phase 2: if the game provides a public_state_applier AND
+    // the caller passed a snapshot, overwrite session state_'s public
+    // fields from truth. This eliminates the risk class of
+    // "do_action_fast public output depends on a session-sampled
+    // hidden field" — truth wins regardless of what do_action_fast
+    // computed. Legacy补丁 events (LL round_end, Coup public_return_card
+    // size override) become redundant once this path is active.
+    if (have_snapshot && bundle_->public_state_applier) {
+      bundle_->public_state_applier(*bundle_->state, snap_map);
+    }
+
     if (bt_) {
       std::vector<PublicEvent> pre_events_v(pre_list.begin(), pre_list.end());
       std::vector<PublicEvent> post_events_v(post_list.begin(), post_list.end());
@@ -1457,7 +1482,8 @@ PYBIND11_MODULE(dinoboard_engine, m) {
       .def("apply_observation", &GameSessionWrapper::apply_observation,
            py::arg("action"),
            py::arg("pre_events") = py::list(),
-           py::arg("post_events") = py::list())
+           py::arg("post_events") = py::list(),
+           py::arg("public_snapshot") = py::dict())
       .def("apply_event", &GameSessionWrapper::apply_event,
            py::arg("phase"), py::arg("kind"), py::arg("payload"))
       .def("apply_initial_observation", &GameSessionWrapper::apply_initial_observation,

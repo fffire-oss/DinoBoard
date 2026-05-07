@@ -119,7 +119,8 @@ def test_hidden_fields_resampled_deterministically(game_id):
         for step in trace:
             sess.apply_observation(
                 step["action"], pre_events=step["pre_events"],
-                post_events=step["post_events"])
+                post_events=step["post_events"],
+                public_snapshot=step.get("public_snapshot", {}))
             snaps.append(_hidden_snapshot(sess.get_state_dict(), hidden_keys))
         return snaps
 
@@ -160,7 +161,8 @@ def test_hidden_fields_depend_on_session_seed(game_id):
         for step in trace:
             sess.apply_observation(
                 step["action"], pre_events=step["pre_events"],
-                post_events=step["post_events"])
+                post_events=step["post_events"],
+                public_snapshot=step.get("public_snapshot", {}))
             snaps.append(_hidden_snapshot(sess.get_state_dict(), hidden_keys))
         return snaps
 

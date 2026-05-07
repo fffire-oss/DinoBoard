@@ -303,35 +303,14 @@ PublicEventTrace extract_coup_events(
     }
   }
 
-  // Case 5: public_return_card — every return_card action publicly adds 1 card
-  // back to court_deck (truth invariant: legal_actions guarantees the returned
-  // char is in exchange_drawn or active player's hand → removed=true → push).
-  // In an AI-sampled opponent-exchange world, the multiset may be inconsistent
-  // with the future action sequence (randomize_unseen sampled before knowing
-  // the public return), so do_action_fast can take the removed=false branch
-  // and skip the push — drifting court_deck.size(), which IS in
-  // hash_public_fields, splitting the perspective hash across worlds.
-  //
-  // Also carries truth's exchange_drawn AFTER the return. For opp-actor
-  // case, session's exchange_drawn may hold sampled cards (from prior
-  // randomize_unseen) that don't match truth's removal; without the
-  // override, session's exchange_drawn count of non-(-1) slots drifts
-  // from truth's, which then poisons randomize_unseen's slot-count
-  // invariant at the next ply (fall-back uniform path, non-deterministic
-  // public outputs). Applied post-action overrides both do_action_fast's
-  // session-sampled exchange_drawn and the stage transition.
-  if (action >= kReturnDuke && action <= kReturnContessa) {
-    AnyMap payload;
-    payload["card"] = std::any(static_cast<int>(action - kReturnDuke));
-    payload["expected_deck_size"] = std::any(static_cast<int>(da.court_deck.size()));
-    std::vector<int> truth_xd;
-    truth_xd.reserve(2);
-    for (int i = 0; i < 2; ++i) {
-      truth_xd.push_back(static_cast<int>(da.exchange_drawn[i]));
-    }
-    payload["exchange_drawn"] = std::any(truth_xd);
-    out.post_events.push_back({"public_return_card", std::move(payload)});
-  }
+  // NOTE: the legacy `public_return_card` post-event (BG-008 Phase 1)
+  // was deleted in Phase 2 stage 2 — its three fields (card,
+  // expected_deck_size, exchange_drawn) are now all covered by
+  // public_state_applier via the snapshot:
+  //   court_deck_size → snapshot["court_deck_size"]
+  //   exchange_drawn shape → snapshot["exchange_drawn_mask"]
+  //   (the returned `card` id was only used to pad court_deck, which
+  //    snapshot handles with size + randomize_unseen filling content)
 
   // Case 6: self_exchange_draw — perspective player just drew 2 cards from
   // court_deck into exchange_drawn[]. This happens when do_action_fast
@@ -385,6 +364,13 @@ PublicEventTrace extract_coup_events(
     snap["terminal"] = std::any(static_cast<bool>(da.terminal));
     snap["court_deck_size"] = std::any(static_cast<int>(da.court_deck.size()));
     snap["exchange_held_count"] = std::any(static_cast<int>(da.exchange_held_count));
+    // exchange_drawn SHAPE is public (everyone can count opp's Exchange
+    // progress by observing Return actions), only the specific char ids
+    // are private. The applier uses this mask to pin session's
+    // exchange_drawn slot occupancy to truth without leaking opp chars.
+    std::vector<int> xd_mask(2);
+    for (int i = 0; i < 2; ++i) xd_mask[i] = (da.exchange_drawn[i] >= 0) ? 1 : 0;
+    snap["exchange_drawn_mask"] = std::any(xd_mask);
 
     std::vector<int> alive_v(NPlayers);
     std::vector<int> coins_v(NPlayers);
@@ -511,6 +497,21 @@ void apply_coup_public_state(IGameState& state, const AnyMap& snap) {
       }
     }
   }
+
+  // exchange_drawn shape: flip -1 sentinel for empty slots per the mask.
+  // Preserves existing char id in non-empty slots (tracker /
+  // self_exchange_draw handles perspective's own values; opp's values
+  // remain session-sampled, which is correct for a private field).
+  auto xd_mask = get_iv("exchange_drawn_mask");
+  for (int i = 0; i < 2 && i < static_cast<int>(xd_mask.size()); ++i) {
+    if (xd_mask[i] == 0) {
+      d.exchange_drawn[i] = -1;
+    } else if (d.exchange_drawn[i] < 0) {
+      // Mask says slot is occupied but session has -1 → placeholder 0;
+      // randomize_unseen will fill with a real sampled value.
+      d.exchange_drawn[i] = 0;
+    }
+  }
 }
 
 // initial_observation for AI API: perspective sees their own starting hand.
@@ -607,48 +608,9 @@ void apply_coup_event(
     d.influence[p][slot] = static_cast<CharId>(role);
     return;
   }
-  if (phase == EventPhase::kPostAction && kind == "public_return_card") {
-    // In truth, every return_card action removes the returned char from the
-    // actor's exchange_drawn or hand and pushes it to court_deck (+1 size).
-    // In an AI-sampled opp-exchange world, the sampled exchange_drawn/hand
-    // multiset may not contain the returned char, so do_action_fast skips
-    // the push and court_deck.size() drifts. Sync to truth.
-    auto& s = board_ai::checked_cast<CoupState<NPlayers>>(state);
-    auto& d = s.data;
-    auto it_size = payload.find("expected_deck_size");
-    auto it_card = payload.find("card");
-    if (it_size == payload.end() || it_card == payload.end()) return;
-    int expected = std::any_cast<int>(it_size->second);
-    int card = std::any_cast<int>(it_card->second);
-    int cur = static_cast<int>(d.court_deck.size());
-    if (cur < expected) {
-      // AI session missed the push. Add the returned card to balance.
-      d.court_deck.push_back(static_cast<CharId>(card));
-    } else if (cur > expected) {
-      // Shouldn't happen, but be defensive.
-      while (static_cast<int>(d.court_deck.size()) > expected &&
-             !d.court_deck.empty()) {
-        d.court_deck.pop_back();
-      }
-    }
-    // Override exchange_drawn to truth's post-action values. Session's
-    // do_action_fast may have left exchange_drawn in a different shape
-    // (e.g. session's sampled exchange_drawn didn't contain the returned
-    // role, so Return1 fell back to influence search). The next ply's
-    // randomize_unseen slot enumeration uses exchange_drawn's non-(-1)
-    // count, and truth/session mismatch there poisons the
-    // total_remaining == slots.size() invariant → uniform fall-back →
-    // non-deterministic public output.
-    auto it_xd = payload.find("exchange_drawn");
-    if (it_xd != payload.end()) {
-      const auto& xd = std::any_cast<const std::vector<int>&>(it_xd->second);
-      if (xd.size() == 2) {
-        d.exchange_drawn[0] = static_cast<CharId>(xd[0]);
-        d.exchange_drawn[1] = static_cast<CharId>(xd[1]);
-      }
-    }
-    return;
-  }
+  // `public_return_card` applier was deleted (BG-008 Phase 2 stage 2):
+  // its court-deck-size and exchange_drawn overrides are now covered
+  // by public_state_applier via the snapshot.
   if (phase == EventPhase::kPostAction && kind == "self_exchange_draw") {
     // Perspective player just drew 2 cards from court_deck into
     // exchange_drawn[]. The AI session's randomize_unseen sampled different

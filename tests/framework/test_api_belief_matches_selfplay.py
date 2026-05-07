@@ -52,6 +52,7 @@ def _apply_trace_step(api_gs, step: dict) -> None:
         step["action"],
         pre_events=step["pre_events"],
         post_events=step["post_events"],
+        public_snapshot=step.get("public_snapshot", {}),
     )
 
 
