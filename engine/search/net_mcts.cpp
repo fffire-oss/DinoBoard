@@ -222,13 +222,37 @@ ActionId NetMcts::search_root(
         stats->simulations_done = 0;
         stats->root_actions = legal_root;
         stats->root_action_visits.assign(legal_root.size(), 0);
+        size_t best_idx = 0;
         for (size_t i = 0; i < legal_root.size(); ++i) {
           if (legal_root[i] == ts.best_action) {
             stats->root_action_visits[i] = 1;
+            best_idx = i;
             break;
           }
         }
         stats->best_action_value = static_cast<double>(ts.value);
+        // Populate root_values / root_edge_values so downstream consumers
+        // (analysis path: _human_wr_from_stats / _human_wr_for_action; web
+        // pipeline reading root_values[human_player]) get well-formed data.
+        // ProvenWin convention: acting player at root scores +1, opponents
+        // share -1 evenly so the vector is zero-sum. Without this the
+        // analysis worker crashes with IndexError on empty root_values and
+        // the expert-mode web pipeline hangs (BUG: Azul end-game freeze).
+        const int np = root.num_players();
+        const int actor = root.current_player();
+        std::vector<double> rv(static_cast<size_t>(np), 0.0);
+        if (np >= 2) {
+          const double opp = -1.0 / static_cast<double>(np - 1);
+          for (int p = 0; p < np; ++p) {
+            rv[static_cast<size_t>(p)] = (p == actor) ? 1.0 : opp;
+          }
+        }
+        stats->root_values = rv;
+        stats->root_edge_values.assign(legal_root.size(),
+                                       std::vector<double>(static_cast<size_t>(np), 0.0));
+        if (best_idx < stats->root_edge_values.size()) {
+          stats->root_edge_values[best_idx] = rv;
+        }
       }
       return ts.best_action;
     }

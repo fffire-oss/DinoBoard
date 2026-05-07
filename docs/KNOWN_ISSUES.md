@@ -45,6 +45,7 @@
 - [BUG-017] SplendorBeliefTracker 偷看牌堆内容（Splendor）
 - [BUG-023] Love Letter AI 永远猜对 Guard — terminal-by-elimination 漏过 NoPeek 检测（Love Letter，**已被 ISMCTS 重构整体解决**）
 - [BUG-028] public hash 混入不可观察随机源，导致 ISMCTS DAG 按隐藏信息分裂（Azul / Splendor）
+- [BUG-029] tail-solve 采纳 ProvenWin 路径未填 `root_values`，专家模式终局窗口 45s 后才显示
 
 ---
 
@@ -1403,5 +1404,40 @@ for (int count : bag_counts) h.add(count);
 ### 教训
 
 旧二阶段模型（pre-N-dim）+ 新代码（N-dim 期望）是一种隐性 ABI。重构 value 解码路径时（任何对 `OnnxPolicyValueEvaluator::evaluate` value branch 的修改），必须先确认 scalar 2p 分支保留或显式迁移；一行删掉就会让所有 2p 旧模型悄无声息地失效——症状是 web 胜率/分析直接 throw `value output length 1 for 2 players` 之类的运行期错误，没有 evaluator 这一层兜底就根本走不通推理路径。
+
+---
+
+## [BUG-029] tail-solve 采纳 ProvenWin 路径未填 `root_values`，专家模式终局窗口 45s 后才显示
+
+**分类**：框架层（search / web pipeline）
+**状态**：已修复
+**文件**：`engine/search/net_mcts.cpp`、`platform/static/general/pipeline.js`、`tests/framework/test_tail_solve_root_values.py`
+**严重程度**：中（用户可观察）— 体感像彻底卡死
+
+### 症状
+
+Azul 专家模式（`difficulty=expert`，启用分析路径）打到终局，最后一回合的结算/终局动画都不渲染、终局弹窗不出现，浏览器看起来直接“冻死”。等 45 秒后弹一个 timeout。
+体验版（`difficulty=casual`，无分析）能正常终局；情书 / Quoridor 等其他启用 tail-solve 的游戏没出现，因为它们的对局结构很少在“人类该走那一步”的预计算位置触发 ProvenWin 采纳。
+
+### Root cause
+
+`NetMcts::search_root` 中，当 `tail_solver` 返回 `kProvenWin && value >= 1.0` 时走的是“早返回”分支，把 `tail_solved=true` 等字段写好就返回 best_action。但这条路径**没有填 `stats->root_values` 也没有填 `stats->root_edge_values`**，二者保持空 vector。
+
+下游 `pipeline.py::_human_wr_from_stats` 对 `root_values[human_player]` 做下标访问，空 vector 直接 `IndexError`。
+`_pipeline_worker` 的 `except Exception` 捕获后把 `phase` 置为 `"error"`。前端 `pipeline.js` 的 poll 循环只识别 `done` / `idle` 退出，`error` 不退、继续轮询直到 45s 整体 timeout —— 看起来就是“卡住”。
+
+体验版用 `_pipeline_worker_ai_only`，根本不调 `_analyze_user_move`，所以打不到这条空 vector 解码 → 体验版正常终局。问题是“专家模式才有的分析路径 × tail-solve 在人类下一步的预计算位置触发 × `root_values` 空”这三者凑齐才会暴露。
+
+### 修复
+
+1. `engine/search/net_mcts.cpp` ProvenWin 早返回前：填 `root_values` 为 `(actor=+1, others 均分 -1)` 的零和向量；填 `root_edge_values`，被采纳 action 的位置写入同样向量、其余 `0`。语义上 ProvenWin 的胜率本就是 100% / 0%，这只是把它显式表达出来，下游解码路径全部可用。
+2. `platform/static/general/pipeline.js`：把 `phase === "error"` 当成终止条件直接退出 poll 循环并触发 `onError`，避免今后任何 worker 异常都让浏览器静默等满 45s。
+3. `tests/framework/test_tail_solve_root_values.py`：回归测试。从 Azul 2p 局推到 tail-solve 采纳，断言 `root_values` 长度等于 num_players、零和、actor 位置等于 +1，且 `action_values` 含选中 action 且向量与 `root_values` 一致。
+
+### 教训
+
+- “提前返回 + 部分填字段”的优化路径必须把所有下游字段都填到“跟正常路径一样合法”的状态，否则就是另一个 BUG-011 那种 silent contract violation。Stats struct 不是只给 logger 用的，平台层 / web 层都会拿来当导航数据。
+- Web pipeline 的 `phase=error` 必须有显式分支处理。任何能把 worker 推进 `except` 的 bug 都会被 45s timeout 覆盖成“假冒卡死”，让 root cause 极难被注意到。
+- 难度模式（casual / expert）走不同 worker 是个值得记住的差异：casual 不跑 analysis，所以分析路径独有的 bug 不会出现在 casual 复现里——遇到“专家模式才挂”的报告，先 diff `_pipeline_worker` vs `_pipeline_worker_ai_only`。
 
 ---

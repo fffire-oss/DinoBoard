@@ -26,6 +26,12 @@ export function createPipelinePoller() {
           if (callbacks.onThinking) callbacks.onThinking();
         }
 
+        if (phase === 'error') {
+          polling = false;
+          if (callbacks.onError) callbacks.onError(new Error(st.error || 'pipeline error'));
+          return;
+        }
+
         if (phase === 'done' || phase === 'idle') {
           if (cancelled) { polling = false; return; }
           if (!analysisDelivered && st.analysis && callbacks.onAnalysis) {
