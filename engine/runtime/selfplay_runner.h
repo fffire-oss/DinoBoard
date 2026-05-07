@@ -144,6 +144,15 @@ SelfplayEpisodeResult run_selfplay_episode(
     const SelfplayConfig& config,
     std::uint64_t episode_seed,
     IBeliefTracker* belief_tracker = nullptr,
+    // BG-008 Phase 2 stage 5 / OB-005 fix: per-perspective trackers, one
+    // per player seat. When supplied (size == num_players), the runner
+    // routes MCTS root to per_perspective_trackers[current_player] and
+    // calls observe_public_event on every perspective after each action
+    // — each tracker accumulates its own perspective's belief
+    // monotonically, no more init-reset per ply. Legacy single-tracker
+    // path remains for backwards-compat when empty; new code should
+    // always pass a non-empty vector.
+    std::vector<IBeliefTracker*> per_perspective_trackers = {},
     const IFeatureEncoder* encoder = nullptr,
     const search::ITailSolver* tail_solver = nullptr,
     GameAdjudicator adjudicator = nullptr,

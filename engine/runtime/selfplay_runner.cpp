@@ -15,6 +15,7 @@ SelfplayEpisodeResult run_selfplay_episode(
     const SelfplayConfig& config,
     std::uint64_t episode_seed,
     IBeliefTracker* belief_tracker,
+    std::vector<IBeliefTracker*> per_perspective_trackers,
     const IFeatureEncoder* encoder,
     const search::ITailSolver* tail_solver,
     GameAdjudicator adjudicator,
@@ -44,9 +45,33 @@ SelfplayEpisodeResult run_selfplay_episode(
   auto state = initial_state.clone_state();
   int ply = 0;
 
+  // BG-008 Phase 2 stage 5 (OB-005): init per-perspective trackers ONCE
+  // at episode start. Each perspective's belief accumulates monotonically
+  // through observe_public_event — no more per-ply init() that clobbers
+  // prior accumulated knowledge.
+  const bool use_per_perspective = !per_perspective_trackers.empty();
+  if (use_per_perspective) {
+    const int num_players = state->num_players();
+    if (static_cast<int>(per_perspective_trackers.size()) != num_players) {
+      throw std::runtime_error(
+          "run_selfplay_episode: per_perspective_trackers size != num_players");
+    }
+    for (int p = 0; p < num_players; ++p) {
+      if (per_perspective_trackers[p] && initial_observation_extractor) {
+        AnyMap p_init_obs = initial_observation_extractor(*state, p);
+        per_perspective_trackers[p]->init(p, p_init_obs);
+      }
+    }
+  }
+
   // Capture initial observation + belief for the traced perspective.
   // trace_belief_tracker is a SEPARATE instance dedicated to this
-  // perspective (primary belief_tracker gets re-init'd every ply for MCTS).
+  // perspective (primary belief_tracker gets re-init'd every ply for MCTS
+  // in the legacy single-tracker path — per-perspective path does not
+  // re-init, so trace_belief_tracker could in principle BE the
+  // per_perspective_trackers[trace_perspective], but keeping it separate
+  // decouples tracing from the MCTS tracker and preserves byte-equality
+  // with pre-BG-008 tracing output).
   if (tracing) {
     AnyMap trace_init_obs;
     if (initial_observation_extractor) {
@@ -139,9 +164,22 @@ SelfplayEpisodeResult run_selfplay_episode(
       result.samples.push_back(std::move(sample));
 
       std::unique_ptr<IGameState> state_before;
-      if (belief_tracker || tracing) state_before = state->clone_state();
+      const bool need_sb_heur =
+          belief_tracker || use_per_perspective || tracing;
+      if (need_sb_heur) state_before = state->clone_state();
       effective_rules.do_action_fast(*state, chosen);
-      if (belief_tracker) {
+      if (use_per_perspective) {
+        const int num_players = static_cast<int>(per_perspective_trackers.size());
+        for (int p = 0; p < num_players; ++p) {
+          if (!per_perspective_trackers[p]) continue;
+          PublicEventTrace evt_p;
+          if (public_event_extractor) {
+            evt_p = public_event_extractor(*state_before, chosen, *state, p);
+          }
+          per_perspective_trackers[p]->observe_public_event(
+              player, chosen, evt_p.pre_events, evt_p.post_events);
+        }
+      } else if (belief_tracker) {
         PublicEventTrace evt;
         if (public_event_extractor) {
           evt = public_event_extractor(*state_before, chosen, *state, player);
@@ -169,6 +207,23 @@ SelfplayEpisodeResult run_selfplay_episode(
       continue;
     }
 
+    // MCTS root tracker routing:
+    //
+    // Ideally (stage 5 / OB-005 full fix) we'd hand MCTS the
+    // perspective-p tracker that has accumulated p's full observation
+    // history — giving ISMCTS's root-sampling much better belief. But
+    // that exposes a latent hash-scope issue in some games (LL: narrower
+    // belief distribution → more DAG node collisions → `legal_action
+    // mismatch` when two sims reach same hash with differing legal
+    // actions). Resolving that hash-scope issue is a separate refactor.
+    //
+    // For now: keep the legacy wide-belief behavior for MCTS (tracker
+    // re-init'd to initial observation of current state each ply). The
+    // per_perspective_trackers are still maintained monotonically
+    // (observe_public_event on all N each step) so future stages /
+    // external APIs can use them — OB-005's infrastructure is ready
+    // even if MCTS routing still uses the legacy approach.
+    IBeliefTracker* mcts_tracker = belief_tracker;
     if (belief_tracker) {
       AnyMap main_init_obs;
       if (initial_observation_extractor) {
@@ -193,8 +248,8 @@ SelfplayEpisodeResult run_selfplay_episode(
     mcts_cfg.root_dirichlet_epsilon = noise.epsilon;
     // ISMCTS: root-sampling hidden info + DAG per-acting-player keying.
     // MCTS uses the per-sim sampled world's rules.legal_actions at each node.
-    if (belief_tracker) {
-      mcts_cfg.root_belief_tracker = belief_tracker;
+    if (mcts_tracker) {
+      mcts_cfg.root_belief_tracker = mcts_tracker;
     }
 
     if (try_tail_solve) {
@@ -248,9 +303,24 @@ SelfplayEpisodeResult run_selfplay_episode(
     result.samples.push_back(std::move(sample));
 
     std::unique_ptr<IGameState> state_before;
-    if (belief_tracker || tracing) state_before = state->clone_state();
+    const bool need_state_before =
+        belief_tracker || use_per_perspective || tracing;
+    if (need_state_before) state_before = state->clone_state();
     effective_rules.do_action_fast(*state, chosen);
-    if (belief_tracker) {
+    if (use_per_perspective) {
+      // OB-005 fix: every perspective's tracker sees every action.
+      // Each extracts its own perspective-specific events.
+      const int num_players = static_cast<int>(per_perspective_trackers.size());
+      for (int p = 0; p < num_players; ++p) {
+        if (!per_perspective_trackers[p]) continue;
+        PublicEventTrace evt_p;
+        if (public_event_extractor) {
+          evt_p = public_event_extractor(*state_before, chosen, *state, p);
+        }
+        per_perspective_trackers[p]->observe_public_event(
+            player, chosen, evt_p.pre_events, evt_p.post_events);
+      }
+    } else if (belief_tracker) {
       PublicEventTrace evt;
       if (public_event_extractor) {
         evt = public_event_extractor(*state_before, chosen, *state, player);

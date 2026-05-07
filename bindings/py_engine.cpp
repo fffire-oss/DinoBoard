@@ -328,9 +328,28 @@ py::dict run_selfplay_episode_py(
     bt = nullptr;
   }
 
+  // BG-008 Phase 2 stage 5 / OB-005 fix: allocate one fresh tracker per
+  // perspective so each seat's belief accumulates monotonically across
+  // plies. Fall back to the legacy single-tracker path when ISMCTS is
+  // off (truth-eye training) or the game has no belief_tracker.
+  std::vector<std::unique_ptr<GameBundle>> pp_bundles;
+  std::vector<IBeliefTracker*> pp_trackers;
+  if (bt) {
+    const int num_players = bundle.state->num_players();
+    pp_bundles.reserve(static_cast<size_t>(num_players));
+    pp_trackers.reserve(static_cast<size_t>(num_players));
+    for (int p = 0; p < num_players; ++p) {
+      auto pb = std::make_unique<GameBundle>(
+          GameRegistry::instance().create_game(game_id, seed));
+      pp_trackers.push_back(pb->belief_tracker.get());
+      pp_bundles.push_back(std::move(pb));
+    }
+  }
+
   auto result = runtime::run_selfplay_episode(
       *bundle.state, *bundle.rules, *bundle.value_model, *eval_ptr, cfg, seed,
       bt,
+      pp_trackers,
       bundle.encoder.get(),
       bundle.tail_solver.get(),
       bundle.adjudicator,
