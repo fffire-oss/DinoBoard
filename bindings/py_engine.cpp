@@ -750,6 +750,15 @@ class GameSessionWrapper {
   int num_players() const { return bundle_->state->num_players(); }
   std::string game_id() const { return game_id_; }
 
+  // Expose perspective hash so tests can directly assert hash-scope
+  // invariants (e.g. "internal RNG state must NOT affect public hash" —
+  // the BUG-028 anti-pattern). Returns the truth state's hash; for
+  // information-set hashing through ai_views_, callers can use
+  // state_hash_for_perspective_ai_view.
+  std::uint64_t state_hash_for_perspective(int player) const {
+    return bundle_->state->state_hash_for_perspective(player);
+  }
+
   py::dict get_state_dict() {
     if (!bundle_->state_serializer) {
       throw std::runtime_error("get_state_dict: game '" + game_id_ + "' has no state_serializer registered");
@@ -1034,6 +1043,12 @@ class GameSessionWrapper {
     st["root_action_visits"] = root_visits_py;
     st["tail_solved"] = stats.tail_solved;
     st["tail_solve_value"] = stats.tail_solve_value;
+    st["tail_solve_attempted"] = stats.tail_solve_attempted;
+    st["tail_solve_completed"] = stats.tail_solve_completed;
+    st["tail_solve_elapsed_ms"] = stats.tail_solve_elapsed_ms;
+    // Outcome encoded so the web layer can render "0% 残局已求解 / 100% / 平局"
+    // without re-running the solver. Mirrors TailSolveOutcome enum integer.
+    st["tail_solve_outcome"] = static_cast<int>(stats.tail_solve_outcome);
     st["dag_reuse_hits"] = stats.dag_reuse_hits;
     st["expanded_nodes"] = stats.expanded_nodes;
     st["simulations"] = stats.simulations_done;
@@ -1312,6 +1327,9 @@ PYBIND11_MODULE(dinoboard_engine, m) {
       .def_property_readonly("winner", &GameSessionWrapper::winner)
       .def_property_readonly("num_players", &GameSessionWrapper::num_players)
       .def_property_readonly("game_id", &GameSessionWrapper::game_id)
+      .def("state_hash_for_perspective",
+           &GameSessionWrapper::state_hash_for_perspective,
+           py::arg("player"))
       .def("get_state_dict", &GameSessionWrapper::get_state_dict)
       .def("get_action_info", &GameSessionWrapper::get_action_info)
       .def("get_legal_actions", &GameSessionWrapper::get_legal_actions)

@@ -179,12 +179,11 @@ def create_session(
     analysis_sims = web_cfg.get("analysis_simulations", 5000)
 
     tail_cfg = web_cfg.get("tail_solve", {})
-    if tail_cfg.get("enabled", False):
-        gs.configure_tail_solve(
-            True,
-            tail_cfg.get("depth_limit", 10),
-            tail_cfg.get("node_budget", 200000),
-        )
+    tail_solve_enabled = bool(tail_cfg.get("enabled", False))
+    tail_solve_depth = int(tail_cfg.get("depth_limit", 10))
+    tail_solve_budget = int(tail_cfg.get("node_budget", 200000))
+    if tail_solve_enabled:
+        gs.configure_tail_solve(True, tail_solve_depth, tail_solve_budget)
 
     session_id = uuid.uuid4().hex[:12]
     sess = {
@@ -202,6 +201,9 @@ def create_session(
         "use_model": preset["use_model"],
         "model_path": model_path,
         "ai_use_filter": ai_use_filter,
+        "tail_solve_enabled": tail_solve_enabled,
+        "tail_solve_depth_limit": tail_solve_depth,
+        "tail_solve_node_budget": tail_solve_budget,
         "action_history": [],
         "replay_frames": [],
         "pipeline": _make_pipeline_state(),
@@ -217,6 +219,12 @@ def rebuild_game_session(sess: dict) -> None:
     humans, so use_filter is always False."""
     model_path = sess["model_path"] if sess["use_model"] else ""
     gs = engine.GameSession(sess["actual_id"], sess["seed"], model_path, False)
+    if sess.get("tail_solve_enabled", False):
+        gs.configure_tail_solve(
+            True,
+            sess["tail_solve_depth_limit"],
+            sess["tail_solve_node_budget"],
+        )
     for aid in sess["action_history"]:
         gs.apply_action(aid)
     sess["game_session"] = gs

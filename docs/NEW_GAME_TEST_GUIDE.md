@@ -723,6 +723,18 @@ python -m pytest tests/<your_game>/ -v -k belief
 - `test_api_public_state_matches_after_trace` — 终局公开 state 相等
 - `test_api_legal_actions_match_after_trace` — perspective 回合的 legal actions 相等
 
+### 10.2-bis. Public hash 不能含内部 RNG（强制，BUG-028 回归）
+
+新游戏接入时**必须**让 `tests/framework/test_public_hash_excludes_internal_rng.py` 在你的 `game_id` 上跑过。把游戏 id 加到 `HIDDEN_INFO_GAMES` 列表里（如果是隐藏信息游戏；纯公开信息游戏结构上不会触发）。
+
+```bash
+python -m pytest tests/framework/test_public_hash_excludes_internal_rng.py -v -k <your_game>
+```
+
+测的是：相同 observation 历史下，两个内部 seed 不同的 `GameSession` 必须产生**字节相等**的 `state_hash_for_perspective(p)`。失败几乎 100% 意味着 `hash_public_fields` 把内部 RNG / 牌堆顺序 / `bag` 抽前向量序 hash 进去了——这就是 BUG-028。
+
+为什么这条单列：BUG-028 不会让任何已有测试失败，不会崩，只会让 search 变弱、selfplay 与 API 路径分裂、训练曲线悄悄垮掉。文档级提醒（CLAUDE.md, GAME_DEVELOPMENT_GUIDE §11.1b）防不住人，CI 测试才防得住。
+
 ### 10.3 常见失败
 
 | 症状 | 可能原因 | 修复 |

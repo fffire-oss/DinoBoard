@@ -1264,7 +1264,10 @@ StateHash64 state_hash_for_perspective(int player) const {
 **常见错误**：
 - ❌ 把 `hand[p] for all p` 都 hash 进 public → opp hand 进了 public，不同采样世界分叉到不同节点，DAG 共享失效
 - ❌ public 字段在 private 里又 hash 一遍 → hash 依赖 perspective，info set 边界混乱
+- ❌ **把内部 RNG / 未抽到的牌堆顺序 hash 进 public** → 这是本框架最隐蔽的失误模式。`rng_salt`、`bag` 的 vector 顺序、`box_lid` 的 vector 顺序、`mt19937` 快照、洗牌时存的 deck order 等，**没有任何玩家看得到**。把它们 hash 进去，会让本应该是同一个 DAG 节点的信息集，按"未来抽牌的具体顺序"分裂成 N 个不同节点；网络无法分辨它们，搜索的统计聚合被打散，每条 simulation 像在不同游戏里独立爬。**症状只是"AI 莫名变弱 / selfplay 与 API 路径策略不一致"，从不崩溃**——所以最难抓。Azul 的 BUG-028（`hash_public_fields` 里逐个 hash 了 `bag` / `box_lid` 的 vector 顺序）和 Splendor 的 `rng_salt` 都属此类。
 - ✓ `hand[observer]` 只在 `hash_private_fields(observer)` 里 hash；对手的 hand 只在他们自己的 private hash 里
+- ✓ 公开可推导的 multiset（袋子各色剩余数、牌堆大小）可以 hash；具体顺序 / 内部 RNG 不行
+- ✓ 写完 `hash_public_fields` 后通读一遍，问自己每个 `h.add(x)`：**"这个字段每个玩家都能从观察历史推出来吗？"** 如果答案是"不能，这是引擎实现细节"，就删掉
 
 Love Letter 示例（`games/loveletter/loveletter_state.cpp` 实际代码）：
 

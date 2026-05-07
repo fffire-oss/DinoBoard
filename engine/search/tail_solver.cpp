@@ -217,7 +217,12 @@ TailSolveResult AlphaBetaTailSolver::solve(
   result.budget_exceeded = ctx.budget_exceeded;
 
   if (!ctx.budget_exceeded) {
-    if (result_value > 0.5f) {
+    // kProvenWin must mean "minimax value >= terminal-win value (1.0)";
+    // any softer threshold (e.g. 0.5) makes net_mcts adopt margin-inflated
+    // non-terminal evaluations as "proven", which is BUG-018. Loss/Draw
+    // thresholds are unchanged because no caller currently branches on
+    // them — keep the existing classification boundary.
+    if (result_value >= 1.0f) {
       result.outcome = TailSolveOutcome::kProvenWin;
     } else if (result_value < -0.5f) {
       result.outcome = TailSolveOutcome::kProvenLoss;

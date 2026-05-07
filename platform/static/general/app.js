@@ -17,6 +17,7 @@ export function createApp(config) {
     forceMode: false,
     hintPending: false,
     lastAiWinrate: null,
+    lastAiWinrateProven: null,  // 'win' | 'loss' | 'draw' | null
     replayMode: false,
     difficulty: null,
   };
@@ -171,7 +172,9 @@ export function createApp(config) {
       else if (state.aiPlayers.includes(gs.winner)) resultText = '结果：AI 获胜';
       else resultText = '结果：你赢了！';
       sidebar.setOpsMsg(resultText);
-      infoPanel.setWinrate(sidebar.getShowWinrate() ? state.lastAiWinrate : null);
+      infoPanel.setWinrate(
+        sidebar.getShowWinrate() ? state.lastAiWinrate : null,
+        sidebar.getShowWinrate() ? state.lastAiWinrateProven : null);
       showGameOverModal();
       return;
     }
@@ -190,7 +193,9 @@ export function createApp(config) {
       infoPanel.setMessage(config.formatOpponentMove(gs.last_action_info, gs.last_action_id));
     }
 
-    infoPanel.setWinrate(sidebar.getShowWinrate() ? state.lastAiWinrate : null);
+    infoPanel.setWinrate(
+      sidebar.getShowWinrate() ? state.lastAiWinrate : null,
+      sidebar.getShowWinrate() ? state.lastAiWinrateProven : null);
   }
 
   function updateReplayInfo(frame) {
@@ -263,6 +268,7 @@ export function createApp(config) {
     state.difficulty = difficulty;
     state.forceMode = false;
     state.lastAiWinrate = null;
+    state.lastAiWinrateProven = null;
     state.busy = false;
     poller.cancel();
 
@@ -378,10 +384,11 @@ export function createApp(config) {
             }
           }
         },
-        onDone(data, humanWinrate, pipeStatus) {
+        onDone(data, humanWinrate, pipeStatus, provenForHuman) {
           resolve({
             data,
             humanWinrate,
+            humanWinrateProven: provenForHuman || null,
             aiAction: pipeStatus ? pipeStatus.ai_action : null,
             aiActionInfo: pipeStatus ? pipeStatus.ai_action_info : null,
           });
@@ -427,7 +434,10 @@ export function createApp(config) {
       // pill updates each AI move.
       state.gameState.last_action_info = result.aiActionInfo;
       state.gameState.last_action_id = result.aiAction;
-      if (state.difficulty === 'expert') state.lastAiWinrate = result.humanWinrate;
+      if (state.difficulty === 'expert') {
+        state.lastAiWinrate = result.humanWinrate;
+        state.lastAiWinrateProven = result.humanWinrateProven || null;
+      }
       // Clear the start-of-game intro once the opponent has moved —
       // info panel "对手动作" pill now carries the live message and
       // the ops-msg slot is free for transient prompts (失误, etc).
@@ -469,6 +479,7 @@ export function createApp(config) {
       }
       state.forceMode = false;
       state.lastAiWinrate = null;
+      state.lastAiWinrateProven = null;
       if (config.onUndo) config.onUndo();
       state.busy = false;
       render();

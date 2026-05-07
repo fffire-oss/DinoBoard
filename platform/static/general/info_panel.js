@@ -40,7 +40,21 @@ export function createInfoPanel(infoCol, config) {
     setMessage(text) {
       els.opp.textContent = '对手动作：' + (text && text.length ? text : '--');
     },
-    setWinrate(wr) { els.winrate.textContent = '你的预估胜率：' + formatWinrate(wr); },
+    // wr is human's predicted win rate in [0, 1] or null. proven, when truthy,
+    // means a tail solver supplied this number (0 / 1 / 0.5 are exact, not
+    // estimates) — the AI only adopts the tail-solve action on ProvenWin, so
+    // in the live path proven=true always implies the human is on the
+    // losing side (wr ≈ 0). Draw outcomes pass proven='draw'.
+    setWinrate(wr, proven) {
+      const base = '你的预估胜率：' + formatWinrate(wr);
+      if (proven === 'draw') {
+        els.winrate.textContent = base + '（残局已求解：平局）';
+      } else if (proven) {
+        els.winrate.textContent = base + '（残局已求解）';
+      } else {
+        els.winrate.textContent = base;
+      }
+    },
     setSuggest(text) { els.suggest.textContent = 'AI 提示：' + (text || '--'); },
     setVisible(visible) {
       panel.style.display = visible ? '' : 'none';

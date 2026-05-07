@@ -68,6 +68,22 @@ def shutdown_executors() -> None:
 # ─── Precompute ───
 
 
+def _apply_tail_solve_config(gs, sess: dict) -> None:
+    """Honor web.json tail_solve on every isolated session.
+
+    Without this, web AI moves / precompute / analysis fall back to plain
+    MCTS even when web.json declares tail_solve — silent strength loss
+    (BUG / OB-004). Must be called immediately after each isolated
+    GameSession is constructed, before apply_action / get_ai_action.
+    """
+    if sess.get("tail_solve_enabled", False):
+        gs.configure_tail_solve(
+            True,
+            sess["tail_solve_depth_limit"],
+            sess["tail_solve_node_budget"],
+        )
+
+
 def _precompute_worker(sess: dict, ply_index: int, expected_hash: str) -> None:
     try:
         actual_id = sess["actual_id"]
@@ -78,6 +94,7 @@ def _precompute_worker(sess: dict, ply_index: int, expected_hash: str) -> None:
             return
 
         gs = engine.GameSession(actual_id, seed, model_path, sess["ai_use_filter"])
+        _apply_tail_solve_config(gs, sess)
         for aid in action_history:
             gs.apply_action(aid)
         if gs.is_terminal:
@@ -127,6 +144,7 @@ def _build_isolated_gs(sess: dict) -> engine.GameSession:
     model_path = sess["model_path"] if sess["use_model"] else ""
     gs = engine.GameSession(sess["actual_id"], sess["seed"], model_path,
                             sess["ai_use_filter"])
+    _apply_tail_solve_config(gs, sess)
     for aid in sess["action_history"]:
         gs.apply_action(aid)
     return gs
@@ -190,6 +208,7 @@ def _analyze_user_move(sess: dict) -> dict | None:
         model_path = sess["model_path"] if sess["use_model"] else ""
         gs_pre = engine.GameSession(sess["actual_id"], sess["seed"], model_path,
                                     sess["ai_use_filter"])
+        _apply_tail_solve_config(gs_pre, sess)
         for aid in pre_move_history:
             gs_pre.apply_action(aid)
         if gs_pre.is_terminal:

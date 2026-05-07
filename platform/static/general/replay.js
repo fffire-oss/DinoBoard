@@ -69,16 +69,46 @@ export function createReplayController(infoCol, config) {
       : (frame.action_id !== null && frame.action_id !== undefined ? '动作 ' + frame.action_id : '开局');
     const move = frame.actor === 'start' ? '开局' : moveText;
 
+    // tail-solve flag lives on ai_stats. When true the AI was the actor
+    // and the search adopted a tail-solver-proven action — outcome 1=Win,
+    // 2=Loss, 3=Draw from the AI's POV. Used both as a line-1 badge and
+    // to render line-2 win rate as a proven 0/100/50% from the human's POV.
+    const aiStats = frame.ai_stats || null;
+    const tailSolved = !!(aiStats && aiStats.tail_solved);
+    const tailOutcome = aiStats ? aiStats.tail_solve_outcome : 0;
+
     const parts1 = ['帧 ' + (idx + 1) + '/' + total];
     if (actor) parts1.push(actor);
     parts1.push(frame.is_terminal ? move + ' · 终局' : move);
-    if (frame.tail_solved) parts1.push('残局已求解');
+    if (tailSolved) parts1.push('残局已求解');
     const line1 = parts1.join(' · ');
 
     const a = frame.analysis;
     let line2 = '—';
     let line3 = '—';
-    if (a) {
+    if (tailSolved) {
+      // AI move adopted a proven path. Translate AI-POV outcome into the
+      // human's win rate so the column is consistent with frames whose
+      // analysis is recorded for the human side.
+      let humanWrPct;
+      let suffix;
+      if (tailOutcome === 1) {
+        // ProvenWin (AI) → human loses. AI only adopts on this branch in
+        // the live path, so this is the dominant case.
+        humanWrPct = '0.0%';
+        suffix = '残局已求解';
+      } else if (tailOutcome === 2) {
+        humanWrPct = '100.0%';
+        suffix = '残局已求解';
+      } else if (tailOutcome === 3) {
+        humanWrPct = '50.0%';
+        suffix = '残局已求解：平局';
+      } else {
+        humanWrPct = '--';
+        suffix = '残局已求解';
+      }
+      line2 = '胜率 ' + humanWrPct + '（' + suffix + '）';
+    } else if (a) {
       const wr = (a.best_win_rate * 100).toFixed(1) + '%';
       const drop = a.drop_score.toFixed(1) + '%';
       line2 = '胜率 ' + wr + ' · 掉点 ' + drop;
