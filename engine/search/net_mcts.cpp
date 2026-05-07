@@ -403,20 +403,36 @@ ActionId NetMcts::search_root(
       // we just came through (incoming_edge_visits), NOT the node's global
       // visit_count. Avoids over-exploration bias from DAG's multiple
       // parents (Childs et al. 2008).
-      const float sqrt_parent = std::sqrt(
-          static_cast<float>(std::max(1, incoming_edge_visits)));
       int best_edge = -1;
-      float best_score = -std::numeric_limits<float>::infinity();
-      for (int ei = 0; ei < static_cast<int>(nodes[cur_idx].edges.size()); ++ei) {
-        const Edge& e = nodes[cur_idx].edges[ei];
-        float q = 0.0f;
-        if (e.visit_count > 0) q = e.value_sum / static_cast<float>(e.visit_count);
-        const float u = cfg_.c_puct * e.prior * sqrt_parent /
-                        (1.0f + static_cast<float>(e.visit_count));
-        const float score = q + u;
-        if (score > best_score) {
-          best_score = score;
-          best_edge = ei;
+
+      // Root-edge coverage (analysis-pipeline only): before PUCT takes over,
+      // visit any unvisited root edge once. Same world / same descent / same
+      // backup as a normal sim — the only difference is which edge we pick
+      // at root. Guarantees action_values is dense over the full legal set.
+      if (cfg_.cover_root_edges && cur_idx == 0) {
+        for (int ei = 0; ei < static_cast<int>(nodes[cur_idx].edges.size()); ++ei) {
+          if (nodes[cur_idx].edges[ei].visit_count == 0) {
+            best_edge = ei;
+            break;
+          }
+        }
+      }
+
+      if (best_edge < 0) {
+        const float sqrt_parent = std::sqrt(
+            static_cast<float>(std::max(1, incoming_edge_visits)));
+        float best_score = -std::numeric_limits<float>::infinity();
+        for (int ei = 0; ei < static_cast<int>(nodes[cur_idx].edges.size()); ++ei) {
+          const Edge& e = nodes[cur_idx].edges[ei];
+          float q = 0.0f;
+          if (e.visit_count > 0) q = e.value_sum / static_cast<float>(e.visit_count);
+          const float u = cfg_.c_puct * e.prior * sqrt_parent /
+                          (1.0f + static_cast<float>(e.visit_count));
+          const float score = q + u;
+          if (score > best_score) {
+            best_score = score;
+            best_edge = ei;
+          }
         }
       }
       if (best_edge < 0) {

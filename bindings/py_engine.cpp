@@ -1096,7 +1096,8 @@ class GameSessionWrapper {
     ts_node_budget_ = node_budget;
   }
 
-  py::dict get_ai_action(int simulations, double temperature) {
+  py::dict get_ai_action(int simulations, double temperature,
+                         bool cover_root_edges = false) {
     py::gil_scoped_release release;
 
     const IGameRules& rules = filtered_rules_ ? *filtered_rules_ : *bundle_->rules;
@@ -1137,6 +1138,7 @@ class GameSessionWrapper {
     search::NetMctsConfig mcts_cfg{};
     mcts_cfg.simulations = simulations;
     mcts_cfg.c_puct = 1.4f;
+    mcts_cfg.cover_root_edges = cover_root_edges;
     if (search_bt) {
       mcts_cfg.root_belief_tracker = search_bt;
     }
@@ -1520,7 +1522,8 @@ PYBIND11_MODULE(dinoboard_engine, m) {
       .def("get_belief_snapshot", &GameSessionWrapper::get_belief_snapshot)
       .def("get_ai_action", &GameSessionWrapper::get_ai_action,
            py::arg("simulations") = 200,
-           py::arg("temperature") = 0.0)
+           py::arg("temperature") = 0.0,
+           py::arg("cover_root_edges") = false)
       .def("get_heuristic_action", &GameSessionWrapper::get_heuristic_action)
       .def("configure_tail_solve", &GameSessionWrapper::configure_tail_solve,
            py::arg("enabled"),

@@ -37,6 +37,15 @@ struct NetMctsConfig {
   bool tail_solve_enabled = false;
   TailSolveConfig tail_solve_config{};
   const ITailSolver* tail_solver = nullptr;
+
+  // Analysis-only: ensure every root legal edge gets at least one visit
+  // before PUCT takes over. With this off, low-prior edges can end the
+  // search at visit_count == 0, which makes their action_values (q=0)
+  // collapse to a 50% win-rate readout — fine for argmax decisions but
+  // poison for drop-score analysis. The web AI path leaves this off; the
+  // analysis-pipeline path turns it on so action_values is dense over
+  // the full legal set.
+  bool cover_root_edges = false;
 };
 
 struct NetMctsStats {

@@ -158,13 +158,14 @@ export function createApp(config) {
   }
 
   // Display label for a seat index. We're a generic platform — the seat
-  // could be human or AI, controlled remotely or locally. Use "玩家 N"
-  // (1-indexed) so the UI doesn't lock the framing to "human vs AI". The
+  // could be human or AI, controlled remotely or locally. Use "玩家N"
+  // (0-indexed, no space) to match the rest of the codebase
+  // (sidebar.js force buttons, per-game web/*.js seat labels). The
   // human's own seat shows "你" since that's still the most natural
   // self-reference in the current single-user-vs-AI deployment.
   function playerLabel(idx) {
     if (idx === state.humanPlayer) return '你';
-    return '玩家 ' + (idx + 1);
+    return '玩家' + idx;
   }
 
   function updateInfoPanel() {
@@ -180,7 +181,7 @@ export function createApp(config) {
       let resultText;
       if (gs.winner < 0) resultText = '结果：平局';
       else if (gs.winner === state.humanPlayer) resultText = '结果：你赢了！';
-      else resultText = '结果：玩家 ' + (gs.winner + 1) + ' 获胜';
+      else resultText = '结果：玩家' + gs.winner + ' 获胜';
       sidebar.setOpsMsg(resultText);
       infoPanel.setWinrate(
         sidebar.getShowWinrate() ? state.lastAiWinrate : null,
@@ -252,7 +253,7 @@ export function createApp(config) {
     } else if (gs.winner === state.humanPlayer) {
       modal.show('你赢了！', '恭喜，你赢得了本局比赛！', showReplay);
     } else {
-      const label = '玩家 ' + (gs.winner + 1);
+      const label = config.getPlayerSymbol ? config.getPlayerSymbol(gs.winner) : '玩家' + gs.winner;
       modal.show(label + ' 获胜', label + ' 赢得了本局比赛。', showReplay);
     }
   }

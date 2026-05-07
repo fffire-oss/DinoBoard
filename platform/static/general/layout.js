@@ -9,7 +9,13 @@ function injectZoomControls(target) {
     '<button class="zoom-btn" data-zoom="in" type="button" title="放大">+</button>';
   document.body.appendChild(el);
 
-  let zoom = parseInt(localStorage.getItem(ZOOM_KEY) || '100', 10);
+  // Default 60% on phone-size viewports — desktop game boards (Azul 4p,
+  // Splendor with full tableau) are designed for ~1280 wide and just
+  // shrinking the page barely shows them at 100%. Stored zoom takes
+  // precedence, so users who manually set a value keep it across reloads.
+  const stored = localStorage.getItem(ZOOM_KEY);
+  const isPhone = window.matchMedia && window.matchMedia('(max-width: 720px)').matches;
+  let zoom = stored ? parseInt(stored, 10) : (isPhone ? 60 : 100);
   const valueEl = el.querySelector('.zoom-value');
 
   function apply() {
@@ -23,7 +29,7 @@ function injectZoomControls(target) {
     const btn = e.target.closest('[data-zoom]');
     if (!btn) return;
     if (btn.dataset.zoom === 'in') zoom = Math.min(180, zoom + 5);
-    else zoom = Math.max(60, zoom - 5);
+    else zoom = Math.max(30, zoom - 5);
     apply();
   });
 }

@@ -45,8 +45,10 @@ def _human_wr_from_stats(stats: dict, human_player: int) -> float:
 def _human_wr_for_action(stats: dict, action_id: int, human_player: int) -> float | None:
     """Extract human player's win rate for a specific action from action_values map.
 
-    Returns None only when the action isn't in the search tree (e.g. filtered out);
-    that's a legitimate "not available" signal rather than a missing-field bug.
+    Returns None only when the action isn't in the search tree at all. Analysis
+    callers run MCTS with cover_root_edges=True + ai_use_filter=False, so every
+    legal action is guaranteed at least one visit and a real value — None
+    should not occur on that path. Kept defensive for non-analysis callers.
     """
     action_values = stats["action_values"]
     if action_id not in action_values:
@@ -93,7 +95,16 @@ def _precompute_worker(sess: dict, ply_index: int, expected_hash: str) -> None:
         if sess["precompute"]["history_hash"] != expected_hash:
             return
 
-        gs = engine.GameSession(actual_id, seed, model_path, sess["ai_use_filter"])
+        # Analysis path: ALWAYS unfiltered + cover_root_edges, regardless of
+        # whether AI live-play uses an action filter. Two reasons:
+        # (1) Without unfiltered, a legal-but-filtered human move (Quoridor)
+        #     never enters the tree and analysis silently reports drop=0%.
+        # (2) Without cover_root_edges, a legal action that PUCT never
+        #     happens to sample ends with visit_count==0 and action_values
+        #     defaults to q=0 → silent 50% win-rate readout. With coverage
+        #     every legal edge is visited at least once and gets a real q.
+        # Live AI play continues to use sess["ai_use_filter"] / no coverage.
+        gs = engine.GameSession(actual_id, seed, model_path, False)
         _apply_tail_solve_config(gs, sess)
         for aid in action_history:
             gs.apply_action(aid)
@@ -101,7 +112,7 @@ def _precompute_worker(sess: dict, ply_index: int, expected_hash: str) -> None:
             return
 
         analysis_sims = sess.get("analysis_simulations", DEFAULT_ANALYSIS_SIMULATIONS)
-        result = gs.get_ai_action(analysis_sims, 0.0)
+        result = gs.get_ai_action(analysis_sims, 0.0, cover_root_edges=True)
 
         pc = sess["precompute"]
         if pc["history_hash"] == expected_hash and pc["ply_index"] == ply_index:
@@ -203,18 +214,20 @@ def _analyze_user_move(sess: dict) -> dict | None:
     if _cancelled(sess):
         return None
 
-    # Fallback: inline MCTS if precompute missed
+    # Fallback: inline MCTS if precompute missed. Mirrors the precompute
+    # config — unfiltered + cover_root_edges so action_values is dense.
     if search_result is None:
         model_path = sess["model_path"] if sess["use_model"] else ""
         gs_pre = engine.GameSession(sess["actual_id"], sess["seed"], model_path,
-                                    sess["ai_use_filter"])
+                                    False)
         _apply_tail_solve_config(gs_pre, sess)
         for aid in pre_move_history:
             gs_pre.apply_action(aid)
         if gs_pre.is_terminal:
             return None
         analysis_sims = sess.get("analysis_simulations", DEFAULT_ANALYSIS_SIMULATIONS)
-        search_result = gs_pre.get_ai_action(analysis_sims, 0.0)
+        search_result = gs_pre.get_ai_action(analysis_sims, 0.0,
+                                             cover_root_edges=True)
 
     if _cancelled(sess):
         return None

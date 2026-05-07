@@ -636,6 +636,18 @@ Web 平台相关的 AI 参数独立于训练配置，放在 `web.json` 中管理
 
 **向后兼容**：如果 `web.json` 不存在，平台会回退读取 `game.json` 中的 `web` 字段和 `ai_use_action_filter`。新游戏应使用 `web.json`。
 
+#### 7.2.1 分析 pipeline 的特殊行为（与 AI 实战路径的区别）
+
+录像里"掉点"那一栏来自分析 pipeline（`platform/game_service/pipeline.py`）。它和 AI 实战走 MCTS 的 GameSession 是**两份独立 session**，配置不一样——这条要在新游戏接入时记得：
+
+1. **始终 unfiltered**。无论 `ai_use_action_filter` 是 true 还是 false，分析 session 一律用 `engine.GameSession(..., False)`。原因：人类不受 filter 约束、可以走 filter 外的合法动作；如果分析 session 也带 filter，那一手不会进搜索树，`drop_score` 会**静默**报 0（看着像最佳着法）。AI 实战仍按 `ai_use_action_filter` 走，强度不变。
+
+2. **始终 `cover_root_edges=True`**。`get_ai_action(sims, temperature, cover_root_edges=True)`。该 flag 在 PUCT 之前先把每条 root legal edge 至少 visit 一次，保证 `action_values[a]` 对所有 legal `a` 都是真值，而不是 visit_count=0 时的默认 0（→ 50% 胜率假象）。AI 实战路径不开这个 flag，预算全给 PUCT。
+
+3. **不影响 belief / 隐藏信息处理**。cover 用的还是同一棵 search tree、同一套 root determinization、同一条 backup 路径——和 PUCT 自然采到的那一手语义一致。
+
+如果你新接入一款 `ai_use_action_filter: true` 的游戏，或合法动作空间特别大（比如 Quoridor 的 209 维）、5000 sim 都覆盖不全冷门 edge 的游戏，**不需要** 在配置里特别声明——以上行为是 pipeline 内部的硬规则，对所有游戏一视同仁。
+
 ### 7.3 training 字段
 
 #### MCTS 搜索参数
