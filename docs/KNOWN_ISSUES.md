@@ -1470,3 +1470,69 @@ Azul 专家模式（`difficulty=expert`，启用分析路径）打到终局，�
 - 难度模式（casual / expert）走不同 worker 是个值得记住的差异：casual 不跑 analysis，所以分析路径独有的 bug 不会出现在 casual 复现里——遇到“专家模式才挂”的报告，先 diff `_pipeline_worker` vs `_pipeline_worker_ai_only`。
 
 ---
+
+## [BUG-030] Love Letter encoder 把 tracker 知识泄漏到非 perspective 玩家视角
+
+**分类**：游戏层（Love Letter）
+**状态**：已修（2026-05-07）
+**文件**：`games/loveletter/loveletter_net_adapter.cpp`
+**严重程度**：高 — 信息泄漏导致 MCTS 搜索偏置，无崩溃、不易观测
+
+### 问题描述
+
+MCTS 深入搜索时按当前节点的 `current_player` 视角编码特征。`LoveLetterFeatureEncoder::encode_private()` 在 encoder 使用 tracker 时只判断了 `tracker_ != nullptr`，没有检查 "当前编码的 `player` 是否等于 tracker 绑定的 perspective"。
+
+当根玩家 P 用 Priest 偷看了对手 P1 的手牌后，tracker 记录 `known_hand_[1] = X`。搜索走到 P2 决策节点时，encoder 会对 pid=0,1,2 所有玩家依次调 `tracker_->known_hand(pid)`——即使 P2 视角下 P2 并不知道 P1 的手牌。这条知识被注入 P2 的 features → P2 的决策价值估计偏向 "假设 P2 也知道 P1 是 X" 的分布。
+
+### 根因
+
+Encoder 注释写明 "只有 player == tracker.perspective 才能用 tracker 知识"，但实现缺这条 guard。跨 perspective 的 tracker-derived 信息泄漏是 ISMCTS 框架里最隐性的 bug 类之一：没有 crash，没有 assertion failure，只在训练收敛曲线上体现为 "Love Letter 强度上限低于应有水平"。
+
+### 修复
+
+1. 给 `IBeliefTracker` 增加 `virtual int perspective_player() const` 默认返回 -1；每个游戏的 tracker 实现 override 返回自己绑定的 perspective
+2. `LoveLetterFeatureEncoder::encode_private()` 增加 `if (player != tracker_->perspective_player()) skip tracker block` 的 guard
+3. `tests/framework/test_encoder_respects_hash_scope.py` 扩展 LL 场景：根玩家 Priest 看到 P1 手牌后，从 P2 视角 encode_private 不应包含 P1 信息
+
+### 教训
+
+- encoder 在调 tracker 时**必须**按当前编码的 perspective 过滤。这不是 "优化"，而是正确性前提
+- 类似 pattern 应当在 framework 层抽出通用的 `EncoderContext::tracker_knowledge_if_perspective_matches(pid)` helper，让所有游戏的 encoder 结构化地不可能犯这个 bug。未来新游戏接入时直接走这个 helper
+- 隐性泄漏通过 "同一观察历史但不同 perspective 的 encoder 特征应当一致" 类型的测试断言捕捉
+
+---
+
+## [BUG-031] Web 隔离 AI 会话没有继承 `tail_solve` 配置（web AI 实际未启用 tail-solve）
+
+**分类**：平台层（Web / 隔离 GameSession）
+**状态**：已修（2026-05-07）
+**文件**：`platform/game_service/sessions.py`、`platform/game_service/pipeline.py`、`platform/game_service/routes.py`
+**严重程度**：高 — silent degradation，用户和开发者都误判 AI 强度
+
+### 问题描述
+
+`web.json` 里的 `tail_solve` 配置（depth_limit / node_budget / time_limit_ms / margin_weight）只在创建主 `GameSession` 时被 `configure_tail_solve()` 调用。但 web AI 落子、precompute、hint fallback、analysis 这些路径都会**新建隔离 GameSession**（为了 hash scope 隔离 + 避免污染主 session 的 belief tracker）。新建的隔离会话默认 `ts_enabled_=false`，**`web.json` 的 tail_solve 配置永远不生效**。
+
+### 影响
+
+- 用户和开发者都误以为 web AI = expert（latest + tail-solve），**实际只是 latest**
+- 所有 "web 看起来强不强"、"expert 是不是真的比 latest 强一档"、"端局收官准不准" 的主观判断全都被这条静默偏置污染
+- Eval / arena 结果用 web 配置作 sanity check 时口径错位
+- 属于 BUG-011（ONNX 未编译 → MCTS 走 uniform 静默几周）那一族
+
+### 症状
+
+Web AI 落子 stats 中 `tail_solve_attempted=0`，但 web.json 里明明配了 tail_solve depth/budget。当时没暴露这个 stat 到响应所以肉眼看不出，打开后端日志能看到 ts 走的是 disabled 路径。
+
+### 修复
+
+1. 把 tail-solve 配置（depth, node_budget, time_limit_ms, margin_weight）存进 `sess` 对象
+2. 所有用于 AI move / precompute / analysis / hint fallback 的隔离 `GameSession` 创建后立刻 `configure_tail_solve()`。涉及 `sessions.py` / `pipeline.py` / `routes.py` 三处
+3. `bindings/py_engine.cpp::get_ai_action()` stats 暴露 `tail_solve_attempted / completed / elapsed_ms`，web 响应透传，"是否真的跑了 tail-solve" 肉眼可验证
+4. 加测试：`tests/web/...` 用 Quoridor 末段 8 步内必胜的局面创建 web session，断言 `r["stats"]["tail_solve_attempted"] >= 1`
+
+### 教训
+
+**用户配置和实际生效之间永远要有 stat 暴露**。这是框架级原则：任何 "配置 → 实际行为" 的中间环节都必须有一个可观测的 stat（通过响应 / 日志 / metric）让运维 / 开发者能一眼验证配置生效了。隔离 GameSession 的创建是看不见的"配置重置"节点，必须显式复制配置。原则写入 CLAUDE.md 或 GAME_DEVELOPMENT_GUIDE.md 的 "隔离 session" 章节。
+
+---
