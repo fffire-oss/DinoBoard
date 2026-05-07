@@ -412,6 +412,7 @@ GameBundle 是一个聚合所有游戏组件的结构体。工厂函数返回一
 | 6 | `belief_tracker` | `unique_ptr<IBeliefTracker>` | 否 | 有隐藏信息或物理随机的游戏必须注册 |
 | 7 | `public_event_extractor` | `PublicEventExtractor` | 否 | (before, action, after, perspective) → events；tracker 通过这个更新 belief |
 | 8 | `public_event_applier` | `PublicEventApplier` | 否 | 把事件应用到 state（AI API 侧重放用） |
+| 8b | `public_state_applier` | `PublicStateApplier` | 否 | **强烈推荐隐藏信息游戏实装**。BG-008 Phase 2：`public_event_extractor` 里 populate `PublicEventTrace.public_snapshot`（post-action 的 public 字段全量 dump），`public_state_applier` 把 snapshot 反向写回 state。API 侧 `apply_observation` 在 event 应用完之后调 applier，把 session state_ 的 public 字段从 truth 覆盖过来——彻底消除 "public 输出依赖 session 采样 hidden" 那一类 bug。Round-trip 测试见 `tests/framework/test_public_snapshot_round_trip.py`。完整设计见 `docs/plans/MESSAGE_DRIVEN_AI_REFACTOR.md` |
 | 9 | `initial_observation_extractor` | `InitialObservationExtractor` | 否 | 提取 perspective 的开局可见信息 |
 | 10 | `initial_observation_applier` | `InitialObservationApplier` | 否 | 把 initial observation 填入 state（AI API 侧用） |
 | 11 | `state_serializer` | `StateSerializer` | 否 | 状态序列化为 JSON（Web 前端需要;**也用于规则不变量测试,详见 §11.4**） |

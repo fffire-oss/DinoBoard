@@ -1385,7 +1385,17 @@ for (int count : bag_counts) h.add(count);
 
 副作用：Coup 的 `exchange_drawn{}` 默认值是 `{0, 0}`（`std::array<int8_t, 2>` 的 zero-init），而 `randomize_unseen` 用 `>= 0` 判断 "slot 有真卡"——这是 Coup 从 day-1 就存在的潜在 bug，只不过 `randomize_unseen` 原先只在 MCTS clone 上跑，从没写回 session 持久 state。BG-008 把 `randomize_unseen` 搬到每个 `apply_observation` 末尾后，这个 bug 立刻把 court_deck 偷走 2 张牌。修复点：`coup_state.h` 成员默认 `{-1, -1}`、`coup_state.cpp::reset_with_seed` 显式赋 `{-1, -1}`、`coup_rules.cpp::advance_turn` 的 `= {}` 改成 `= {-1, -1}`。
 
-BG-008 落地之后：`IBeliefTracker::reconcile_state` 虚函数删除；Splendor 的 `reconcile_state` 实现删除；Coup 的 3 个 truth-sync event 继续存在（它们 pin 的是 `hash_private_fields` 里的 perspective 私有字段，不是 public hash 漂移的补丁，仍然必要）。
+BG-008 MVP-B 落地之后：`IBeliefTracker::reconcile_state` 虚函数删除；Splendor 的 `reconcile_state` 实现删除；Coup 的 3 个 truth-sync event 继续存在（它们 pin 的是 `hash_private_fields` 里的 perspective 私有字段，不是 public hash 漂移的补丁，仍然必要）。
+
+**BG-008 Phase 2（2026-05-07 晚，message-driven public state）**：MVP-B 仍然保留 `do_action_fast(session state_)` 这一跑步，要求开发者手动在 `public_event_extractor` 里为每个 "public 输出读 hidden" 的路径写 truth-override 补丁 event（LL round_end、Coup public_return_card expected_deck_size / exchange_drawn）。Phase 2 把这整条路径替换成：每个隐藏信息游戏注册 `public_state_applier`，`public_event_extractor` 在 `PublicEventTrace.public_snapshot` 里 dump post-action public state 全量。`apply_observation` 末尾统一调 applier 把 session state_ 的 public 字段从 truth 覆盖，`do_action_fast` 的公共输出是什么不再重要。效果：
+
+1. **LL `round_end` post-event 删除** —— snapshot 里的 `winner`/`terminal` 把 `check_end_game` 读 hidden 产生的错误 winner 覆盖掉
+2. **Coup `public_return_card` post-event 删除** —— snapshot 里的 `court_deck_size` 覆盖尺寸漂移；新增 `exchange_drawn_mask` 覆盖 shape（opp 私有 char id 不泄漏，perspective 自己的走 `self_exchange_draw`）
+3. **新游戏入职心智负担下降** —— 不再需要人肉识别 "do_action_fast 里哪个公共输出读了 hidden"，snapshot 是 public 的 single source of truth
+4. **回归保护新增**：`tests/framework/test_public_snapshot_round_trip.py` 逐 ply 检查 `truth → extract snapshot → blank observer → apply snapshot → hash_public byte-equal truth`，钉住 applier + extractor + hash_public_fields 三件套的 field-level 一致性
+5. **OB-005 数据层修复**：selfplay_runner 改成持有 N 个 per-perspective tracker，每个 tracker init 一次后只 observe_public_event 增量更新。MCTS root 暂时仍走 legacy 单 tracker 路径（per-perspective tracker 的 narrower belief 暴露了 LL hash scope 的 latent bug，独立 audit 后再合流）
+
+完整设计见 `docs/plans/MESSAGE_DRIVEN_AI_REFACTOR.md`。
 
 回归保护：`tests/framework/test_public_hash_excludes_internal_rng.py`（60-seed × 4 hidden-info 游戏）+ `tests/framework/test_session_hidden_fields_resampled.py`（新增，断言 session state_ 的隐藏字段在每 ply 末被重新采样），连续 5 次稳定通过。
 
