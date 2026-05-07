@@ -33,9 +33,19 @@ enum class EventPhase { kPreAction = 0, kPostAction = 1 };
 using PublicEvent = std::pair<std::string, AnyMap>;
 
 // Events for a single action, split by phase.
+//
+// `public_snapshot` (BG-008 Phase 2, message-driven public state): an
+// OPTIONAL truth-side serialization of the post-action public fields.
+// Games that register a `public_state_applier` (see game_registry.h)
+// populate this in their extractor; observer sessions then overwrite
+// their state_'s public fields from it at the end of apply_observation,
+// bypassing `do_action_fast(observer_state_)` entirely for public推进.
+// Empty map for games without an applier (fallback to do_action_fast +
+// post_events path). See docs/plans/MESSAGE_DRIVEN_AI_REFACTOR.md.
 struct PublicEventTrace {
   std::vector<PublicEvent> pre_events{};
   std::vector<PublicEvent> post_events{};
+  AnyMap public_snapshot{};
 };
 
 class IGameState {

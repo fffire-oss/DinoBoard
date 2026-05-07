@@ -92,6 +92,30 @@ using PublicEventApplier = std::function<void(
     const std::string& kind,
     const AnyMap& payload)>;
 
+// BG-008 Phase 2 (message-driven public state): inverse of the
+// public-fields-only serialization produced by public_event_extractor.
+// Overwrites the observer session's state_ public fields from the truth
+// snapshot at the end of apply_observation, replacing the need to run
+// `do_action_fast(state_, action)` for public推进. This eliminates the
+// entire risk class "observer do_action_fast reads a session-sampled
+// hidden field and produces a public output that diverges from truth".
+//
+// Contract:
+//   - Applier OVERWRITES every public field that hash_public_fields
+//     depends on. Fields absent from the snapshot are left unchanged
+//     (but see `test_public_snapshot_round_trip` — every field that
+//     hash_public_fields reads must round-trip through snapshot+applier).
+//   - Applier MUST NOT touch hidden fields. Those are left for
+//     tracker.randomize_unseen to fill.
+//
+// Optional registration: games without an applier fall back to
+// `do_action_fast + post_events` for public推进. All hidden-info games
+// SHOULD register one; fully-public games (tictactoe, quoridor) don't
+// need one (no hidden → do_action_fast cannot read wrong hidden).
+using PublicStateApplier = std::function<void(
+    IGameState& state,
+    const AnyMap& snapshot)>;
+
 using InitialObservationApplier = std::function<void(
     IGameState& state,
     int perspective_player,
@@ -129,6 +153,10 @@ struct GameBundle {
   // AI API with independent seeds.
   PublicEventExtractor public_event_extractor;
   PublicEventApplier public_event_applier;
+  // BG-008 Phase 2: optional — strongly recommended for hidden-info games.
+  // See PublicStateApplier above. Games without this fall back to
+  // do_action_fast + post_events for public推进 (MVP-B semantics).
+  PublicStateApplier public_state_applier;
   InitialObservationApplier initial_observation_applier;
   InitialObservationExtractor initial_observation_extractor;
   std::string game_id;
