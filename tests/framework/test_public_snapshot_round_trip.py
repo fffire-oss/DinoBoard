@@ -36,7 +36,7 @@ from conftest import get_test_model
 # Populated as stage 1 lands each game. A game is only included here
 # once its public_state_applier is registered + extractor populates
 # PublicEventTrace.public_snapshot.
-GAMES_WITH_APPLIER = ["loveletter", "splendor"]
+GAMES_WITH_APPLIER = ["loveletter", "splendor", "coup", "azul"]
 
 
 def _truth_hashes_after_trace(game_id: str, seed: int, trace):

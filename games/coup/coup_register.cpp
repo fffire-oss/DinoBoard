@@ -360,7 +360,157 @@ PublicEventTrace extract_coup_events(
     out.post_events.push_back({"self_exchange_draw", std::move(payload)});
   }
 
+  // BG-008 Phase 2: full public snapshot. Mirrors
+  // CoupState::hash_public_fields + terminal/winner (not hashed but
+  // observable / used by is_terminal/winner accessors).
+  {
+    AnyMap snap;
+    snap["current_player"] = std::any(static_cast<int>(da.current_player));
+    snap["stage"] = std::any(static_cast<int>(da.stage));
+    snap["ply"] = std::any(static_cast<int>(da.ply));
+    snap["active_player"] = std::any(static_cast<int>(da.active_player));
+    snap["declared_action"] = std::any(static_cast<int>(da.declared_action));
+    snap["action_target"] = std::any(static_cast<int>(da.action_target));
+    snap["challenger"] = std::any(static_cast<int>(da.challenger));
+    snap["challenge_loser"] = std::any(static_cast<int>(da.challenge_loser));
+    snap["blocker"] = std::any(static_cast<int>(da.blocker));
+    snap["block_character"] = std::any(static_cast<int>(da.block_character));
+    snap["challenge_check_index"] = std::any(static_cast<int>(da.challenge_check_index));
+    snap["action_challenged"] = std::any(static_cast<bool>(da.action_challenged));
+    snap["action_challenge_succeeded"] = std::any(static_cast<bool>(da.action_challenge_succeeded));
+    snap["counter_challenged"] = std::any(static_cast<bool>(da.counter_challenged));
+    snap["counter_challenge_succeeded"] = std::any(static_cast<bool>(da.counter_challenge_succeeded));
+    snap["claimed_character"] = std::any(static_cast<int>(da.claimed_character));
+    snap["winner"] = std::any(static_cast<int>(da.winner));
+    snap["terminal"] = std::any(static_cast<bool>(da.terminal));
+    snap["court_deck_size"] = std::any(static_cast<int>(da.court_deck.size()));
+    snap["exchange_held_count"] = std::any(static_cast<int>(da.exchange_held_count));
+
+    std::vector<int> alive_v(NPlayers);
+    std::vector<int> coins_v(NPlayers);
+    for (int p = 0; p < NPlayers; ++p) {
+      alive_v[p] = da.alive[p] ? 1 : 0;
+      coins_v[p] = static_cast<int>(da.coins[p]);
+    }
+    snap["alive"] = std::any(alive_v);
+    snap["coins"] = std::any(coins_v);
+
+    // revealed flags (all public) + revealed character IDs (public
+    // because the character is face-up once revealed). Unrevealed
+    // character IDs stay private — don't include them.
+    std::vector<int> revealed_flat(NPlayers * 2);
+    std::vector<int> revealed_char_flat(NPlayers * 2, -1);
+    for (int p = 0; p < NPlayers; ++p) {
+      for (int sl = 0; sl < 2; ++sl) {
+        const int idx = p * 2 + sl;
+        revealed_flat[idx] = da.revealed[p][sl] ? 1 : 0;
+        if (da.revealed[p][sl]) {
+          revealed_char_flat[idx] = static_cast<int>(da.influence[p][sl]);
+        }
+      }
+    }
+    snap["revealed_flat"] = std::any(revealed_flat);
+    snap["revealed_char_flat"] = std::any(revealed_char_flat);
+
+    out.public_snapshot = std::move(snap);
+  }
+
   return out;
+}
+
+// BG-008 Phase 2: applier — writes public fields from truth snapshot.
+// Private fields (unrevealed influence, opp exchange_drawn, deck content)
+// are left untouched for tracker + self_* events + randomize_unseen.
+template <int NPlayers>
+void apply_coup_public_state(IGameState& state, const AnyMap& snap) {
+  using namespace board_ai::coup;
+  auto& s = board_ai::checked_cast<CoupState<NPlayers>>(state);
+  auto& d = s.data;
+
+  auto get_int = [&](const char* key) -> int {
+    auto it = snap.find(key);
+    return (it != snap.end()) ? std::any_cast<int>(it->second) : 0;
+  };
+  auto get_bool = [&](const char* key) -> bool {
+    auto it = snap.find(key);
+    return (it != snap.end()) ? std::any_cast<bool>(it->second) : false;
+  };
+  // Robust int-vector accessor: handles vector<int> + empty-vector<any>
+  // fallback (py_to_any defaults empty lists to vector<any>).
+  auto get_iv = [&](const char* key) -> std::vector<int> {
+    auto it = snap.find(key);
+    if (it == snap.end()) return {};
+    if (it->second.type() == typeid(std::vector<int>)) {
+      return std::any_cast<std::vector<int>>(it->second);
+    }
+    if (it->second.type() == typeid(std::vector<std::any>)) {
+      const auto& av = std::any_cast<const std::vector<std::any>&>(it->second);
+      std::vector<int> out;
+      out.reserve(av.size());
+      for (const auto& x : av) {
+        if (x.type() == typeid(int)) out.push_back(std::any_cast<int>(x));
+      }
+      return out;
+    }
+    return {};
+  };
+
+  d.current_player = static_cast<std::int8_t>(get_int("current_player"));
+  d.stage = static_cast<CoupStage>(get_int("stage"));
+  d.ply = static_cast<std::int16_t>(get_int("ply"));
+  d.active_player = static_cast<std::int8_t>(get_int("active_player"));
+  d.declared_action = static_cast<ActionId>(get_int("declared_action"));
+  d.action_target = static_cast<std::int8_t>(get_int("action_target"));
+  d.challenger = static_cast<std::int8_t>(get_int("challenger"));
+  d.challenge_loser = static_cast<std::int8_t>(get_int("challenge_loser"));
+  d.blocker = static_cast<std::int8_t>(get_int("blocker"));
+  d.block_character = static_cast<CharId>(get_int("block_character"));
+  d.challenge_check_index = static_cast<std::int8_t>(get_int("challenge_check_index"));
+  d.action_challenged = get_bool("action_challenged");
+  d.action_challenge_succeeded = get_bool("action_challenge_succeeded");
+  d.counter_challenged = get_bool("counter_challenged");
+  d.counter_challenge_succeeded = get_bool("counter_challenge_succeeded");
+  d.claimed_character = static_cast<CharId>(get_int("claimed_character"));
+  d.winner = static_cast<std::int8_t>(get_int("winner"));
+  d.terminal = get_bool("terminal");
+  d.exchange_held_count = static_cast<std::int8_t>(get_int("exchange_held_count"));
+
+  auto alive_v = get_iv("alive");
+  auto coins_v = get_iv("coins");
+  for (int p = 0; p < NPlayers; ++p) {
+    if (p < static_cast<int>(alive_v.size())) d.alive[p] = alive_v[p] != 0;
+    if (p < static_cast<int>(coins_v.size())) d.coins[p] = static_cast<std::int8_t>(coins_v[p]);
+  }
+
+  auto revealed_flat = get_iv("revealed_flat");
+  auto revealed_char_flat = get_iv("revealed_char_flat");
+  for (int p = 0; p < NPlayers; ++p) {
+    for (int sl = 0; sl < 2; ++sl) {
+      const int idx = p * 2 + sl;
+      if (idx < static_cast<int>(revealed_flat.size())) {
+        d.revealed[p][sl] = (revealed_flat[idx] != 0);
+      }
+      // For revealed slots, overwrite the character; for unrevealed,
+      // leave it (tracker/truth_reveal handle perspective's own, opp
+      // stays as sampled value).
+      if (idx < static_cast<int>(revealed_char_flat.size()) &&
+          revealed_flat[idx] != 0 && revealed_char_flat[idx] >= 0) {
+        d.influence[p][sl] = static_cast<CharId>(revealed_char_flat[idx]);
+      }
+    }
+  }
+
+  // Court deck size public; content will be filled by randomize_unseen.
+  const int target = get_int("court_deck_size");
+  if (target >= 0) {
+    if (static_cast<int>(d.court_deck.size()) > target) {
+      d.court_deck.resize(static_cast<size_t>(target));
+    } else {
+      while (static_cast<int>(d.court_deck.size()) < target) {
+        d.court_deck.push_back(-1);  // placeholder
+      }
+    }
+  }
 }
 
 // initial_observation for AI API: perspective sees their own starting hand.
@@ -562,6 +712,7 @@ board_ai::GameBundle make_coup(const std::string& game_id, std::uint64_t seed) {
   b.heuristic_picker = heuristic_random;
   b.public_event_extractor = extract_coup_events<NPlayers>;
   b.public_event_applier = apply_coup_event<NPlayers>;
+  b.public_state_applier = apply_coup_public_state<NPlayers>;
   b.initial_observation_extractor = extract_coup_initial_observation<NPlayers>;
   b.initial_observation_applier = apply_coup_initial_observation<NPlayers>;
   return b;

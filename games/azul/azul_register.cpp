@@ -276,7 +276,181 @@ PublicEventTrace extract_events(
     payload["factories"] = std::any(factories_to_any(sa));
     out.post_events.emplace_back("factory_refill", std::move(payload));
   }
+
+  // BG-008 Phase 2: full public snapshot mirroring
+  // AzulState::hash_public_fields. Azul has no per-perspective private
+  // info (bag order is symmetric hidden to ALL), so the snapshot is
+  // literally the whole public state.
+  {
+    AnyMap snap;
+    snap["current_player"] = std::any(static_cast<int>(sa.current_player_));
+    snap["first_player_next_round"] = std::any(static_cast<int>(sa.first_player_next_round));
+    snap["winner"] = std::any(static_cast<int>(sa.winner_));
+    snap["round_index"] = std::any(static_cast<int>(sa.round_index));
+    snap["terminal"] = std::any(static_cast<bool>(sa.terminal));
+    snap["first_player_token_in_center"] = std::any(static_cast<bool>(sa.first_player_token_in_center));
+    snap["shared_victory"] = std::any(static_cast<bool>(sa.shared_victory));
+
+    std::vector<int> scores_v(sa.scores.begin(), sa.scores.end());
+    snap["scores"] = std::any(scores_v);
+
+    // Factories: flattened kFactories * kColors.
+    std::vector<int> factories_flat;
+    factories_flat.reserve(sa.factories.size() * board_ai::azul::kColors);
+    for (const auto& fac : sa.factories) {
+      for (std::uint8_t c : fac) factories_flat.push_back(static_cast<int>(c));
+    }
+    snap["factories_flat"] = std::any(factories_flat);
+
+    std::vector<int> center_v;
+    center_v.reserve(sa.center.size());
+    for (std::uint8_t c : sa.center) center_v.push_back(static_cast<int>(c));
+    snap["center"] = std::any(center_v);
+
+    // Bag / box_lid are multisets for hash_public_fields purposes.
+    // The snapshot carries them as full vectors (preserving order)
+    // because the observer's bag DRAW ORDER is sampled by
+    // randomize_unseen anyway — but we need the MULTISET (count per
+    // color) pinned to truth. Encoding as full vector with actual
+    // truth order also works; randomize_unseen will shuffle.
+    std::vector<int> bag_v;
+    bag_v.reserve(sa.bag.size());
+    for (auto t : sa.bag) bag_v.push_back(static_cast<int>(t));
+    snap["bag"] = std::any(bag_v);
+
+    std::vector<int> box_v;
+    box_v.reserve(sa.box_lid.size());
+    for (auto t : sa.box_lid) box_v.push_back(static_cast<int>(t));
+    snap["box_lid"] = std::any(box_v);
+
+    // Per-player boards: line_len, line_color, wall_mask, floor_count,
+    // floor, score. Flatten into keyed arrays.
+    const int NP = NPlayers;
+    std::vector<int> line_len_flat(NP * board_ai::azul::kRows);
+    std::vector<int> line_color_flat(NP * board_ai::azul::kRows);
+    std::vector<int> wall_mask_flat(NP * board_ai::azul::kRows);
+    std::vector<int> floor_flat(NP * 7);
+    std::vector<int> floor_count_v(NP);
+    std::vector<int> player_score_v(NP);
+    for (int p = 0; p < NP; ++p) {
+      const auto& pb = sa.players[p];
+      for (int r = 0; r < board_ai::azul::kRows; ++r) {
+        line_len_flat[p * board_ai::azul::kRows + r] = static_cast<int>(pb.line_len[r]);
+        line_color_flat[p * board_ai::azul::kRows + r] = static_cast<int>(pb.line_color[r]);
+        wall_mask_flat[p * board_ai::azul::kRows + r] = static_cast<int>(pb.wall_mask[r]);
+      }
+      for (int f = 0; f < 7; ++f) floor_flat[p * 7 + f] = static_cast<int>(pb.floor[f]);
+      floor_count_v[p] = static_cast<int>(pb.floor_count);
+      player_score_v[p] = pb.score;
+    }
+    snap["line_len_flat"] = std::any(line_len_flat);
+    snap["line_color_flat"] = std::any(line_color_flat);
+    snap["wall_mask_flat"] = std::any(wall_mask_flat);
+    snap["floor_flat"] = std::any(floor_flat);
+    snap["floor_count"] = std::any(floor_count_v);
+    snap["player_score"] = std::any(player_score_v);
+
+    out.public_snapshot = std::move(snap);
+  }
+
   return out;
+}
+
+// BG-008 Phase 2: applier — writes public fields from truth snapshot.
+template <int NPlayers>
+void apply_public_state(IGameState& state, const AnyMap& snap) {
+  auto& s = board_ai::checked_cast<AzulState<NPlayers>>(state);
+
+  auto get_int = [&](const char* key) -> int {
+    auto it = snap.find(key);
+    return (it != snap.end()) ? std::any_cast<int>(it->second) : 0;
+  };
+  auto get_bool = [&](const char* key) -> bool {
+    auto it = snap.find(key);
+    return (it != snap.end()) ? std::any_cast<bool>(it->second) : false;
+  };
+  // Robust int-vector accessor: handles both vector<int> and
+  // vector<any> (empty-list case where py_to_any can't detect
+  // all-int-because-empty and defaults to vector<any>).
+  auto get_iv = [&](const char* key) -> std::vector<int> {
+    auto it = snap.find(key);
+    if (it == snap.end()) return {};
+    if (it->second.type() == typeid(std::vector<int>)) {
+      return std::any_cast<std::vector<int>>(it->second);
+    }
+    if (it->second.type() == typeid(std::vector<std::any>)) {
+      const auto& av = std::any_cast<const std::vector<std::any>&>(it->second);
+      std::vector<int> out;
+      out.reserve(av.size());
+      for (const auto& x : av) {
+        if (x.type() == typeid(int)) out.push_back(std::any_cast<int>(x));
+      }
+      return out;
+    }
+    return {};
+  };
+
+  s.current_player_ = get_int("current_player");
+  s.first_player_next_round = get_int("first_player_next_round");
+  s.winner_ = get_int("winner");
+  s.round_index = get_int("round_index");
+  s.terminal = get_bool("terminal");
+  s.first_player_token_in_center = get_bool("first_player_token_in_center");
+  s.shared_victory = get_bool("shared_victory");
+
+  auto scores_v = get_iv("scores");
+  for (int p = 0; p < NPlayers && p < static_cast<int>(scores_v.size()); ++p) {
+    s.scores[p] = scores_v[p];
+  }
+
+  auto factories_flat = get_iv("factories_flat");
+  for (size_t f = 0; f < s.factories.size(); ++f) {
+    for (size_t c = 0; c < s.factories[f].size(); ++c) {
+      const size_t idx = f * s.factories[f].size() + c;
+      if (idx < factories_flat.size()) {
+        s.factories[f][c] = static_cast<std::uint8_t>(factories_flat[idx]);
+      } else {
+        s.factories[f][c] = 0;
+      }
+    }
+  }
+
+  auto center_v = get_iv("center");
+  for (size_t c = 0; c < s.center.size(); ++c) {
+    s.center[c] = (c < center_v.size()) ? static_cast<std::uint8_t>(center_v[c]) : 0;
+  }
+
+  auto bag_v = get_iv("bag");
+  s.bag.clear();
+  s.bag.reserve(bag_v.size());
+  for (int t : bag_v) s.bag.push_back(static_cast<std::int8_t>(t));
+
+  auto box_v = get_iv("box_lid");
+  s.box_lid.clear();
+  s.box_lid.reserve(box_v.size());
+  for (int t : box_v) s.box_lid.push_back(static_cast<std::int8_t>(t));
+
+  auto line_len_flat = get_iv("line_len_flat");
+  auto line_color_flat = get_iv("line_color_flat");
+  auto wall_mask_flat = get_iv("wall_mask_flat");
+  auto floor_flat = get_iv("floor_flat");
+  auto floor_count_v = get_iv("floor_count");
+  auto player_score_v = get_iv("player_score");
+  for (int p = 0; p < NPlayers; ++p) {
+    auto& pb = s.players[p];
+    for (int r = 0; r < board_ai::azul::kRows; ++r) {
+      const int idx = p * board_ai::azul::kRows + r;
+      if (idx < static_cast<int>(line_len_flat.size())) pb.line_len[r] = static_cast<std::uint8_t>(line_len_flat[idx]);
+      if (idx < static_cast<int>(line_color_flat.size())) pb.line_color[r] = static_cast<std::int8_t>(line_color_flat[idx]);
+      if (idx < static_cast<int>(wall_mask_flat.size())) pb.wall_mask[r] = static_cast<std::uint8_t>(wall_mask_flat[idx]);
+    }
+    for (int f = 0; f < 7; ++f) {
+      const int idx = p * 7 + f;
+      if (idx < static_cast<int>(floor_flat.size())) pb.floor[f] = static_cast<std::int8_t>(floor_flat[idx]);
+    }
+    if (p < static_cast<int>(floor_count_v.size())) pb.floor_count = static_cast<std::uint8_t>(floor_count_v[p]);
+    if (p < static_cast<int>(player_score_v.size())) pb.score = player_score_v[p];
+  }
 }
 
 template <int NPlayers>
@@ -471,6 +645,7 @@ board_ai::GameBundle make_azul(const std::string& game_id, std::uint64_t seed) {
   b.heuristic_picker = azul_heuristic::pick<NPlayers>;
   b.public_event_extractor = azul_events::extract_events<NPlayers>;
   b.public_event_applier = azul_events::apply_event<NPlayers>;
+  b.public_state_applier = azul_events::apply_public_state<NPlayers>;
   b.initial_observation_extractor = azul_events::extract_initial_observation<NPlayers>;
   b.initial_observation_applier = azul_events::apply_initial_observation<NPlayers>;
 

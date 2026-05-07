@@ -529,11 +529,24 @@ void apply_public_state(IGameState& state, const AnyMap& snap) {
     auto it = snap.find(key);
     return (it != snap.end()) ? std::any_cast<bool>(it->second) : false;
   };
+  // Robust int-vector accessor: handles vector<int> + empty-vector<any>
+  // fallback (py_to_any defaults empty lists to vector<any>).
   auto get_iv = [&](const char* key) -> std::vector<int> {
     auto it = snap.find(key);
-    return (it != snap.end())
-        ? std::any_cast<std::vector<int>>(it->second)
-        : std::vector<int>{};
+    if (it == snap.end()) return {};
+    if (it->second.type() == typeid(std::vector<int>)) {
+      return std::any_cast<std::vector<int>>(it->second);
+    }
+    if (it->second.type() == typeid(std::vector<std::any>)) {
+      const auto& av = std::any_cast<const std::vector<std::any>&>(it->second);
+      std::vector<int> out;
+      out.reserve(av.size());
+      for (const auto& x : av) {
+        if (x.type() == typeid(int)) out.push_back(std::any_cast<int>(x));
+      }
+      return out;
+    }
+    return {};
   };
 
   mutate_persistent<NPlayers>(s, [&](SplendorData<NPlayers>& d) {
