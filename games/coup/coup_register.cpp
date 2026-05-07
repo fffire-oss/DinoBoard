@@ -311,11 +311,25 @@ PublicEventTrace extract_coup_events(
   // the public return), so do_action_fast can take the removed=false branch
   // and skip the push — drifting court_deck.size(), which IS in
   // hash_public_fields, splitting the perspective hash across worlds.
-  // Sync the AI session's deck size to truth.
+  //
+  // Also carries truth's exchange_drawn AFTER the return. For opp-actor
+  // case, session's exchange_drawn may hold sampled cards (from prior
+  // randomize_unseen) that don't match truth's removal; without the
+  // override, session's exchange_drawn count of non-(-1) slots drifts
+  // from truth's, which then poisons randomize_unseen's slot-count
+  // invariant at the next ply (fall-back uniform path, non-deterministic
+  // public outputs). Applied post-action overrides both do_action_fast's
+  // session-sampled exchange_drawn and the stage transition.
   if (action >= kReturnDuke && action <= kReturnContessa) {
     AnyMap payload;
     payload["card"] = std::any(static_cast<int>(action - kReturnDuke));
     payload["expected_deck_size"] = std::any(static_cast<int>(da.court_deck.size()));
+    std::vector<int> truth_xd;
+    truth_xd.reserve(2);
+    for (int i = 0; i < 2; ++i) {
+      truth_xd.push_back(static_cast<int>(da.exchange_drawn[i]));
+    }
+    payload["exchange_drawn"] = std::any(truth_xd);
     out.post_events.push_back({"public_return_card", std::move(payload)});
   }
 
@@ -465,6 +479,22 @@ void apply_coup_event(
       while (static_cast<int>(d.court_deck.size()) > expected &&
              !d.court_deck.empty()) {
         d.court_deck.pop_back();
+      }
+    }
+    // Override exchange_drawn to truth's post-action values. Session's
+    // do_action_fast may have left exchange_drawn in a different shape
+    // (e.g. session's sampled exchange_drawn didn't contain the returned
+    // role, so Return1 fell back to influence search). The next ply's
+    // randomize_unseen slot enumeration uses exchange_drawn's non-(-1)
+    // count, and truth/session mismatch there poisons the
+    // total_remaining == slots.size() invariant → uniform fall-back →
+    // non-deterministic public output.
+    auto it_xd = payload.find("exchange_drawn");
+    if (it_xd != payload.end()) {
+      const auto& xd = std::any_cast<const std::vector<int>&>(it_xd->second);
+      if (xd.size() == 2) {
+        d.exchange_drawn[0] = static_cast<CharId>(xd[0]);
+        d.exchange_drawn[1] = static_cast<CharId>(xd[1]);
       }
     }
     return;

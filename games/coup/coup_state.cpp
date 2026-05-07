@@ -55,6 +55,13 @@ void CoupState<NPlayers>::reset_with_seed(std::uint64_t seed) {
     data.alive[p] = true;
   }
 
+  // exchange_drawn uses -1 as sentinel for "no card"; default-init of
+  // std::array<int8_t, 2> zero-fills to {0, 0}, which randomize_unseen
+  // treats as "two valid Duke cards in this player's exchange hand",
+  // silently stealing 2 slots from court_deck on every sim (surfaced by
+  // BG-008 MVP: end-of-apply randomize_unseen on bundle_->state).
+  data.exchange_drawn = {-1, -1};
+
   data.current_player = 0;
   data.first_player = 0;
   data.active_player = 0;

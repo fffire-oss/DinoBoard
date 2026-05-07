@@ -563,6 +563,21 @@ PublicEventTrace extract_events(
     out.post_events.emplace_back("drawn_override", std::move(payload));
   }
 
+  // Post-event 3: terminal transition. `check_end_game` inside do_action_fast
+  // computes winner from d.hand[all alive] when deck empties (line 160 of
+  // loveletter_rules.cpp). If session's d.hand[opp] is session-sampled
+  // (different from truth), session computes wrong winner → public-hash
+  // drift. Emitting truth winner as a post-event idempotently overrides
+  // session's check_end_game output. Sole-survivor path produces truth
+  // values already, so this is a no-op there; deck-empty path gets
+  // corrected. This makes session public output invariant to the opp-hand
+  // sample at action time — enabling BG-008 MVP (freshen-at-end-of-apply).
+  if (da.terminal && !db.terminal) {
+    AnyMap payload;
+    payload["winner"] = std::any(static_cast<int>(da.winner));
+    out.post_events.emplace_back("round_end", std::move(payload));
+  }
+
   return out;
 }
 
@@ -581,6 +596,10 @@ void apply_event(IGameState& state, EventPhase /*phase*/,
   } else if (kind == "drawn_override") {
     const int card = std::any_cast<int>(payload.at("card"));
     d.drawn_card = static_cast<std::int8_t>(card);
+  } else if (kind == "round_end") {
+    const int winner = std::any_cast<int>(payload.at("winner"));
+    d.winner = static_cast<std::int8_t>(winner);
+    d.terminal = true;
   } else {
     throw std::runtime_error("loveletter: unknown event kind '" + kind + "'");
   }

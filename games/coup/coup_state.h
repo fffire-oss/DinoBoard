@@ -125,7 +125,10 @@ struct CoupData {
 
   int challenge_check_index = 0;
 
-  std::array<CharId, 2> exchange_drawn{};
+  // Sentinel {-1, -1} means "no card in this slot". Must not default to
+  // {0, 0} — randomize_unseen treats >=0 as "valid card in exchange_drawn"
+  // and would count it as a slot to fill, stealing from court_deck.
+  std::array<CharId, 2> exchange_drawn{-1, -1};
   int exchange_held_count = 0;
 
   std::uint64_t draw_nonce = 0;

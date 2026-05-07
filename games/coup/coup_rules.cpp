@@ -106,7 +106,7 @@ void advance_turn(CoupData<NPlayers>& d) {
   d.counter_challenged = false;
   d.counter_challenge_succeeded = false;
   d.challenge_check_index = 0;
-  d.exchange_drawn = {};
+  d.exchange_drawn = {-1, -1};  // sentinel, not zero-init (which would be {0,0})
   d.exchange_held_count = 0;
 }
 

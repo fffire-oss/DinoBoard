@@ -925,23 +925,27 @@ class GameSessionWrapper {
       std::vector<PublicEvent> pre_events_v(pre_list.begin(), pre_list.end());
       std::vector<PublicEvent> post_events_v(post_list.begin(), post_list.end());
       bt_->observe_public_event(actor, action, pre_events_v, post_events_v);
-      // Give the tracker a chance to reconcile public state invariants
-      // that per-event appliers can't maintain (e.g. Splendor deck size
-      // drifts when slot-shift and deck-draw are conflated in deck_flip
-      // events). Default implementation is a no-op.
+      // BG-008: freshen hidden state by re-sampling via randomize_unseen.
+      // The contract (see belief_tracker.h) guarantees public invariants —
+      // after this call, state_'s public fields match truth regardless of
+      // per-event applier drift (Splendor deck size, Coup court deck,
+      // etc.), and any session-RNG-specific hidden that might otherwise
+      // accumulate is overwritten by a fresh sample.
       //
-      // WHY NOT FULL randomize_unseen HERE (BG-008 aborted MVP, 2026-05-07):
-      // Calling randomize_unseen at end of apply_observation re-samples
-      // opp hidden fields (e.g. LL d.hand[opp]), which the NEXT
-      // apply_observation's do_action_fast then reads via terminal-check
-      // / end-of-deck paths → session-specific terminal/winner → public
-      // hash drift. reconcile_state is the narrower hook: it may rewrite
-      // deck content / opp hidden placeholders whose values do NOT feed
-      // back into do_action_fast's public outputs. Full "session state
-      // is just materialized on demand" (design intent B) requires the
-      // tracker to own canonical public state AND do_action_fast to not
-      // run on session state_ — too big for this MVP. Tracked as BG-008.
-      bt_->reconcile_state(*bundle_->state);
+      // Precondition on the game's public_event_extractor: public outputs
+      // of do_action_fast that could read hidden fields must also be
+      // emitted as events so the applier can override them. LL added
+      // `round_end` for this (winner-from-hidden at deck-empty). Games
+      // whose do_action_fast public outputs never read hidden (Splendor,
+      // Coup, Azul) have nothing to add.
+      //
+      // Deterministic RNG so the session's behavior is reproducible from
+      // (seed_, ply_count_).
+      const std::uint64_t freshen_seed = seed_ ^
+          (static_cast<std::uint64_t>(ply_count_) * kGoldenRatio64) ^
+          0xCAFEF00DD15EA5E5ULL;
+      std::mt19937 freshen_rng(static_cast<std::uint32_t>(freshen_seed));
+      bt_->randomize_unseen(*bundle_->state, freshen_rng);
     }
     ++ply_count_;
   }
