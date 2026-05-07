@@ -787,7 +787,8 @@ class GameSessionWrapper {
   // Advance ai_view for a single perspective using the public-event
   // protocol: extract events from the truth transition for this observer,
   // then apply (pre-events → action → post-events) on ai_views_[p]. This
-  // mirrors what the external AI API would see through apply_observation.
+  // mirrors the external AI API's apply_observation flow, including
+  // BG-008 Phase 2 public_snapshot override + randomize_unseen freshen.
   void advance_ai_view_(int perspective, const IGameState& truth_before,
                         ActionId action) {
     if (perspective < 0 || perspective >= static_cast<int>(ai_views_.size())) return;
@@ -813,9 +814,21 @@ class GameSessionWrapper {
       bundle_->public_event_applier(
           *ai_views_[perspective], EventPhase::kPostAction, kind, payload);
     }
+    // BG-008 Phase 2: apply truth-side public snapshot, eliminating any
+    // drift from ai_view's do_action_fast reading sampled hidden.
+    if (bundle_->public_state_applier && !trace.public_snapshot.empty()) {
+      bundle_->public_state_applier(*ai_views_[perspective], trace.public_snapshot);
+    }
     if (ai_trackers_[perspective]) {
       ai_trackers_[perspective]->observe_public_event(
           actor, action, trace.pre_events, trace.post_events);
+      // BG-008: freshen ai_view hidden state. Deterministic RNG derived
+      // from (seed_, ply_count_, perspective) so behavior is reproducible.
+      const std::uint64_t freshen_seed = seed_ ^
+          (static_cast<std::uint64_t>(ply_count_) * kGoldenRatio64) ^
+          (static_cast<std::uint64_t>(perspective) * 0xCAFEF00DD15EA5E5ULL);
+      std::mt19937 freshen_rng(static_cast<std::uint32_t>(freshen_seed));
+      ai_trackers_[perspective]->randomize_unseen(*ai_views_[perspective], freshen_rng);
     }
   }
 
