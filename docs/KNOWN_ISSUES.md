@@ -1379,3 +1379,29 @@ for (int count : bag_counts) h.add(count);
 5. 对每个新游戏应加测试：改变不可观察随机源顺序或 RNG salt，在 public + own private 不变时，`state_hash_for_perspective(p)` 必须不变；同时改变公开可推导的 composition 时 hash 必须变化。
 
 ---
+
+## [DEC-001] 旧 2p 标量价值头永久兼容（显式契约，不是 BUG）
+
+### 背景
+
+引入 N-dim value head 之前，所有 2p 游戏（tictactoe / quoridor 2p / splendor 2p / azul 2p / loveletter 2p / coup 2p）训练出的 `model_best.onnx` 都是 `[1, 1]` 标量输出 = perspective player 在 [-1, 1] 上的期望价值。这些模型已经在 web 对局、录像分析、智能提示、eval 流水线中被反复使用，重新训练成本不可忽视。
+
+### 契约
+
+`OnnxPolicyValueEvaluator::evaluate`（`engine/infer/onnx_policy_value_evaluator.cpp`）在 `value_len == 1 && num_players == 2` 时显式按 zero-sum 把标量 `v` 展开为 `(v_perspective, -v_opponent)` 并返回长度 2 的 values 向量。下游一切（`net_mcts.cpp` 的 leaf backup、`bindings/py_engine.cpp` 暴露的 `root_values` / `action_values`、`platform/game_service/pipeline.py` 的 winrate pill / drop-score）都是维度无关的，不需要也不应该有 scalar-aware 分支。
+
+3p+ 的 `value_len == 1` 必须抛错——zero-sum 在 N>2 没有唯一分解，silent broadcast 违反 "No silent degradation" 原则。
+
+### 回归保护
+
+`tests/framework/test_scalar_value_head_compat.py` 把以下行为钉死：
+
+- 标量 `[1, 1]` ONNX 在 `GameSession.get_ai_action` / selfplay / arena 三条路径都能跑，`root_values` 长度=2 且 zero-sum。
+- `pipeline._human_wr_from_stats` / `_human_wr_for_action` 在标量模型上返回 [0, 1] 之间的胜率，且两个玩家胜率互补。
+- 3p loveletter + 标量 head 必须抛 `value output length` 错误。
+
+### 教训
+
+旧二阶段模型（pre-N-dim）+ 新代码（N-dim 期望）是一种隐性 ABI。重构 value 解码路径时（任何对 `OnnxPolicyValueEvaluator::evaluate` value branch 的修改），必须先确认 scalar 2p 分支保留或显式迁移；一行删掉就会让所有 2p 旧模型悄无声息地失效——症状是 web 胜率/分析直接 throw `value output length 1 for 2 players` 之类的运行期错误，没有 evaluator 这一层兜底就根本走不通推理路径。
+
+---

@@ -63,6 +63,10 @@ The AI decision pipeline — belief tracking, feature encoding, MCTS search — 
 - Training targets use `sample["z_values"]` (per-player vector) rotated to perspective order, not the scalar `sample["z"]`.
 - `game_metadata(game_id)` returns `{num_players, action_space, feature_dim}` from C++ — always prefer this over hardcoded JSON values for variant-aware code.
 
+**Legacy scalar value head compatibility (2-player only).** Older 2p models (`tictactoe`, `quoridor` 2p, `splendor` 2p, `azul` 2p, `loveletter` 2p, `coup` 2p) were trained with a `[1, 1]` scalar value head, where the single output is the perspective player's value in [-1, 1]. The full 2p AI chain — selfplay, eval, web gameplay (winrate pill), replay analysis, smart hints (drop-score) — must continue to load and run these models without retraining. Compatibility lives in exactly one place: `OnnxPolicyValueEvaluator::evaluate`'s `value_len == 1 && num_players == 2` branch (`engine/infer/onnx_policy_value_evaluator.cpp`), which expands the scalar `v` into `(v_perspective, -v_opponent)` by zero-sum and returns a length-2 `values` vector indistinguishable downstream from an N-dim model. Everything past the evaluator (MCTS leaf backup, `root_values`/`action_values` bindings, `pipeline.py` analysis) is dimension-agnostic and needs no scalar-aware code.
+
+This compatibility does **not** extend to 3p/4p: `value_len == 1 && num_players > 2` throws — there is no zero-sum decomposition that pins individual seats, and silently broadcasting would violate "no silent degradation." When refactoring the value-output decoding path, the scalar 2p branch must be preserved or migrated explicitly; deleting it silently breaks every shipped 2p model.
+
 ## Game Architecture
 
 - Engine is fully game-agnostic. All game-specific logic lives in the game's GameBundle registration.

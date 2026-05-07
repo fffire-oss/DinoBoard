@@ -378,6 +378,19 @@ bool OnnxPolicyValueEvaluator::evaluate(
         (*values)[static_cast<size_t>(abs_player)] =
             std::max(-1.0f, std::min(1.0f, value_ptr[i]));
       }
+    } else if (value_len == 1 && num_players == 2) {
+      // Legacy 2-player scalar value head (pre-N-dim). Output is the
+      // perspective player's value in [-1, 1]; opponent's value is -v
+      // by zero-sum assumption. Only safe for 2p — never broadcast to
+      // larger N where zero-sum doesn't pin individual seats.
+      if (!std::isfinite(value_ptr[0])) {
+        throw std::runtime_error(
+            "OnnxPolicyValueEvaluator::evaluate: non-finite scalar value output");
+      }
+      const float v = std::max(-1.0f, std::min(1.0f, value_ptr[0]));
+      values->resize(2);
+      (*values)[static_cast<size_t>(perspective_player)] = v;
+      (*values)[static_cast<size_t>(1 - perspective_player)] = -v;
     } else {
       throw std::runtime_error(
           "OnnxPolicyValueEvaluator::evaluate: value output length " +
