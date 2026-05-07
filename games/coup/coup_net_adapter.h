@@ -33,10 +33,9 @@ class CoupFeatureEncoder final : public IFeatureEncoder {
 
 // Heuristic belief tracker for Coup. Maintains a per-opponent role-signal
 // count derived from public claim/challenge/reveal/exchange history and uses
-// it to bias `randomize_unseen` away from uniform sampling. See
-// docs/GAME_FEATURES_OVERVIEW.md §"Future Work：概率化 Belief Tracking" for
-// motivation: under uniform sampling, MCTS converges to a degenerate "never
-// challenge, never bluff" equilibrium on bluff-heavy games like Coup.
+// it to bias `randomize_unseen` away from uniform sampling. Motivation:
+// under uniform sampling, MCTS converges to a degenerate "never challenge,
+// never bluff" equilibrium on bluff-heavy games like Coup.
 template <int NPlayers>
 class CoupBeliefTracker final : public IBeliefTracker {
  public:

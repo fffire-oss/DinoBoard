@@ -1,22 +1,23 @@
-"""BG-008 Phase 2 stage 1: public_state_applier must be an exact inverse
-of the snapshot extractor at the hash-level.
+"""public_state_applier must be an exact inverse of the snapshot extractor
+at the hash level.
 
-For games that register a `public_state_applier`:
+For every game that registers a `public_state_applier`:
 
   truth state → extractor populates `public_snapshot` in trace step
   blank observer session + apply_initial_observation(perspective)
     + apply that snapshot via apply_public_snapshot
   → observer.state_hash_for_perspective(perspective)
-    MUST equal truth.state_hash_for_perspective(perspective) for all
-    perspectives.
+    MUST equal truth.state_hash_for_perspective(perspective) for every
+    perspective.
 
-If this fails, Phase 2 stage 2 (which wires apply_observation to invoke
-the applier) would silently re-introduce BUG-028-family public drift.
+If this fails, the applier has drifted from `hash_public_fields` and the
+observer's public view no longer matches truth — which is the same
+class of silent public-state drift as BUG-028.
 
-Note: this test uses the direct apply_public_snapshot binding to
-isolate the applier's correctness from apply_observation's full flow.
-Stage 2 will add an additional test that verifies apply_observation
-actually invokes the applier.
+Note: this test uses the direct `apply_public_snapshot` binding to
+isolate the applier's correctness from `apply_observation`'s full flow.
+End-to-end invocation through `apply_observation` is covered by
+`test_api_belief_matches_selfplay` and `test_public_hash_excludes_internal_rng`.
 """
 from __future__ import annotations
 
@@ -33,9 +34,9 @@ import dinoboard_engine as engine
 from conftest import get_test_model
 
 
-# Populated as stage 1 lands each game. A game is only included here
-# once its public_state_applier is registered + extractor populates
-# PublicEventTrace.public_snapshot.
+# Every hidden-info game registers a public_state_applier and has its
+# extractor populate PublicEventTrace.public_snapshot. This list should
+# match that set.
 GAMES_WITH_APPLIER = ["loveletter", "splendor", "coup", "azul"]
 
 

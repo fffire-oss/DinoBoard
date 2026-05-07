@@ -216,8 +216,8 @@ py::dict result_to_py(const runtime::SelfplayEpisodeResult& result) {
         post.append(e);
       }
       entry["post_events"] = post;
-      // BG-008 Phase 2: expose the truth-side public snapshot. Empty
-      // for games without public_state_applier registered.
+      // Truth-side public snapshot. Empty for games without
+      // public_state_applier registered.
       py::dict snap;
       for (const auto& [k, v] : t.public_snapshot) snap[py::cast(k)] = any_to_py(v);
       entry["public_snapshot"] = snap;
@@ -258,19 +258,27 @@ py::dict run_selfplay_episode_py(
   py::gil_scoped_release release;
 
   auto bundle = GameRegistry::instance().create_game(game_id, seed);
+  // Extractors are used by two consumers:
+  //   - per-perspective trackers (pp_trackers below) — init each seat + feed
+  //     public events to every seat.
+  //   - trace_belief_tracker — records a specific perspective's snapshot
+  //     for regression tests.
+  // Must be populated whenever the game registers them, regardless of
+  // trace_perspective. (Forgetting this leaves pp_trackers at
+  // perspective_player_=-1 and randomize_unseen clobbers the current player's
+  // own hand, producing DAG hash collisions at root. See BUG-032.)
+  runtime::PublicEventExtractor trace_extractor = bundle.public_event_extractor;
+  runtime::InitialObservationExtractor trace_obs_extractor =
+      bundle.initial_observation_extractor;
   // For tracing we need a SECOND bundle (and its belief_tracker) dedicated
-  // to the traced perspective. The primary bundle's tracker is re-init'd
-  // every ply by run_selfplay_episode for the current acting player's MCTS.
+  // to the traced perspective, separate from both the main tracker and the
+  // pp_trackers.
   std::unique_ptr<GameBundle> trace_bundle;
   IBeliefTracker* trace_bt = nullptr;
-  runtime::PublicEventExtractor trace_extractor;
-  runtime::InitialObservationExtractor trace_obs_extractor;
   if (trace_perspective >= 0) {
     trace_bundle = std::make_unique<GameBundle>(
         GameRegistry::instance().create_game(game_id, seed));
     trace_bt = trace_bundle->belief_tracker.get();
-    trace_extractor = bundle.public_event_extractor;
-    trace_obs_extractor = bundle.initial_observation_extractor;
     if (!trace_bt || !trace_extractor) {
       py::gil_scoped_acquire acquire;
       throw std::runtime_error(
@@ -319,22 +327,14 @@ py::dict run_selfplay_episode_py(
     cfg.temperature_schedule.decay_plies = temperature_decay_plies;
   }
 
-  IBeliefTracker* bt = bundle.belief_tracker.get();
-  // When ismcts_enabled is FALSE, skip root-sampling entirely (MCTS sees
-  // truth). Useful in early training so the value head can learn from
-  // omniscient rollouts before switching to ISMCTS for proper hidden-info
-  // play. Only affects selfplay; arena/eval always use ISMCTS.
-  if (!ismcts_enabled) {
-    bt = nullptr;
-  }
-
-  // BG-008 Phase 2 stage 5 / OB-005 fix: allocate one fresh tracker per
-  // perspective so each seat's belief accumulates monotonically across
-  // plies. Fall back to the legacy single-tracker path when ISMCTS is
-  // off (truth-eye training) or the game has no belief_tracker.
+  // Allocate one fresh tracker per seat so each perspective's belief
+  // accumulates monotonically across plies. Skipped when ISMCTS is off
+  // (truth-eye training — MCTS sees truth; useful for warming up the
+  // value head before switching to proper hidden-info play) or when the
+  // game has no belief_tracker (perfect-information games).
   std::vector<std::unique_ptr<GameBundle>> pp_bundles;
   std::vector<IBeliefTracker*> pp_trackers;
-  if (bt) {
+  if (ismcts_enabled && bundle.belief_tracker) {
     const int num_players = bundle.state->num_players();
     pp_bundles.reserve(static_cast<size_t>(num_players));
     pp_trackers.reserve(static_cast<size_t>(num_players));
@@ -348,7 +348,6 @@ py::dict run_selfplay_episode_py(
 
   auto result = runtime::run_selfplay_episode(
       *bundle.state, *bundle.rules, *bundle.value_model, *eval_ptr, cfg, seed,
-      bt,
       pp_trackers,
       bundle.encoder.get(),
       bundle.tail_solver.get(),
@@ -806,8 +805,8 @@ class GameSessionWrapper {
   // Advance ai_view for a single perspective using the public-event
   // protocol: extract events from the truth transition for this observer,
   // then apply (pre-events → action → post-events) on ai_views_[p]. This
-  // mirrors the external AI API's apply_observation flow, including
-  // BG-008 Phase 2 public_snapshot override + randomize_unseen freshen.
+  // mirrors the external AI API's apply_observation flow, including the
+  // public_snapshot override and the randomize_unseen freshening.
   void advance_ai_view_(int perspective, const IGameState& truth_before,
                         ActionId action) {
     if (perspective < 0 || perspective >= static_cast<int>(ai_views_.size())) return;
@@ -833,16 +832,18 @@ class GameSessionWrapper {
       bundle_->public_event_applier(
           *ai_views_[perspective], EventPhase::kPostAction, kind, payload);
     }
-    // BG-008 Phase 2: apply truth-side public snapshot, eliminating any
-    // drift from ai_view's do_action_fast reading sampled hidden.
+    // Overwrite ai_view's public fields from the truth snapshot, so the
+    // observer's public state is rebuilt from the message stream and never
+    // reflects do_action_fast's reads of sampled hidden.
     if (bundle_->public_state_applier && !trace.public_snapshot.empty()) {
       bundle_->public_state_applier(*ai_views_[perspective], trace.public_snapshot);
     }
     if (ai_trackers_[perspective]) {
       ai_trackers_[perspective]->observe_public_event(
           actor, action, trace.pre_events, trace.post_events);
-      // BG-008: freshen ai_view hidden state. Deterministic RNG derived
-      // from (seed_, ply_count_, perspective) so behavior is reproducible.
+      // Re-sample ai_view's hidden fields from the tracker's current
+      // information set. Deterministic RNG from (seed_, ply_count_,
+      // perspective) so behavior is reproducible.
       const std::uint64_t freshen_seed = seed_ ^
           (static_cast<std::uint64_t>(ply_count_) * kGoldenRatio64) ^
           (static_cast<std::uint64_t>(perspective) * 0xCAFEF00DD15EA5E5ULL);
@@ -879,11 +880,10 @@ class GameSessionWrapper {
     return out;
   }
 
-  // BG-008 Phase 2 stage 1 test hook: directly invoke the game's
-  // public_state_applier on a given snapshot. Used by
-  // test_public_snapshot_round_trip to verify the applier is a correct
-  // inverse of the extractor without going through apply_observation
-  // (which still falls back to do_action_fast in stage 1).
+  // Test hook: directly invoke the game's public_state_applier on a given
+  // snapshot. Used by test_public_snapshot_round_trip to verify the applier
+  // is a correct inverse of the extractor without going through
+  // apply_observation.
   void apply_public_snapshot(py::dict snapshot) {
     if (!bundle_->public_state_applier) {
       throw std::runtime_error(
@@ -941,32 +941,35 @@ class GameSessionWrapper {
   //   2. Apply all pre-action events (hidden info the action depends on)
   //   3. Apply the action itself
   //   4. Apply all post-action events (override random outcomes)
-  //   5. belief_tracker.observe_public_event(actor, action, pre, post)
-  //   6. belief_tracker.randomize_unseen(state_, freshen_rng)  [BG-008]
+  //   5. public_state_applier overwrites session state_'s public fields
+  //      from the truth snapshot (so public state is message-driven, not
+  //      derived from do_action_fast's read of sampled hidden)
+  //   6. belief_tracker.observe_public_event(actor, action, pre, post)
+  //   7. belief_tracker.randomize_unseen(state_, freshen_rng) — session
+  //      hidden fields re-sampled from tracker's current information set
   //
-  // Tracker is fed the event payloads directly — no state ref crosses its
+  // The tracker is fed event payloads directly; no state ref crosses its
   // observe interface. Pre/post lists are the same events the extractor
   // would have produced on a selfplay state diff, so tracker behavior
   // matches across selfplay and API paths (enforced by
   // test_api_belief_matches_selfplay).
   //
-  // Step 6 (BG-008) re-samples session state_'s hidden fields from the
-  // tracker's current information set, guaranteeing that state_'s public
-  // fields are observation-history-derivable. This eliminates BUG-028-
-  // family RNG drift: whatever the session's internal `draw_nonce` /
-  // mt19937 did during do_action_fast is overwritten, and the next
-  // `state_hash_for_perspective` / clone-for-MCTS starts from a fresh
-  // sample. randomize_unseen's contract (see belief_tracker.h) requires
-  // `hash_public_fields` to be byte-equal across any two trackers with
-  // the same observation history regardless of input state's hidden.
+  // Together, steps 5 and 7 guarantee that after apply_observation returns:
+  //   - session state_'s public fields equal the truth snapshot exactly
+  //     (test_public_snapshot_round_trip);
+  //   - session state_'s hidden fields are a fresh tracker-consistent
+  //     sample, not a copy of truth (test_session_hidden_fields_resampled);
+  //   - `state_hash_for_perspective(own)` on the session is byte-equal to
+  //     running the same observation stream on any other seed, so the AI
+  //     has zero surface to leak truth through
+  //     (test_public_hash_excludes_internal_rng / test_api_belief_matches_selfplay).
   //
   // `pre_events` / `post_events` are lists of {"kind": str, "payload": dict}.
-  // `public_snapshot` (BG-008 Phase 2) is an optional truth-side dump of
-  // all public fields; when non-empty + game has public_state_applier,
-  // it OVERWRITES session state_'s public fields regardless of what
-  // do_action_fast computed, eliminating any "do_action_fast public
-  // output reads hidden" drift surface. All 4 hidden-info games register
-  // the applier; fully-public games (tictactoe, quoridor) don't.
+  // `public_snapshot` is the truth-side dump of all public fields; when
+  // non-empty + game has public_state_applier, it OVERWRITES session
+  // state_'s public fields regardless of what do_action_fast computed.
+  // All 4 hidden-info games register the applier; fully-public games
+  // (tictactoe, quoridor) don't.
   void apply_observation(ActionId action,
                          py::list pre_events,
                          py::list post_events,
@@ -1008,11 +1011,10 @@ class GameSessionWrapper {
       bundle_->public_event_applier(*bundle_->state, EventPhase::kPostAction, kind, payload);
     }
 
-    // BG-008 Phase 2: if the game provides a public_state_applier AND
-    // the caller passed a snapshot, overwrite session state_'s public
-    // fields from truth. Eliminates the risk class "do_action_fast
-    // public output depends on a session-sampled hidden field" by
-    // construction — truth always wins.
+    // If the game provides a public_state_applier AND the caller passed
+    // a snapshot, overwrite session state_'s public fields from truth.
+    // Session public state is therefore rebuilt from the message stream —
+    // do_action_fast's output is discarded on the public side.
     if (have_snapshot && bundle_->public_state_applier) {
       bundle_->public_state_applier(*bundle_->state, snap_map);
     }
@@ -1021,8 +1023,9 @@ class GameSessionWrapper {
       std::vector<PublicEvent> pre_events_v(pre_list.begin(), pre_list.end());
       std::vector<PublicEvent> post_events_v(post_list.begin(), post_list.end());
       bt_->observe_public_event(actor, action, pre_events_v, post_events_v);
-      // BG-008: freshen hidden state. Deterministic RNG from (seed_,
-      // ply_count_) so the session's behavior is reproducible.
+      // Re-sample session state_'s hidden fields from the tracker's
+      // information set. Deterministic RNG from (seed_, ply_count_) so
+      // behavior is reproducible.
       const std::uint64_t freshen_seed = seed_ ^
           (static_cast<std::uint64_t>(ply_count_) * kGoldenRatio64) ^
           0xCAFEF00DD15EA5E5ULL;

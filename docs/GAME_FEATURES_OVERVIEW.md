@@ -346,7 +346,33 @@ AlphaZero 训练的是确定性策略（给定状态输出固定概率分布）�
 
 虽然 `AuxiliaryScorer` 可以注入 game-specific 的辅助奖励，但这本质是 reward shaping，容易引入偏差。更系统的方向是 TD(lambda) 式 value bootstrapping（用 value head 自身的中间预测做 target 而非只用终局 z_values），但这需要 value head 本身有一定准确度才能形成正反馈。当前框架尚未实现。
 
-### 6. 仅 CPU 自博弈
+### 6. ISMCTS 的 strategy fusion：对手节点会"看到"我 tracker 里的已知信息
+
+这是 ISMCTS 算法层面的固有限制，不是实现 bug。当前框架无法从根本上消除，只能靠几条缓解手段压低严重程度。
+
+**症状场景**（Love Letter）：我（p0）上回合用 Priest 看过下家（p1）的手牌，知道是 Guard。轮到 p1 行动时他用 Guard 猜我的手牌。
+
+**发生了什么**：p0 这一步做 MCTS search 时，root determinization 用 `pp_trackers[p0]`。tracker 里 `known_hand_[1] = Guard` 是 p0 累积下来的**确定**知识，randomize_unseen 不会重新抽样它——每个 sim 里 p1 的 hand 都是 Guard。同时，root perspective 自己的 private 也不会被 randomize——每个 sim 里 p0 的 hand 也都是真值。Descent 到 p1 的 Guard 决策节点时，**这个 sub-tree 在所有 sim 里看到的是完全相同的 determinized 世界**：p0 hand 固定、p1 hand 固定。DAG 跨 sim 复用这个节点，每条"猜测 edge"的 Q 值是一个确定数——猜中 p0 真 hand 的那条 edge 永远 +1，其他永远 -1。MCTS 非常快就会把访问量集中到那条"猜对"edge。
+
+p0 的搜索于是**以为 p1 总会猜对**，在此基础上规避出那张牌、甚至放弃有攻击力的动作。
+
+**为什么这是结构性的**：p1 真实情况下并不知道 p0 的手牌。p1 做 Guard 时本该从自己的 belief 里抽一个概率分布做最优猜测——这一步的期望收益远低于 `+1`。但 ISMCTS 在 determinized world 里递归时，**对手节点的搜索复用了这个 world 里被 pin 死的隐藏信息**，等于让对手"穿透"了本应对他不可见的信息。学术上这叫 **strategy fusion**（Frank & Basin 1998，Long et al. 2010）：一个本该跨 information set 做期望的决策，在单一 determinized world 里被当成完全信息决策求解了。
+
+**缓解手段（当前已做）**：
+- 每个 sim 抽不同 determinized world，所以"猜对"不会在所有 sim 里同一张牌——至少 p1 belief 里能抽到的 card id 都会被 p1 节点探索到。但**被 root tracker 锁死的部分（known_hand_、own hand）在所有 sim 里都一样**，这部分信息仍然会被对手节点利用。
+- 训练阶段 selfplay 跨多局见过各种 Priest 出牌场景，value / policy head 会学到"Priest 之后对方 Guard 容易猜对"的统计事实，某种程度上替网络把 strategy fusion 的偏差内化成 prior——但这只是软缓解，不消除根因。
+
+**根治要做什么**：每次 descent 到对手节点时，按对手的 belief **重新 determinize** 这个 sub-tree 里原本被 root 锁死的字段（nested ISMCTS / SO-ISMCTS / PIMC with subgame resampling）。工程上意味着 MCTS 不再是单一 determinized world 的 perfect-info 搜索，而是每跨一个 actor 切一次 determinization，代价很大：
+
+- DAG 共享被破坏（不同 sub-determinization 产生不同 hash）
+- 每个对手节点需要一次 randomize_unseen + 一次 tracker fork
+- 搜索预算在隐藏信息多的游戏里急剧缩水
+
+当前版本的取舍是：**宁可在"对手节点偷看 root 锁死信息"这件事上吃偏差，换来 DAG 复用 + 高 simulation 预算 + 实现简单**。根治方向是 nested ISMCTS / subgame resampling（每跨一个 actor 切一次 determinization），但会破坏 DAG 共享且搜索吞吐下降一个量级，目前没做。
+
+读到这里的新游戏接入者：如果你的游戏里"一方的确定知识 + 另一方对该方的即时推理"是高频核心机制（Coup challenge、LL Priest+Guard、Werewolf 的查验后发言等），预期 AI 强度会被这条偏差限制——不是接入实现做错，是算法天花板到了。
+
+### 7. 仅 CPU 自博弈
 
 当前自博弈管线全部跑在 CPU 上（ONNX CPUExecutionProvider），训练侧 PyTorch 也默认 CPU。GPU batch inference 需要架构改造：从当前"每个 worker 独立推理"改为"集中式 inference server + 多局异步攒 batch"，引入 IPC 通信和同步等待。
 
@@ -357,21 +383,3 @@ AlphaZero 训练的是确定性策略（给定状态输出固定概率分布）�
 ### 关于裸 PPO
 
 对于本框架定位的回合制桌游来说，很少有裸 PPO 优于 Net-MCTS 的情况。回合制桌游的决策频率低（每步可以花几百毫秒搜索），且分支因子通常有限（几十到几百），这正是 MCTS 发挥优势的场景——搜索树的宽度和深度都在可探索范围内，前瞻搜索提供的信息增益远超单次网络推理。裸 PPO 更适合实时游戏（如星际争霸、Dota 2）或动作空间极大的场景，这些不在本框架的目标范围内。
-
----
-
-## Future Work：概率化 Belief Tracking
-
-当前大多数 belief tracker 只追踪确定性信息，`randomize_unseen` 在已知约束下均匀采样未知部分，没有利用历史动作序列中蕴含的概率信号。
-
-**Coup 的 `randomize_unseen` 已经是这件事的雏形**：它在采样里加入了 claim/challenge 历史驱动的加权（per-opp role signal count × 剩余牌池硬约束），证明"非均匀 belief 采样 + ISMCTS"的路走得通、搜索能收敛（详见 [Guide §11.4](GAME_DEVELOPMENT_GUIDE.md#114-实现示例) 和 `games/coup/coup_net_adapter.cpp`）。
-
-下一步只是把手写启发式换成可训练的序列模型（Transformer / RNN 输入观察历史 → 输出 opp 隐藏状态分布），在 `randomize_unseen` 里替换 sampler 本身即可——MCTS、DAG、UCT2 都不需要改。
-
----
-
-## Future Work：对手池维护（Opponent Pool）
-
-当前训练管线是单一 latest 模型自博弈。对最优解是混合策略的游戏（Coup / Love Letter 这类含诈唬博弈），单 latest 自博弈会陷入**剪刀石头布循环**——策略 A 被 B 克制，B 被 C 克制，C 又被 A 克制，Elo 停滞不前。
-
-解法是维护对手池：保留历史快照，selfplay 时从池里抽对手而不是只对最新的自己打。成熟算法很多，直接选型即可：Fictitious Self-Play、PFSP（AlphaStar）、League Training、Population-Based Training。

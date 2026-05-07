@@ -277,7 +277,7 @@ PublicEventTrace extract_events(
     out.post_events.emplace_back("factory_refill", std::move(payload));
   }
 
-  // BG-008 Phase 2: full public snapshot mirroring
+  // full public snapshot mirroring
   // AzulState::hash_public_fields. Azul has no per-perspective private
   // info (bag order is symmetric hidden to ALL), so the snapshot is
   // literally the whole public state.
@@ -356,7 +356,7 @@ PublicEventTrace extract_events(
   return out;
 }
 
-// BG-008 Phase 2: applier — writes public fields from truth snapshot.
+// applier — writes public fields from truth snapshot.
 template <int NPlayers>
 void apply_public_state(IGameState& state, const AnyMap& snap) {
   auto& s = board_ai::checked_cast<AzulState<NPlayers>>(state);

@@ -234,9 +234,9 @@ void SplendorBeliefTracker<NPlayers>::observe_public_event(
 
 // randomize_unseen produces a world whose public fields are byte-equal
 // across any two trackers with the same observation history, regardless
-// of the input state's hidden contents. Called per-sim at MCTS root to
-// provide determinization, AND at the end of each API apply_observation
-// (BG-008) to freshen session state_ and eliminate RNG drift.
+// of the input state's hidden contents. Called per-sim at MCTS root for
+// determinization, AND at the end of each apply_observation to re-sample
+// session state_'s hidden fields into a fresh tracker-consistent world.
 //
 // Algorithm:
 //   1. unseen_by_tier[t] = pool[t] - seen_cards  (canonical; same for

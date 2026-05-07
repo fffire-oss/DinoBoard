@@ -70,7 +70,7 @@ class IBeliefTracker {
   // Randomize all unseen information in-place, producing a world
   // consistent with this tracker's information set.
   //
-  // Contract (BG-008): the result must satisfy every public invariant —
+  // Contract: the result must satisfy every public invariant —
   // `hash_public_fields` on the output is byte-equal across any two
   // trackers with the same observation history, regardless of the input
   // state's hidden contents or the caller's RNG. Concretely:
@@ -82,8 +82,9 @@ class IBeliefTracker {
   //
   // Called both at MCTS simulation root (different RNG per sim, hidden
   // contents differ but public fields don't) and at the end of
-  // apply_observation (to freshen session state and prevent
-  // BUG-028-family RNG drift from accumulating across plies).
+  // apply_observation (to re-sample session state_'s hidden fields — so
+  // they are a fresh tracker-consistent sample every ply, never a copy
+  // of truth).
   //
   // This method WRITES to `state`. It may READ observer-visible fields
   // from `state` (e.g. alive flags, discard piles) to compute WHAT to

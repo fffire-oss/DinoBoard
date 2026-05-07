@@ -430,11 +430,33 @@ ActionId NetMcts::search_root(
       // loudly rather than silently truncating the simulation.
       if (!rules.validate_action(*sim_state, chosen_action)) {
         auto current_legal = rules.legal_actions(*sim_state);
+        std::string edges_str;
+        for (const auto& e : nodes[cur_idx].edges) {
+          if (!edges_str.empty()) edges_str += ",";
+          edges_str += std::to_string(e.action);
+        }
+        std::string legal_str;
+        for (auto a : current_legal) {
+          if (!legal_str.empty()) legal_str += ",";
+          legal_str += std::to_string(a);
+        }
+        // Dump state_hash to correlate with independent debugging +
+        // sim_state's include_hidden hash to differentiate sampled worlds.
+        const auto h_pub = compute_hash(*sim_state);
+        const auto h_full = sim_state->state_hash(true);
         throw std::runtime_error(
             "MCTS: DAG node legal-action mismatch; selected action " +
-            std::to_string(chosen_action) + " is not legal in current state " +
-            "(node_edges=" + std::to_string(nodes[cur_idx].edges.size()) +
-            ", current_legal=" + std::to_string(current_legal.size()) + ")");
+            std::to_string(chosen_action) + " is not legal in current state. "
+            "node_edges=[" + edges_str + "] (size=" +
+            std::to_string(nodes[cur_idx].edges.size()) + ") "
+            "current_legal=[" + legal_str + "] (size=" +
+            std::to_string(current_legal.size()) + ") "
+            "current_player=" + std::to_string(sim_state->current_player()) +
+            " node_to_play=" + std::to_string(nodes[cur_idx].to_play) +
+            " step_count=" + std::to_string(sim_state->step_count()) +
+            " depth=" + std::to_string(depth) +
+            " hash_pub=" + std::to_string(h_pub) +
+            " hash_full=" + std::to_string(h_full));
       }
       const ActionId final_action = nodes[cur_idx].edges[best_edge].action;
       rules.do_action_fast(*sim_state, final_action);

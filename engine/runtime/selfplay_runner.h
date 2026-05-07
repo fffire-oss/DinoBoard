@@ -39,8 +39,8 @@ struct SelfplaySample {
 // when run_selfplay_episode is called with trace_perspective >= 0 AND the
 // game has registered a public_event_extractor.
 //
-// `public_snapshot` (BG-008 Phase 2): populated iff the game's extractor
-// fills it (== game registers public_state_applier). Empty map otherwise.
+// `public_snapshot`: populated iff the game's extractor fills it (==
+// game registers public_state_applier). Empty map otherwise.
 struct SelfplayObservationTrace {
   int ply = 0;
   int actor = 0;                           // player whose action this was
@@ -143,15 +143,11 @@ SelfplayEpisodeResult run_selfplay_episode(
     const search::IPolicyValueEvaluator& evaluator,
     const SelfplayConfig& config,
     std::uint64_t episode_seed,
-    IBeliefTracker* belief_tracker = nullptr,
-    // BG-008 Phase 2 stage 5 / OB-005 fix: per-perspective trackers, one
-    // per player seat. When supplied (size == num_players), the runner
-    // routes MCTS root to per_perspective_trackers[current_player] and
-    // calls observe_public_event on every perspective after each action
-    // — each tracker accumulates its own perspective's belief
-    // monotonically, no more init-reset per ply. Legacy single-tracker
-    // path remains for backwards-compat when empty; new code should
-    // always pass a non-empty vector.
+    // One tracker per player seat. For hidden-info games: size == num_players;
+    // the runner inits each seat once at episode start, feeds every public
+    // event to every tracker, and routes MCTS root to
+    // per_perspective_trackers[current_player]. For games without hidden info:
+    // empty vector; the runner skips tracker wiring entirely.
     std::vector<IBeliefTracker*> per_perspective_trackers = {},
     const IFeatureEncoder* encoder = nullptr,
     const search::ITailSolver* tail_solver = nullptr,
@@ -163,11 +159,11 @@ SelfplayEpisodeResult run_selfplay_episode(
     EpisodeStatsExtractor episode_stats_extractor = nullptr,
     // Tracing hooks for AI API belief-equivalence tests. trace_perspective
     // >= 0 enables recording; -1 disables (default, zero overhead).
-    // IMPORTANT: trace_belief_tracker must be a SEPARATE tracker instance
-    // dedicated to the trace_perspective — the primary belief_tracker is
-    // re-init'd to current_player each ply for MCTS root sampling, which clobbers
-    // any perspective-stable belief. The caller is responsible for creating
-    // this second instance via the game's factory.
+    // trace_belief_tracker must be a SEPARATE tracker instance dedicated to
+    // the trace_perspective, kept decoupled from the per_perspective_trackers
+    // so tracing output stays reproducible across refactors of the MCTS
+    // routing. The caller is responsible for creating this instance via the
+    // game's factory.
     int trace_perspective = -1,
     IBeliefTracker* trace_belief_tracker = nullptr,
     PublicEventExtractor public_event_extractor = nullptr,

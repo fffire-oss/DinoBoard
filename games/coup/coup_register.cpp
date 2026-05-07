@@ -330,7 +330,7 @@ PublicEventTrace extract_coup_events(
     out.post_events.push_back({"self_exchange_draw", std::move(payload)});
   }
 
-  // BG-008 Phase 2: full public snapshot. Mirrors
+  // full public snapshot. Mirrors
   // CoupState::hash_public_fields + terminal/winner (not hashed but
   // observable / used by is_terminal/winner accessors).
   {
@@ -395,7 +395,7 @@ PublicEventTrace extract_coup_events(
   return out;
 }
 
-// BG-008 Phase 2: applier — writes public fields from truth snapshot.
+// applier — writes public fields from truth snapshot.
 // Private fields (unrevealed influence, opp exchange_drawn, deck content)
 // are left untouched for tracker + self_* events + randomize_unseen.
 template <int NPlayers>

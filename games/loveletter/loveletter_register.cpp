@@ -395,8 +395,8 @@ AnyMap extract_initial_observation(const IGameState& state, int perspective) {
 
 // Reset AI's internal state to be consistent with the initial observation:
 // perspective's hand is set from `my_hand`, other players' hands are random
-// consistent with the remaining card counts. The belief tracker gets
-// re-init'd by the caller.
+// consistent with the remaining card counts. The belief tracker is init'd
+// separately by the caller (once per seat at game start).
 template <int NPlayers>
 void apply_initial_observation(IGameState& state, int perspective, const AnyMap& obs) {
   using board_ai::loveletter::kCardCounts;
@@ -563,7 +563,7 @@ PublicEventTrace extract_events(
     out.post_events.emplace_back("drawn_override", std::move(payload));
   }
 
-  // BG-008 Phase 2: populate full public snapshot from post-action truth.
+  // populate full public snapshot from post-action truth.
   // apply_observation invokes public_state_applier to overwrite session
   // state_'s public fields from this snapshot, eliminating per-event
   // truth-override补丁.  See docs/plans/MESSAGE_DRIVEN_AI_REFACTOR.md.
@@ -617,10 +617,10 @@ PublicEventTrace extract_events(
   return out;
 }
 
-// BG-008 Phase 2: inverse of the public_snapshot population above.
+// Inverse of the public_snapshot population above.
 // Writes back every public field onto `state`. Called at the end of
-// apply_observation (once Phase 2 stage 2 lands); here it's already
-// registered so stage 2's `apply_observation` can simply invoke it.
+// apply_observation, which overwrites session state_'s public fields
+// from the truth snapshot.
 template <int NPlayers>
 void apply_public_state(IGameState& state, const AnyMap& snap) {
   auto& s = board_ai::checked_cast<LoveLetterState<NPlayers>>(state);

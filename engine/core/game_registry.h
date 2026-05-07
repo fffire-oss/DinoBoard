@@ -92,13 +92,12 @@ using PublicEventApplier = std::function<void(
     const std::string& kind,
     const AnyMap& payload)>;
 
-// BG-008 Phase 2 (message-driven public state): inverse of the
-// public-fields-only serialization produced by public_event_extractor.
-// Overwrites the observer session's state_ public fields from the truth
-// snapshot at the end of apply_observation, replacing the need to run
-// `do_action_fast(state_, action)` for public推进. This eliminates the
-// entire risk class "observer do_action_fast reads a session-sampled
-// hidden field and produces a public output that diverges from truth".
+// Message-driven public state: inverse of the public-fields-only
+// serialization produced by public_event_extractor. Overwrites the
+// observer session's state_ public fields from the truth snapshot at
+// the end of apply_observation, so the observer's public state is
+// rebuilt from the message stream — it never depends on whatever
+// `do_action_fast(state_)` computed from its sampled hidden fields.
 //
 // Contract:
 //   - Applier OVERWRITES every public field that hash_public_fields
@@ -108,10 +107,9 @@ using PublicEventApplier = std::function<void(
 //   - Applier MUST NOT touch hidden fields. Those are left for
 //     tracker.randomize_unseen to fill.
 //
-// Optional registration: games without an applier fall back to
-// `do_action_fast + post_events` for public推进. All hidden-info games
-// SHOULD register one; fully-public games (tictactoe, quoridor) don't
-// need one (no hidden → do_action_fast cannot read wrong hidden).
+// Required for all hidden-info games. Fully-public games (tictactoe,
+// quoridor) do not register one — there is no hidden for do_action_fast
+// to read wrong, so the public side is already tamper-proof.
 using PublicStateApplier = std::function<void(
     IGameState& state,
     const AnyMap& snapshot)>;
@@ -153,9 +151,8 @@ struct GameBundle {
   // AI API with independent seeds.
   PublicEventExtractor public_event_extractor;
   PublicEventApplier public_event_applier;
-  // BG-008 Phase 2: optional — strongly recommended for hidden-info games.
-  // See PublicStateApplier above. Games without this fall back to
-  // do_action_fast + post_events for public推进 (MVP-B semantics).
+  // Required for hidden-info games. See PublicStateApplier above.
+  // Fully-public games (tictactoe, quoridor) leave this unset.
   PublicStateApplier public_state_applier;
   InitialObservationApplier initial_observation_applier;
   InitialObservationExtractor initial_observation_extractor;

@@ -34,14 +34,13 @@ using PublicEvent = std::pair<std::string, AnyMap>;
 
 // Events for a single action, split by phase.
 //
-// `public_snapshot` (BG-008 Phase 2, message-driven public state): an
-// OPTIONAL truth-side serialization of the post-action public fields.
-// Games that register a `public_state_applier` (see game_registry.h)
-// populate this in their extractor; observer sessions then overwrite
-// their state_'s public fields from it at the end of apply_observation,
-// bypassing `do_action_fast(observer_state_)` entirely for public推进.
-// Empty map for games without an applier (fallback to do_action_fast +
-// post_events path). See docs/plans/MESSAGE_DRIVEN_AI_REFACTOR.md.
+// `public_snapshot` — truth-side serialization of the post-action public
+// fields. Games that register a `public_state_applier` (see game_registry.h)
+// populate this in their extractor; observer sessions then overwrite their
+// state_'s public fields from it at the end of apply_observation, so the
+// observer's public state is rebuilt from the message stream and never
+// depends on `do_action_fast(observer_state_)`'s output. Empty map for
+// fully-public games (tictactoe, quoridor) that do not register an applier.
 struct PublicEventTrace {
   std::vector<PublicEvent> pre_events{};
   std::vector<PublicEvent> post_events{};

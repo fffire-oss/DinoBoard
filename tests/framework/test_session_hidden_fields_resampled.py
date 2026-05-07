@@ -1,28 +1,20 @@
-"""BG-008 regression: session state_'s hidden fields are re-sampled at the
-end of every apply_observation.
+"""Session state_'s hidden fields must be re-sampled at the end of every
+apply_observation — they are a fresh tracker-consistent sample each ply,
+not a copy of truth.
 
-Background (see CLAUDE.md "AI Pipeline Independence from Game State" and
-KNOWN_ISSUES BUG-028 → BG-008 section):
+Background (see CLAUDE.md "AI Pipeline Independence from Game State"):
 
-  Before BG-008, GameSessionWrapper::apply_observation mutated state_ via
-  do_action_fast + event applier only. Session state_ accumulated
-  RNG-specific hidden samples across plies, which leaked into the public
-  hash whenever an action's public output touched hidden fields (BUG-028
-  family: Splendor deck size, Coup court deck, LoveLetter winner at
-  deck-empty).
+  apply_observation's contract is: after it returns, session state_'s
+  hidden fields have been overwritten via tracker.randomize_unseen(state_,
+  fresh_rng) where fresh_rng is deterministic in (seed_, ply_count_).
+  This makes session hidden state a belief sample rather than a copy of
+  truth — downstream code that reads state_'s hidden fields reads belief,
+  which is exactly what the AI pipeline is supposed to see.
 
-  BG-008 added a terminating step: after observe_public_event, run
-  tracker.randomize_unseen(state_, fresh_rng) with a deterministic RNG
-  derived from (seed_, ply_count_). The public-invariance contract of
-  randomize_unseen ensures two sessions with different seeds land on the
-  same public hash; per-ply freshening ensures no RNG drift accumulates.
-
-  THIS test guards the freshening actually runs. If a future refactor
-  drops the randomize_unseen call (e.g. mistakenly optimizing it out for
-  non-MCTS code paths), it would silently re-introduce BUG-028-family
-  drift — but test_public_hash_excludes_internal_rng might still pass if
-  the public_event protocol's per-event syncs happen to cover all drift
-  paths. This test triggers on the freshening itself.
+  THIS test guards that the freshening actually runs. If a future refactor
+  drops the randomize_unseen call, session hidden would silently become
+  whatever do_action_fast's internal RNG produced — reintroducing the
+  class of silent public-state drift documented in BUG-028.
 
 Test method:
 
@@ -172,6 +164,6 @@ def test_hidden_fields_depend_on_session_seed(game_id):
         f"[{game_id}] two different session seeds produced identical hidden "
         f"snapshots through {len(trace)} plies. This almost certainly means "
         f"randomize_unseen is no longer being called at end of "
-        f"apply_observation — BG-008 freshening is silently off. "
+        f"apply_observation — the per-ply freshening is silently off. "
         f"state_ is carrying whatever do_action_fast + event applier set, "
         f"which re-opens the BUG-028 drift surface.")

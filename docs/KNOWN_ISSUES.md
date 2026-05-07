@@ -1536,3 +1536,89 @@ Web AI 落子 stats 中 `tail_solve_attempted=0`，但 web.json 里明明配了 
 **用户配置和实际生效之间永远要有 stat 暴露**。这是框架级原则：任何 "配置 → 实际行为" 的中间环节都必须有一个可观测的 stat（通过响应 / 日志 / metric）让运维 / 开发者能一眼验证配置生效了。隔离 GameSession 的创建是看不见的"配置重置"节点，必须显式复制配置。原则写入 CLAUDE.md 或 GAME_DEVELOPMENT_GUIDE.md 的 "隔离 session" 章节。
 
 ---
+
+## BUG-032: Selfplay per-perspective trackers 未被初始化 → randomize_unseen 覆写当前玩家自己的手牌 (OB-011)
+
+### 背景
+
+- BG-008 Phase 2 stage 5 引入 per-perspective trackers（每 seat 一份 tracker，观测事件累积到 game over），替代"每 ply re-init 单例 tracker"的旧路径
+- selfplay_runner 里已经循环 `per_perspective_trackers[p]->init(p, init_obs)` 并在每一步给每个 tracker 喂 `observe_public_event` —— 看起来是完备的
+- MCTS 搜索 acting player 的决策时：`mcts_tracker = per_perspective_trackers[current_player]`，调 `randomize_unseen` 采样一个 belief 相容的隐藏世界
+- 但启用这条路径后 `test_selfplay_sample_integrity[loveletter]` 立刻炸 `DAG node legal-action mismatch`，错误里 `node_edges=[Handmaid, Princess]` 而 `current_legal=[Guard+target1, Prince+self/target1]`
+
+### 根因
+
+`bindings/py_engine.cpp::run_selfplay_episode_py` 的初始化顺序：
+
+```cpp
+runtime::PublicEventExtractor trace_extractor;         // 空 std::function
+runtime::InitialObservationExtractor trace_obs_extractor;  // 空
+if (trace_perspective >= 0) {  // 默认 -1，通常走不进
+  ...
+  trace_extractor = bundle.public_event_extractor;
+  trace_obs_extractor = bundle.initial_observation_extractor;
+}
+...
+run_selfplay_episode(..., trace_extractor, trace_obs_extractor);
+```
+
+`trace_extractor / trace_obs_extractor` 这两个名字误导——它们**不只是 trace 专用**。`run_selfplay_episode` 里把它们当成整个 episode 的 `public_event_extractor` 和 `initial_observation_extractor` 用：pp_trackers 的 `init()` 在游戏开始调用时，如果 `initial_observation_extractor` 为空，**直接跳过 init**（`if (per_perspective_trackers[p] && initial_observation_extractor)` 短路），tracker 的 `perspective_player_` 永久停留在默认 `-1`。
+
+然后 MCTS 调 `per_perspective_trackers[0]->randomize_unseen(sim, rng)`：LoveLetter 的 randomize 代码里 "跳过 perspective 自己的 hand" 用的是 `if (p == perspective_player_) continue`。`perspective_player_ == -1` 意味着**没有任何 p 等于它** —— 包括真正的 current player——所以 `d.hand[0]` 被从 unseen 池里重新采样成另一张牌，`d.drawn_card` 同样被 `d.current_player != perspective_player_` 判 true 而覆写。
+
+结果：real root expand 得到的 edges=[Handmaid, Princess]（基于真 hand），sim_state 在 randomize_unseen 后 hand=Guard drawn=Prince（被覆写），legal_actions 完全不一致，DAG 检查炸。
+
+### 症状关键词
+
+- `DAG node legal-action mismatch; selected action X is not legal in current state`
+- `depth=0 step_count=0`（在 root 就炸，因为 randomize_unseen 在 root 前第一次调用）
+- node_edges 和 current_legal 两组动作**对应完全不同的 (hand, drawn) 组合**
+- 只在启用 per_perspective trackers 的 routing 后出现；legacy 单 tracker 路径 `belief_tracker->init(player, obs)` 在 selfplay_runner 里每 ply 显式调所以看不到
+
+### 为什么 legacy 路径不炸
+
+Legacy `belief_tracker` 路径在 selfplay_runner 的 `else if (belief_tracker)` 分支里显式调 `belief_tracker->init(player, main_init_obs)` —— 这里也用到 `initial_observation_extractor`，但它 re-init 时即使 obs 为空 map，`init()` 内部实现（以 LoveLetter 为例）是 `it_h != end() ? cast : 0` —— own_hand_ 被置 0，perspective_player_ **正确**设为 player。所以 legacy 单 tracker 是安的。
+
+问题特有于"不在 selfplay_runner 自己 re-init、而是依赖 py_engine 之前把 extractor 传进来"的 pp_trackers 路径。
+
+### 修复
+
+`bindings/py_engine.cpp::run_selfplay_episode_py`：无条件从 bundle 填 extractor，不再让 `trace_perspective >= 0` 这个 tracing flag 门禁它：
+
+```cpp
+runtime::PublicEventExtractor trace_extractor = bundle.public_event_extractor;
+runtime::InitialObservationExtractor trace_obs_extractor =
+    bundle.initial_observation_extractor;
+std::unique_ptr<GameBundle> trace_bundle;
+IBeliefTracker* trace_bt = nullptr;
+if (trace_perspective >= 0) {
+  trace_bundle = ...;
+  trace_bt = trace_bundle->belief_tracker.get();
+  if (!trace_bt || !trace_extractor) throw ...;
+}
+```
+
+并在 `LoveLetterBeliefTracker::randomize_unseen` 入口加一道硬 assertion：
+
+```cpp
+if (perspective_player_ < 0 || perspective_player_ >= NPlayers) {
+  throw std::runtime_error(
+      "LoveLetterBeliefTracker::randomize_unseen called with uninitialized "
+      "perspective_player_=" + std::to_string(perspective_player_) +
+      " (init() must run before search)");
+}
+```
+
+这条 assertion 是**框架级契约**：任何 tracker 在被 search 调用前必须已 init。下次有人写新游戏的 belief_tracker 或重构 runner 时，如果 init 被漏掉，这里会炸而不是静默污染。
+
+### 教训
+
+1. **变量名带有"trace"字样但被用于通用路径，是最容易踩的坑**。`trace_extractor / trace_obs_extractor` 原本只给 trace 用，后来 BG-008 stage 5 复用它们承载 pp_trackers 的 extractor 需求，名字没改。下次同类扩展要么重命名（`public_event_extractor / initial_observation_extractor`），要么在 bundle 上单独引一对字段给 pp_trackers 用。
+
+2. **默认值 `-1` 的 sentinel + "跳过 perspective" 的语义是个静默泄漏陷阱**。LL 的 randomize 代码用 `if (p == perspective_player_) continue` 跳过自己——perspective_player_=-1 时这个条件对任何 p 都 false，所有 p 都被覆写。改成 assertion 前，这是一个**"不崩溃、不报错、只是悄悄把当前玩家的手牌换掉"**的 bug，在 MCTS 没 DAG 检查的话永远抓不到。属于 BUG-028 / BUG-030 族的"silent correctness 漏洞"——只要有 silent 路径能让不变式被绕过，就一定要补 assertion。
+
+3. **用 DAG 校验撞出逻辑 bug 是这套框架的强项，要珍惜**。`DAG node legal-action mismatch` 本来是为"hash scope 漏字段"设计的错误信号，这次它抓到的是"tracker 没 init"这种相邻问题——因为 tracker 错了会让 sim_state 和 real state 出现公共观测不一致，表现出来就是 hash 撞上了但 legal 对不齐。下次遇到 DAG mismatch，除了查 hash 字段覆盖，还要查"tracker 是不是也出了别的错让状态被污染"。
+
+4. **修复不只是打补丁，还要防守**。这次修 py_engine 的 extractor wiring 是主菜，但在 LL 的 randomize_unseen 入口加"perspective 必须 init 过"的 assertion 是主菜之外的保险——未来任何新的 runner / binding 如果漏 init，这里会崩，不会再"silently 降级再让 DAG 检查去撞"。Coup 的 belief tracker 同样应该加一道类似 assertion（参见 DC 2026-05-07 笔记，建个 SM 任务跟进）。
+
+---

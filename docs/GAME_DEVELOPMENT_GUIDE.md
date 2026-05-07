@@ -412,7 +412,7 @@ GameBundle 是一个聚合所有游戏组件的结构体。工厂函数返回一
 | 6 | `belief_tracker` | `unique_ptr<IBeliefTracker>` | 否 | 有隐藏信息或物理随机的游戏必须注册 |
 | 7 | `public_event_extractor` | `PublicEventExtractor` | 否 | (before, action, after, perspective) → events；tracker 通过这个更新 belief |
 | 8 | `public_event_applier` | `PublicEventApplier` | 否 | 把事件应用到 state（AI API 侧重放用） |
-| 8b | `public_state_applier` | `PublicStateApplier` | 否 | **强烈推荐隐藏信息游戏实装**。BG-008 Phase 2：`public_event_extractor` 里 populate `PublicEventTrace.public_snapshot`（post-action 的 public 字段全量 dump），`public_state_applier` 把 snapshot 反向写回 state。API 侧 `apply_observation` 在 event 应用完之后调 applier，把 session state_ 的 public 字段从 truth 覆盖过来——彻底消除 "public 输出依赖 session 采样 hidden" 那一类 bug。Round-trip 测试见 `tests/framework/test_public_snapshot_round_trip.py`。完整设计见 `docs/plans/MESSAGE_DRIVEN_AI_REFACTOR.md` |
+| 8b | `public_state_applier` | `PublicStateApplier` | 否 | **隐藏信息游戏必装**。`public_event_extractor` 在 `PublicEventTrace.public_snapshot` 里 dump post-action 的全部 public 字段；`public_state_applier` 反向把 snapshot 写回 state。API / web / selfplay 的 `apply_observation` 在 event 应用完之后调 applier，session state_ 的 public 字段因此完全由 message 重建，与 `do_action_fast` 基于采样 hidden 算出的公开字段无关——从结构上杜绝 "public 输出依赖 session 采样 hidden" 这一类泄漏。Round-trip 测试见 `tests/framework/test_public_snapshot_round_trip.py` |
 | 9 | `initial_observation_extractor` | `InitialObservationExtractor` | 否 | 提取 perspective 的开局可见信息 |
 | 10 | `initial_observation_applier` | `InitialObservationApplier` | 否 | 把 initial observation 填入 state（AI API 侧用） |
 | 11 | `state_serializer` | `StateSerializer` | 否 | 状态序列化为 JSON（Web 前端需要;**也用于规则不变量测试,详见 §11.4**） |
@@ -1220,6 +1220,24 @@ b.episode_stats_extractor = [](const IGameState&,
 
 对称无知的随机（如 Azul 袋子未来抽取顺序）**也**走 belief_tracker 通道——`hash_private_fields` 可以为空，`randomize_unseen` 负责洗袋子。见 §10。
 
+### 11.0 为什么 AI 链路从根源上读不到真值
+
+这套框架的隐藏信息处理不是"请 AI 自觉不要读 hidden 字段"——**AI 在物理上就没有路径可以读到真值**。三根柱子：
+
+1. **Tracker 没有 `IGameState*`。** `init(perspective, initial_observation)` 和 `observe_public_event(actor, action, pre_events, post_events)` 两个接口只吃 message，没有能从它们指回 ground truth 的引用。tracker 的全部知识只来自 message 流，和一个物理玩家从桌面上能看到的东西一字不差。
+
+2. **会话 state_ 的 public 部分由 message 重建，不是由 `do_action_fast` 算出来的。** 每次 `apply_observation` 的末尾，`public_state_applier` 把 `PublicEventTrace.public_snapshot`（truth 侧 dump 的全部 public 字段）覆盖回 session state_。即使 `do_action_fast` 内部基于 session 当前采样的 hidden 字段算了什么公开输出，会被这一步无脑覆盖成 truth 发来的权威值——观察者 session 的 public 视图完全由 message 决定，不泄漏。
+
+3. **会话 state_ 的 hidden 部分每一步都重新采样。** 在 applier 之后，`randomize_unseen` 用 `(seed, ply)` 派生的 deterministic RNG 把 state_ 的全部 hidden 字段重写成一份 tracker-consistent 的新样本。session 的 hidden 字段因此**永远不是 truth 的副本**，只是一份 belief sample——下游代码哪怕不小心读了 `state_.hand[opp]`，读到的是"当前信仰分布的一个抽样"，不是真值。
+
+再加一条把上面三根柱子落到所有路径的**统一**：
+
+- **selfplay / web / API 都走同一套 per-perspective tracker**。每个座位一份 tracker、一局 init 一次、每个 public event 喂给每个 tracker；MCTS root 用 `per_perspective_trackers[current_player]`，那是当前座位累积了整局观测的 tracker。没有任何路径里 runner 会把 truth-state 或 truth-tracker 传给 search——这条是结构性保证，不是靠代码风格维持。
+
+**结果**：要写一个 bug 让 AI 偷看 truth，必须先找到一个 truth 能藏身的地方——上面三根柱子加上路径统一，让这种地方根本不存在。CI 里的 `test_public_snapshot_round_trip` / `test_public_hash_excludes_internal_rng` / `test_session_hidden_fields_resampled` / `test_api_belief_matches_selfplay` / `test_api_mcts_policy_invariance` 五件套每个 PR 都跑，任何让 truth 回流的改动都会立刻炸测试。
+
+下面 §11.1 开始讲各个 hook 的具体签名和实装。
+
 ### 11.1 架构原理（ISMCTS）
 
 核心三层机制：
@@ -1334,48 +1352,48 @@ virtual void randomize_unseen(IGameState& state, std::mt19937& rng) const = 0;
 
 `randomize_unseen(state, rng)` 是采样的**写入口**——可以读 state 的公开字段 + 观察者自己的字段（discard_piles、自己的 hand 等），但禁止读 opp 的 hidden 字段（对手手牌、deck 内容）。tracker 从自己累积的 belief 构建 unseen pool 和 known-hand 分配。
 
-**BG-008 契约**：`randomize_unseen` 返回的世界必须满足所有公共不变量——`hash_public_fields` 的值在相同观测史、不同 RNG 采样下 byte-equal。隐藏多重集（deck size / bag size / court-deck size 等）必须由 tracker 的 seen 信息**推导**出来，不能保留输入 state 里的残值（输入里的残值可能已被 session 的 `do_action_fast` + event 处理漂移）。Stale 采样（opp hidden 字段的旧 cid 现在已经被公开看到）必须从当前未见池重采。
+**`randomize_unseen` 契约**：返回的世界必须满足所有公共不变量——`hash_public_fields` 的值在相同观测史、不同 RNG 采样下 byte-equal。隐藏多重集（deck size / bag size / court-deck size 等）必须由 tracker 的 seen 信息**推导**出来，不能保留输入 state 里的残值（输入里的残值本身就是采样结果，不是真值的副本）。Stale 采样（opp hidden 字段的旧 cid 现在已经被公开看到）必须从当前未见池重采。
 
 **`randomize_unseen` 的两个调用点**：
 1. MCTS 根采样（per-sim determinization）：每次 sim 开头在 cloned state 上调用一次
-2. API 会话末尾 freshening（BG-008）：`GameSessionWrapper::apply_observation` 末尾自动用 deterministic RNG 调用一次，把会话持久 state_ 的隐藏字段重新采样，消除 BUG-028 家族的 RNG 漂移。开发者不用写胶水代码，框架包办
+2. 会话末尾 freshening：`apply_observation` 末尾用 deterministic `(seed, ply)` RNG 调用一次，把会话 state_ 的隐藏字段重采成当前 tracker-consistent 的一份样本。selfplay / web / API 都走这条路径；框架包办，开发者无胶水代码
 
-**开发者必须保证**：游戏的 `do_action_fast` **不能让公共输出依赖被 `randomize_unseen` 重采的字段**。如果 `do_action_fast` 内部有这样的读取（如 LoveLetter 在牌堆空时用 `check_end_game` 读所有活着玩家手牌判胜负），必须通过 extractor emit 一条 post-event 让 applier 覆盖公共输出成 truth 值（LoveLetter 的 `round_end` post-event 就是做这个）。否则测试 `test_public_hash_excludes_internal_rng` 的 60-seed sweep 会抓到漂移。
+**开发者必须保证**：游戏的公开输出不依赖任何"只存在于 session state_ 里的隐藏字段"。做法是规范化的：`public_event_extractor` 把 post-action 的全部 public 字段 dump 进 `PublicEventTrace.public_snapshot`，`public_state_applier`（§5.1 项 8b）把 snapshot 反向写回 session state_ 的 public 字段。这样**公开部分由 message 重建，不是由 `do_action_fast` 基于采样 hidden 算出来的**，即便 `do_action_fast` 内部读了隐藏字段也不会泄漏到观察者。round-trip 测试 (`test_public_snapshot_round_trip`) + 60-seed drift 扫 (`test_public_hash_excludes_internal_rng`) 在 CI 里守这个契约。
 
 **Belief tracker 不仅追踪公开信息，也可以追踪通过游戏技能合法获得的私有知识**。例如 Love Letter 中 Priest 偷看对手手牌、King 交换后知道对方原来的牌——这些通过 `hand_override` 事件传递到 tracker。`randomize_unseen` 时优先使用 tracker 中的确定知识（直接固定），没有确定知识的才从 unseen pool 中随机采样。这使得 ISMCTS 的采样质量更高——已知的不浪费预算重新猜。
 
-**迁移说明**：`observe_action(before, action, after)` 旧接口已移除。原先从 state 读取的信息必须改为从事件流或 tracker 内部维护的状态读取。Love Letter tracker 内部维护 `own_hand_` / `own_drawn_card_` / `alive_tracked_[]` 等字段，通过事件增量更新。
+**实装要点**：tracker 的接口只吃 message（`init` + `observe_public_event`），没有 `IGameState*` 能指回 truth——读 state 是物理上做不到的。需要跨 action 携带的信息（例如"上一步谁被 Priest peek"）由 tracker 自己从事件流里增量维护。Love Letter tracker 内部就维护 `own_hand_` / `own_drawn_card_` / `alive_tracked_[]` 等字段，全部通过事件更新。
 
 参考 `games/splendor/splendor_net_adapter.h` 中的 `SplendorBeliefTracker` 实现。
 
 ### 11.3 Belief Tracker 生命周期
 
-框架在所有代码路径（selfplay、arena、web GameSession、AI API）中自动管理以下生命周期，游戏开发者只需实现 `IBeliefTracker` 的三个方法：
+所有代码路径（selfplay、arena、web GameSession、AI API）走同一个生命周期：每个座位一份 tracker（`per_perspective_trackers[p]`），一局 init 一次，之后每一步每个 tracker 都接收一次 `observe_public_event`——tracker 的观测单调累积到 game over，不会被 re-init 清空。
 
 ```
-游戏开始：
-  initial_obs = bundle.initial_observation_extractor(state, perspective)
-  belief_tracker->init(perspective, initial_obs)       // 观察-only init
+游戏开始（每个座位 p = 0..num_players-1）：
+  initial_obs_p = bundle.initial_observation_extractor(state, p)
+  per_perspective_trackers[p]->init(p, initial_obs_p)
 
-每一步 ply:
-  1. （可选）belief_tracker->init(cp, initial_obs_for_cp)  // actor 切换时幂等
-  2. MCTS 搜索：每 sim 开头调 randomize_unseen          // ISMCTS 根采样
-                  descent 纯 deterministic
-  3. do_action_fast(state, chosen)                       // 执行动作
-  4. evt = bundle.public_event_extractor(before, action, after, perspective)
-     belief_tracker->observe_public_event(actor, chosen, evt.pre_events, evt.post_events)
+每一步 ply（acting player = cp）：
+  1. MCTS 搜索                                                 // 见 §MCTS
+       root_tracker = per_perspective_trackers[cp]
+       每 sim 开头 root_tracker->randomize_unseen(sim_state, per_sim_rng)
+       descent 纯 deterministic
+  2. do_action_fast(state, chosen)                             // 执行动作
+  3. 对每个座位 p：
+       evt_p = bundle.public_event_extractor(before, action, after, p)
+       per_perspective_trackers[p]->observe_public_event(
+           cp, chosen, evt_p.pre_events, evt_p.post_events)
 
-API 会话的 apply_observation 额外在 step 4 之后调：
-  5. belief_tracker->randomize_unseen(state_, freshen_rng)  // BG-008：刷掉
-                                                            // do_action_fast
-                                                            // 残留的 session
-                                                            // RNG 采样，保证
-                                                            // state_ 的公开
-                                                            // 字段可由观测史
-                                                            // 推导
+web / API 的 apply_observation 额外在 step 3 之后跑两件事：
+  4. bundle.public_state_applier(state_, evt.public_snapshot)  // public 字段由
+                                                                // message 重建
+  5. per_perspective_trackers[cp]->randomize_unseen(            // hidden 字段由
+         state_, freshen_rng)                                   // tracker 重采
 ```
 
-`tracker_init` / `tracker_observe` 这类 helper 封装了 extractor 调用（见 `bindings/py_engine.cpp`）。游戏开发者只需实现 IBeliefTracker 的 3 个方法 + `initial_observation_extractor` + `public_event_extractor`。
+游戏开发者只需实现 `IBeliefTracker` 的 3 个方法 + `initial_observation_extractor` + `public_event_extractor`（+ `public_state_applier`，隐藏信息游戏必装）。extractor 调用封装见 `bindings/py_engine.cpp`。
 
 ### 11.4 实现示例
 

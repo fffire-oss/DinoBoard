@@ -412,7 +412,7 @@ PublicEventTrace extract_events(
     }
   }
 
-  // BG-008 Phase 2: full post-action public snapshot for
+  // full post-action public snapshot for
   // message-driven public state推进. Mirrors every field that
   // SplendorState::hash_public_fields reads.
   {
@@ -514,7 +514,7 @@ PublicEventTrace extract_events(
   return out;
 }
 
-// BG-008 Phase 2: applier — inverse of the snapshot extractor above.
+// applier — inverse of the snapshot extractor above.
 // Overwrites public fields onto `state`, leaves hidden fields (face-down
 // reserved ids, deck contents) for randomize_unseen to fill.
 template <int NPlayers>

@@ -479,6 +479,18 @@ void LoveLetterBeliefTracker<NPlayers>::randomize_unseen(
   if (!s) return;
   auto& d = s->data;
 
+  // Defensive assertion: the tracker must be init'd before search uses it.
+  // Without this, perspective_player_ stays at default -1, and the loops
+  // below (which skip only `p == perspective_player_`) will overwrite the
+  // current player's own hand from the unseen pool — producing sim_state
+  // whose legal_actions disagree with the real root, and DAG collisions.
+  if (perspective_player_ < 0 || perspective_player_ >= NPlayers) {
+    throw std::runtime_error(
+        "LoveLetterBeliefTracker::randomize_unseen called with uninitialized "
+        "perspective_player_=" + std::to_string(perspective_player_) +
+        " (init() must run before search)");
+  }
+
   std::array<int, 9> remaining{};
   for (int c = 1; c <= kCardTypes; ++c) {
     remaining[static_cast<size_t>(c)] = kCardCounts[static_cast<size_t>(c)];
