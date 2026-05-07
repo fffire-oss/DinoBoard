@@ -418,16 +418,23 @@ function createCardElement(cardValue, playing, legalSet) {
 
       if (!needsTarget(cardValue)) {
         submitNoTargetCard(cardValue, legalSet);
-      } else if (cardValue !== 5 /* not Prince */ && cardValue !== 1 /* not Guard */) {
-        // Priest/Baron/King: if the only legal action is the self-fallback
-        // (every opponent Handmaid-protected), auto-submit as a no-op
-        // discard. Asking the player to click their own area to "peek their
-        // own card" is meaningless and confusing.
+      } else if (cardValue !== 5 /* not Prince */) {
+        // Guard/Priest/Baron/King: if the only legal action is the
+        // self-fallback (every opponent Handmaid-protected), auto-submit
+        // as a no-op discard. Forcing the player through a target/guess
+        // panel that has no real choices is meaningless and confusing.
+        // Prince keeps the self-click affordance because targeting self
+        // is a legitimate Prince play, not a forced no-op.
         const tgts = getTargetsForCard(cardValue, legalSet);
         const humanPlayer = currentCtx.state.humanPlayer;
         const hasOppTarget = [...tgts].some(t => t !== humanPlayer);
         if (!hasOppTarget && tgts.has(humanPlayer)) {
-          const aid = resolveAction(cardValue, humanPlayer, -1);
+          // Guard's self-fallback uses guess=2 (lowest legal guess);
+          // Priest/Baron/King ignore guess (-1 sentinel passes through
+          // resolveAction without offset). Both produce the engine's
+          // single self-target action id when every opp is protected.
+          const guess = cardValue === 1 ? 2 : -1;
+          const aid = resolveAction(cardValue, humanPlayer, guess);
           if (legalSet.has(aid)) {
             resetPending();
             currentCtx.submitAction(aid);
