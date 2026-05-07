@@ -564,10 +564,9 @@ PublicEventTrace extract_events(
   }
 
   // BG-008 Phase 2: populate full public snapshot from post-action truth.
-  // The applier writes every hash_public_fields-relevant field back; once
-  // apply_observation starts invoking public_state_applier (stage 2), the
-  // legacy `round_end` post-event above becomes redundant and is deleted.
-  // See docs/plans/MESSAGE_DRIVEN_AI_REFACTOR.md.
+  // apply_observation invokes public_state_applier to overwrite session
+  // state_'s public fields from this snapshot, eliminating per-event
+  // truth-override补丁.  See docs/plans/MESSAGE_DRIVEN_AI_REFACTOR.md.
   //
   // Fields matched to LoveLetterState::hash_public_fields:
   //   current_player / first_player / ply / winner / terminal

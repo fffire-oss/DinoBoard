@@ -303,15 +303,6 @@ PublicEventTrace extract_coup_events(
     }
   }
 
-  // NOTE: the legacy `public_return_card` post-event (BG-008 Phase 1)
-  // was deleted in Phase 2 stage 2 — its three fields (card,
-  // expected_deck_size, exchange_drawn) are now all covered by
-  // public_state_applier via the snapshot:
-  //   court_deck_size → snapshot["court_deck_size"]
-  //   exchange_drawn shape → snapshot["exchange_drawn_mask"]
-  //   (the returned `card` id was only used to pad court_deck, which
-  //    snapshot handles with size + randomize_unseen filling content)
-
   // Case 6: self_exchange_draw — perspective player just drew 2 cards from
   // court_deck into exchange_drawn[]. This happens when do_action_fast
   // transitions FROM a non-exchange-return stage INTO kExchangeReturn1 AND
@@ -608,9 +599,6 @@ void apply_coup_event(
     d.influence[p][slot] = static_cast<CharId>(role);
     return;
   }
-  // `public_return_card` applier was deleted (BG-008 Phase 2 stage 2):
-  // its court-deck-size and exchange_drawn overrides are now covered
-  // by public_state_applier via the snapshot.
   if (phase == EventPhase::kPostAction && kind == "self_exchange_draw") {
     // Perspective player just drew 2 cards from court_deck into
     // exchange_drawn[]. The AI session's randomize_unseen sampled different

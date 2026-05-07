@@ -960,17 +960,13 @@ class GameSessionWrapper {
   // `hash_public_fields` to be byte-equal across any two trackers with
   // the same observation history regardless of input state's hidden.
   //
-  // Precondition on each game's public_event_extractor / applier: any
-  // public output of do_action_fast that reads hidden fields MUST be
-  // covered by an event the applier overrides (e.g. LL `round_end`
-  // carries truth winner so `check_end_game` reading d.hand[opp] can't
-  // poison the session's winner).
-  //
   // `pre_events` / `post_events` are lists of {"kind": str, "payload": dict}.
   // `public_snapshot` (BG-008 Phase 2) is an optional truth-side dump of
   // all public fields; when non-empty + game has public_state_applier,
-  // it OVERWRITES session state_'s public fields (bypassing the need
-  // for do_action_fast's public outputs to be correct on sampled hidden).
+  // it OVERWRITES session state_'s public fields regardless of what
+  // do_action_fast computed, eliminating any "do_action_fast public
+  // output reads hidden" drift surface. All 4 hidden-info games register
+  // the applier; fully-public games (tictactoe, quoridor) don't.
   void apply_observation(ActionId action,
                          py::list pre_events,
                          py::list post_events,
@@ -1014,11 +1010,9 @@ class GameSessionWrapper {
 
     // BG-008 Phase 2: if the game provides a public_state_applier AND
     // the caller passed a snapshot, overwrite session state_'s public
-    // fields from truth. This eliminates the risk class of
-    // "do_action_fast public output depends on a session-sampled
-    // hidden field" — truth wins regardless of what do_action_fast
-    // computed. Legacy补丁 events (LL round_end, Coup public_return_card
-    // size override) become redundant once this path is active.
+    // fields from truth. Eliminates the risk class "do_action_fast
+    // public output depends on a session-sampled hidden field" by
+    // construction — truth always wins.
     if (have_snapshot && bundle_->public_state_applier) {
       bundle_->public_state_applier(*bundle_->state, snap_map);
     }
