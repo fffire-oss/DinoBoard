@@ -48,7 +48,7 @@ export function createReplayController(infoCol, config) {
   // constant and doesn't jitter between frames.
   //   Line 1: 帧数-玩家-行动（合并在一行）
   //   Line 2: 胜率-掉点
-  //   Line 3: AI 推荐行动
+  //   Line 3: 智能推荐行动
   function frameLines(frame) {
     const total = frames.length;
     const idx = frames.indexOf(frame);
@@ -74,13 +74,24 @@ export function createReplayController(infoCol, config) {
       : (frame.action_id !== null && frame.action_id !== undefined ? '动作 ' + frame.action_id : '开局');
     const move = frame.actor === 'start' ? '开局' : moveText;
 
-    // tail-solve flag lives on ai_stats. When true the AI was the actor
-    // and the search adopted a tail-solver-proven action — outcome 1=Win,
-    // 2=Loss, 3=Draw from the AI's POV. Used both as a line-1 badge and
-    // to render line-2 win rate as a proven 0/100/50% from the human's POV.
+    // tail-solve flag lives on ai_stats of the AI frame. We use it as a
+    // line-1 badge on the AI frame ("AI 这步用了 tail solver"), and we
+    // *propagate the verdict* to line 2 of the IMMEDIATELY PRECEDING human
+    // frame — the human's move set up the proven losing position, so
+    // "胜率 X%（残局已求解）" belongs on their analysis row. The AI frame
+    // itself doesn't need a line-2 winrate; it's not an interesting datum
+    // ("AI proved itself wins" is what the badge already says), and a "0%"
+    // there read confusingly as "AI's winrate is 0%". Keep AI line-2 as "—".
     const aiStats = frame.ai_stats || null;
     const tailSolved = !!(aiStats && aiStats.tail_solved);
-    const tailOutcome = aiStats ? aiStats.tail_solve_outcome : 0;
+
+    // Lookahead: if the next frame is an AI tail-solve adoption, surface
+    // the verdict on this (human) frame. This is the only place we need
+    // the next-frame info; computing it once here keeps the rule local.
+    const nextFrame = (idx + 1 < frames.length) ? frames[idx + 1] : null;
+    const nextAiStats = nextFrame ? (nextFrame.ai_stats || null) : null;
+    const nextTailSolved = !!(nextAiStats && nextAiStats.tail_solved);
+    const nextTailOutcome = nextAiStats ? nextAiStats.tail_solve_outcome : 0;
 
     const parts1 = ['帧 ' + (idx + 1) + '/' + total];
     if (actor) parts1.push(actor);
@@ -91,21 +102,22 @@ export function createReplayController(infoCol, config) {
     const a = frame.analysis;
     let line2 = '—';
     let line3 = '—';
-    if (tailSolved) {
-      // AI move adopted a proven path. Translate AI-POV outcome into the
-      // human's win rate so the column is consistent with frames whose
-      // analysis is recorded for the human side.
+    if (nextTailSolved && !tailSolved) {
+      // Human frame preceding an AI tail-solve adoption: the AI proved a
+      // forced outcome from this position. Translate the AI-POV outcome
+      // into the human's win rate so the column reads consistently with
+      // pipeline-derived analysis rows.
       let humanWrPct;
       let suffix;
-      if (tailOutcome === 1) {
+      if (nextTailOutcome === 1) {
         // ProvenWin (AI) → human loses. AI only adopts on this branch in
         // the live path, so this is the dominant case.
         humanWrPct = '0.0%';
         suffix = '残局已求解';
-      } else if (tailOutcome === 2) {
+      } else if (nextTailOutcome === 2) {
         humanWrPct = '100.0%';
         suffix = '残局已求解';
-      } else if (tailOutcome === 3) {
+      } else if (nextTailOutcome === 3) {
         humanWrPct = '50.0%';
         suffix = '残局已求解：平局';
       } else {

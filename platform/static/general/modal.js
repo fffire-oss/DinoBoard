@@ -6,7 +6,7 @@ export function createModal() {
       <div class="general-modal-title"></div>
       <div class="general-modal-text"></div>
       <div style="display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap;">
-        <button class="general-modal-ok-btn" data-modal="replay" style="background:#0ea5e9;">查看录像</button>
+        <button class="general-modal-ok-btn" data-modal="replay" data-mobile-hide style="background:#0ea5e9;">查看录像</button>
         <button class="general-modal-ok-btn" data-modal="restart" style="background:#16a34a;">再来一局</button>
         <button class="general-modal-ok-btn" data-modal="ok">确定</button>
       </div>

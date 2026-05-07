@@ -84,7 +84,13 @@
 
 const DEFAULT_DURATION = 350;
 const STEP_GAP = 60;
-const MAX_QUEUE_MS = 5000;
+// Hard ceiling on a single transition's total duration. Mostly there to
+// catch a runaway animation chain (a buggy describeTransition that
+// returns hundreds of steps); legitimate long sequences like Azul's
+// per-tile round-end settlement can exceed 5s on 4-player games when
+// many rows clear at once. 30s gives plenty of room without letting a
+// pathological chain freeze the UI indefinitely.
+const MAX_QUEUE_MS = 30000;
 
 export async function playTransition(steps) {
   if (!steps || !steps.length) return;

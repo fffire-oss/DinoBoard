@@ -157,6 +157,16 @@ export function createApp(config) {
     }
   }
 
+  // Display label for a seat index. We're a generic platform — the seat
+  // could be human or AI, controlled remotely or locally. Use "玩家 N"
+  // (1-indexed) so the UI doesn't lock the framing to "human vs AI". The
+  // human's own seat shows "你" since that's still the most natural
+  // self-reference in the current single-user-vs-AI deployment.
+  function playerLabel(idx) {
+    if (idx === state.humanPlayer) return '你';
+    return '玩家 ' + (idx + 1);
+  }
+
   function updateInfoPanel() {
     if (!state.gameState) {
       infoPanel.reset();
@@ -169,8 +179,8 @@ export function createApp(config) {
       infoPanel.setTurn('对局结束');
       let resultText;
       if (gs.winner < 0) resultText = '结果：平局';
-      else if (state.aiPlayers.includes(gs.winner)) resultText = '结果：AI 获胜';
-      else resultText = '结果：你赢了！';
+      else if (gs.winner === state.humanPlayer) resultText = '结果：你赢了！';
+      else resultText = '结果：玩家 ' + (gs.winner + 1) + ' 获胜';
       sidebar.setOpsMsg(resultText);
       infoPanel.setWinrate(
         sidebar.getShowWinrate() ? state.lastAiWinrate : null,
@@ -180,13 +190,11 @@ export function createApp(config) {
     }
 
     if (poller.isPolling()) {
-      infoPanel.setTurn('当前轮到：AI 思考中...');
+      infoPanel.setTurn('当前轮到：' + playerLabel(gs.current_player) + '（思考中...）');
     } else if (state.forceMode) {
       infoPanel.setTurn('替对手落子中（请操作）');
-    } else if (state.aiPlayers.includes(gs.current_player)) {
-      infoPanel.setTurn('当前轮到：AI');
     } else {
-      infoPanel.setTurn('当前轮到：你');
+      infoPanel.setTurn('当前轮到：' + playerLabel(gs.current_player));
     }
 
     if (gs.last_action_info && config.formatOpponentMove) {
@@ -241,10 +249,11 @@ export function createApp(config) {
     const showReplay = state.difficulty === 'expert';
     if (gs.winner < 0) {
       modal.show('平局', '本局结束，结果为平局。', showReplay);
-    } else if (state.aiPlayers.includes(gs.winner)) {
-      modal.show('AI 获胜', 'AI 赢得了本局比赛。', showReplay);
-    } else {
+    } else if (gs.winner === state.humanPlayer) {
       modal.show('你赢了！', '恭喜，你赢得了本局比赛！', showReplay);
+    } else {
+      const label = '玩家 ' + (gs.winner + 1);
+      modal.show(label + ' 获胜', label + ' 赢得了本局比赛。', showReplay);
     }
   }
 
@@ -367,12 +376,16 @@ export function createApp(config) {
   }
 
   function pollOnce() {
+    const thinkingLabel = () => {
+      const cp = state.gameState ? state.gameState.current_player : -1;
+      return '当前轮到：' + playerLabel(cp) + '（思考中...）';
+    };
     return new Promise(resolve => {
-      infoPanel.setTurn('当前轮到：AI 思考中...');
+      infoPanel.setTurn(thinkingLabel());
       updateSidebarButtons();
       poller.poll(state.sessionId, state.humanPlayer, {
         onThinking() {
-          infoPanel.setTurn('当前轮到：AI 思考中...');
+          infoPanel.setTurn(thinkingLabel());
         },
         onAnalysis(analysis) {
           // Drop-score warnings are derived from the same root_values
@@ -398,7 +411,7 @@ export function createApp(config) {
         },
         onTimeout(data) {
           state.gameState = data;
-          sidebar.setOpsMsg('AI 思考超时');
+          sidebar.setOpsMsg('对手思考超时');
           render();
           resolve(null);
         },
@@ -442,10 +455,14 @@ export function createApp(config) {
       state.gameState.last_action_info = result.aiActionInfo;
       state.gameState.last_action_id = result.aiAction;
       state.gameState.last_action_actor = aiActor;
-      if (state.difficulty === 'expert') {
-        state.lastAiWinrate = result.humanWinrate;
-        state.lastAiWinrateProven = result.humanWinrateProven || null;
-      }
+      // Surface the AI's just-completed search value to the human as a
+      // winrate pill, in BOTH casual and expert difficulty. Casual skips
+      // the analysis pipeline (drop-score, smart-hint) but the AI itself
+      // still ran MCTS to pick its move, so root_values[humanPlayer] is
+      // sitting right there — zero extra search cost. Expert keeps the
+      // same behavior; the analysis path doesn't feed this slot.
+      state.lastAiWinrate = result.humanWinrate;
+      state.lastAiWinrateProven = result.humanWinrateProven || null;
       // Clear the start-of-game intro once the opponent has moved —
       // info panel "对手动作" pill now carries the live message and
       // the ops-msg slot is free for transient prompts (失误, etc).

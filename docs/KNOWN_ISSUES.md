@@ -1622,3 +1622,116 @@ if (perspective_player_ < 0 || perspective_player_ >= NPlayers) {
 4. **修复不只是打补丁，还要防守**。这次修 py_engine 的 extractor wiring 是主菜，但在 LL 的 randomize_unseen 入口加"perspective 必须 init 过"的 assertion 是主菜之外的保险——未来任何新的 runner / binding 如果漏 init，这里会崩，不会再"silently 降级再让 DAG 检查去撞"。Coup 的 belief tracker 同样应该加一道类似 assertion（参见 DC 2026-05-07 笔记，建个 SM 任务跟进）。
 
 ---
+
+## BUG-033: Azul 轮末结算飞砖落地后砖消失 + 多行同结算时 +score 偏高 (OB-012 / OB-008)
+
+### 背景
+
+- Azul `roundEndSteps`（games/azul/web/azul.js）负责轮末从 pattern lines 飞砖到 wall 的动画 + 给每砖弹 `+N` 加分 popup
+- Prev render 把 wall 上没填的格子标 `.ghost`（半透 + 透明度 0.2），fly 落地后由 next-state re-render 翻成 `.filled`
+- 用户两条独立报告："飞砖落地一瞬间砖消失/再 popup +score / 再 re-render 又出现"（OB-012）；"轮末分数显示和实际加分对不上、整轮一齐 pop 看不出每砖加多少"（OB-008）
+
+### 根因（同源 / 一处代码两个症状）
+
+1. **OB-012 — 中间状态没维护**：settle fly 只挂了 `onStart` 把源 pattern row 改成空，但**目的 wall cell 没挂 `onComplete`**。落地一瞬间 sprite 被 anim engine 移除，cell 仍是 `.ghost` 透明态，到 re-render 才翻 `.filled`——中间这段就是"砖消失"。属于 `WEB_DESIGN_PRINCIPLES §3 中间状态维护`：动画期间 DOM 必须反映动作的物理过程，不是 prev 也不是 next。源态改了空，目的态没改成已落位。
+
+2. **OB-008 — scoring 用了"全结算后"的 wall**：`computePlacementScore(wall, row, col)` 算邻居连通时直接传 `next.players[pi].wall`——也就是这一轮**所有**砖结算之后的整面墙。Azul 真规则按 row=0..4 顺序逐行结算、每行只看截至此刻已落位的砖。如果同玩家 row 1 和 row 3 都满，row 1 结算时 row 3 还在 pattern line，不应作为邻居；但 `next.wall` 把 row 3 也算进去，导致 row 1 的连通邻居被高估，少数情况会把"+1"显示成"+3"。
+
+### 修复
+
+`games/azul/web/azul.js`：
+
+1. 加 `cloneWallMatrix(wall)` 工具，5×5 deep copy
+2. 重写 `roundEndSteps`：placements 按 (pi asc, row asc) 串行结算（settledPlacements 已按这个顺序产出）。维护 `incrementalWalls[pi]`（从 `prev.players[pi].wall` 拷贝起步），每砖一个串行子序列：
+   - 先用 incrementalWalls[pi] 算 `score`（wall 处于本砖落位之**前**的状态）
+   - 再 `incrementalWalls[pi][row][col] = 1`
+   - 推一个 `fly` 步带 `onComplete`：取 `[data-wall-cell="<pi>-<row>-<col>"]`，`classList.remove('ghost'); add('filled'); style.opacity = ''`
+   - 紧跟一个 `popup` 步显示 `+score`
+   - 不是最后一砖加一段 `SETTLE_INTER_TILE_PAUSE`
+3. 地板罚分 popup 推到所有 settle fly 之后作为 `group` 并行——不和飞砖竞争视觉
+
+### 教训
+
+1. **fly 是双端都要维护中间状态的步骤**。源端用 `onStart` 把容器改成空态、目的端用 `onComplete` 把容器从 ghost 改成 filled——两端都不能省。同时维护源和目的是 fly 的"完整中间态"，少一端都会有"砖消失/出现"的视觉断层。这条扩进 `WEB_DESIGN_PRINCIPLES §3` 的"中间状态维护"——明确"对每个 fly，源和目的都要有显式的中间态切换，hideFrom/onStart 处理源、onComplete 处理目的；ghost→filled 的切换不能只指望 next-state re-render"。
+
+2. **真值结算顺序在前端动画里也要尊重**。前端不重写 C++ 规则，但**展示**结算时如果不按真规则的顺序展开，每砖的"加多少分"就会算错。同回合多行结算的"逐行 + 每行只看已结算邻居"语义在前端必须等价复刻——`incrementalWall` 就是这个等价复刻的载体。如果未来发现累计 popup 和 C++ 最终分对不上，应该考虑暴露 C++ 逐砖增量结算接口（CLAUDE.md "Never write Python fallback or reimplementation of any game logic"，前端的等效约束是同样的）；当前的 incrementalWall 是 best-effort 等价，不是规则真值。
+
+3. **MAX_QUEUE_MS 的副作用**：4 玩家 Azul 单轮可能 20+ 砖串行结算，每砖 ~700ms，再加上 pause 和 popup 容易超过 5s。`platform/static/general/animate.js` 的 `MAX_QUEUE_MS` 从 5000 提到 30000，并加注释说明"不是为容忍长动画，而是为容忍合法长度的串行结算 + 兜底跑飞 describeTransition"。
+
+---
+
+## BUG-034: 体验版（casual）AI 走子后没显示对手胜率——前端 difficulty gate 把已经算好的数字扔了 (OB-013)
+
+### 背景
+
+- Web 前端有"显示胜率"开关（默认开），AI 走完一步后 info panel 应该显示这一步对人类胜率的估值
+- 用户反馈"体验版（casual）AI 走完没胜率"
+- 第一反应是"casual 不跑 analysis pipeline，所以没胜率数据"——错
+
+### 根因
+
+数据其实一直到了前端：
+1. `_pipeline_worker_ai_only`（casual 路径）→ `_commit_ai_move` → `pipe["ai_stats"] = ai_stats`（pipeline.py:267）。AI 自己 MCTS 跑完产生的 `root_values` 已经塞进 pipeline status
+2. `/pipeline` endpoint 透出 `ai_stats`（routes.py:163）
+3. poller `pipeline.js` 从 `st.ai_stats.root_values[humanPlayer]` 算出 `humanWinrate` 传给 `onDone`
+4. **但** `app.js:445` 把赋值 `state.lastAiWinrate = result.humanWinrate` 关在 `if (state.difficulty === 'expert')` 里。casual 拿到 humanWinrate 立刻扔。
+
+`sidebar.getShowWinrate()` 用户开关是另一条独立路径（在 `setWinrate` 调用处守门）；这次的 difficulty gate 是冗余的、且直接掐死了 casual 的合理用例。
+
+### 修复
+
+`platform/static/general/app.js`：删 difficulty gate，casual / expert 都把 humanWinrate 赋给 state。注释说明：casual 跳过的是 analysis pipeline（drop-score、smart hint），不是 AI 自己的 MCTS——AI 自己的 root_values 一直都在。
+
+### 教训
+
+1. **debug 跨服务流时先 trace 端到端数据流，不要靠直觉猜哪一段没产数据**。本来想在 backend casual 路径加 root_values 上报，结果 backend 早就上报了，问题在 frontend 一行 difficulty gate。直觉走的是"casual = 没数据"，实际走的是"casual = 数据被前端最后一步丢了"。下次类似 bug：先用 devtools 看 `/pipeline` 响应里有没有数据，再决定改哪一端。
+
+2. **同一个用户开关不要在多个地方守门**。`getShowWinrate()` 在 `setWinrate` 调用处已经守了"用户不要看胜率"，`difficulty === 'expert'` 的 gate 是另一个角色（"casual 难度不该有胜率"），但这两个角色有重叠——如果用户在 casual 也想看，开关明明开着却看不见，UX 矛盾。原则：**用户开关的语义边界要单一**，每个开关只在唯一一处守门，避免"开关开了但被另一处守门掐掉"的隐性失效。
+
+---
+
+## BUG-035: Azul 轮末地板扣分用错时间点的 floor_count——actor 在结算回合扔的砖没算进去
+
+### 背景
+
+- Azul `roundEndSteps` 给每个有地板砖的玩家弹一个 `-N` 罚分 popup
+- 用户反馈："这一把我那一轮是最后一个动的，我把一块砖放到了地板，最后这块的扣分没算"
+- 走查代码：popup 用 `prev.players[pi].floor_count` 算
+
+### 根因
+
+`prev` 是**结算回合前**的 state 快照。actor 触发轮末结算的那一动作几乎肯定**自己**给地板加了砖：
+- 显式 floor 投放（`targetLine === 5`）
+- pattern row 装不下的 overflow 流到地板
+- 从 center pool 取砖时附带的 first-player token
+
+这些都属于"本回合落到地板"，C++ 引擎在 `do_action_fast` 里照常计入 floor_count 然后才 settle。但前端 popup 用的是 `prev.floor_count`——actor 的"本回合刚扔的"全没算。
+
+特别极端情况：用户报告的就是 prev floor_count = 0、actor 这一动作直接把唯一一块砖扔地板。`floorPenaltyTotal(0) = 0`，循环里直接 `continue`——**popup 完全不出现**。罚分本身在 C++ 里照算了（next state 分数对得上），只是动画里看不到——属"显示静默漏算"。
+
+### 修复
+
+`games/azul/web/azul.js::roundEndSteps`：增加 `actionContext` 参数（`{actor, source, color, targetLine, isCenter}`，由 describeTransition 传入）。新建 `floorCounts[]`：
+
+```js
+floorCounts[pi] = prev.players[pi].floor_count;  // 其他玩家不变
+// actor 的修正：
+const tilesTaken = isCenter ? prev.center[color] : prev.factories[source][color];
+let added;
+if (targetLine === 5) added = tilesTaken;                       // 全部进地板
+else added = max(0, tilesTaken - (capacity - prevLineLen));     // 只算 overflow
+if (isCenter && prev.first_player_token_in_center) added += 1;  // FP token
+floorCounts[actor] += added;
+```
+
+popup 循环改用 `floorCounts[pi]`。逻辑等价于"在 prev 上模拟 do_action 的 floor 增量、不模拟 settle 清空"，因为 settle 清空已经在 next 里发生了，C++ 那边记的罚分也是基于"清空前"的 floor_count。
+
+### 教训
+
+1. **`prev` 和 `next` 都不是"结算时刻"的 state**。Azul 这种"一个动作 + 自动 settle"的复合 transition 里，前端能看到的两个时间点：prev = 动作前、next = 动作 + settle 后。**结算用的 floor_count 是动作之后、settle 之前**——前端拿不到这个中间快照，必须自己模拟 actor 这一动作的 floor 增量。这是动画前端的"中间态计算"通则：不是所有需要的中间快照都能从 prev/next 直接读，部分必须靠**等价复刻动作的局部效果**得到。
+
+2. **popup count = 0 时静默 skip 是个 bug 放大器**。如果罚分循环里 `if (floorCount <= 0) continue` 没了——退化成"用错的 count 算出 0 罚分但仍然弹一个 0"——用户会立刻看到"罚分 0"觉得不对然后报 bug。但 skip 让症状变成"什么都没显示"，看起来像"这位玩家这轮没扔过地板"，肉眼难辨。**在视觉反馈层"无显示"和"显示 0/null"是不同的失败模式**——前者掩盖 bug，后者暴露 bug。WEB_DESIGN_PRINCIPLES 可考虑加一条："计算结果 0/空 时仍然渲染（占位/灰显），不要 skip 整个 UI 元素"，避免"该有显示的地方什么都没有"被误读成正常状态。
+
+3. **AI 价值真值与显示口径要对齐验证**。这次 bug 不影响游戏分数（C++ 引擎照算）但影响玩家对"我刚才那一动到底亏了多少"的认知。Azul 这种快节奏游戏，玩家对每动的得失有实时反馈预期，"显示和真实分数对不上"是教学信号衰减。后续在 `tests/web/...` 应该加一条"动画 popup 数字之和 = next.scores - prev.scores"的不变量校验（每帧），跨游戏适用。
+
+---

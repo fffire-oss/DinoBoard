@@ -537,7 +537,8 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
 /* Phone: sidebar overlays the board instead of stealing grid space.
  * Without this, a 240px sidebar on a 375px phone leaves only 135px for
  * the board. Collapsing it by default lets users tap the toggle handle
- * to slide it in/out. */
+ * to slide it in/out. Also: info panel moves above the board, replay UI
+ * is hidden, board-stage padding tightens — see BG-007. */
 @media (max-width: 720px) {
   .layout { grid-template-columns: 1fr; }
   .layout:not(.sidebar-collapsed) .sidebar {
@@ -552,4 +553,35 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   .sidebar-toggle { left: 260px; }
   .layout.sidebar-collapsed ~ .sidebar-toggle,
   .sidebar-toggle.collapsed { left: 0; }
+
+  .board-stage { padding: 8px; }
+
+  /* Info pills go above the board on phone. order overrides DOM order
+   * (boardCol, infoCol) without touching layout.js. */
+  .table-area {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .info-col {
+    width: 100%;
+    flex: 0 0 auto;
+    max-height: none;
+    order: 0;
+  }
+  .game-board-col {
+    order: 1;
+    width: 100%;
+  }
+
+  /* Replay panel + sidebar replay entries + game-over "查看录像" button
+   * — all hidden on phone (BG-007). The data-mobile-hide hook lets us
+   * pin extra entries from JS without touching this media query. */
+  .analysis-panel,
+  [data-mobile-hide] {
+    display: none !important;
+  }
+
+  .zoom-controls { bottom: 8px; right: 8px; padding: 2px 6px; }
+  .zoom-btn { width: 24px; height: 24px; font-size: 14px; }
 }

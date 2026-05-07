@@ -10,7 +10,7 @@ export function createInfoPanel(infoCol, config) {
     <div class="info-pill" id="info-turn">当前轮到：--</div>
     <div class="info-pill" id="info-opp">对手动作：--</div>
     <div class="info-pill" id="info-winrate">你的预估胜率：--</div>
-    <div class="info-pill" id="info-suggest">AI 提示：--</div>
+    <div class="info-pill" id="info-suggest">智能提示：--</div>
   `;
   infoCol.appendChild(panel);
 
@@ -55,7 +55,7 @@ export function createInfoPanel(infoCol, config) {
         els.winrate.textContent = base;
       }
     },
-    setSuggest(text) { els.suggest.textContent = 'AI 提示：' + (text || '--'); },
+    setSuggest(text) { els.suggest.textContent = '智能提示：' + (text || '--'); },
     setVisible(visible) {
       panel.style.display = visible ? '' : 'none';
     },
@@ -73,7 +73,7 @@ export function createInfoPanel(infoCol, config) {
       els.turn.textContent = '当前轮到：--';
       els.opp.textContent = '对手动作：--';
       els.winrate.textContent = '你的预估胜率：--';
-      els.suggest.textContent = 'AI 提示：--';
+      els.suggest.textContent = '智能提示：--';
     },
   };
 }

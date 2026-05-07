@@ -536,10 +536,18 @@ function wallColForColor(row, color) {
   return (color + row) % NUM_COLORS;
 }
 
-// Approximate placement score used by the animation popup — matches the
-// C++ apply_round_settlement logic: count contiguous filled cells in the
-// row direction and column direction that include the just-placed cell.
-// If both > 1, the score is the sum; otherwise it's max(row-run, col-run, 1).
+// Per-tile placement score, matching the C++ apply_round_settlement
+// logic: contiguous run of filled cells in the row direction and column
+// direction that include the just-placed cell. If both > 1, score is the
+// sum; otherwise it's max(rowRun, colRun, 1).
+//
+// IMPORTANT: `wall` here must be the *incremental* wall — i.e. only
+// includes the cells settled UP TO AND INCLUDING the cell at (row, col)
+// in this round. Passing the post-settlement `next.wall` would treat
+// not-yet-placed sibling cells (e.g. row 3 when row 1 is being scored)
+// as already-present neighbors and inflate the score. The settlement
+// loop in roundEndSteps therefore mutates a per-player wall copy as it
+// walks placements in row order.
 function computePlacementScore(wall, row, col) {
   let rowRun = 1;
   for (let c = col - 1; c >= 0 && wall[row][c]; c--) rowRun++;
@@ -549,6 +557,17 @@ function computePlacementScore(wall, row, col) {
   for (let r = row + 1; r < 5 && wall[r][col]; r++) colRun++;
   if (rowRun > 1 && colRun > 1) return rowRun + colRun;
   return Math.max(rowRun, colRun, 1);
+}
+
+// Deep-copy a 5×5 wall matrix so the settlement loop can mutate without
+// touching the prevState snapshot.
+function cloneWallMatrix(wall) {
+  const out = [];
+  for (let r = 0; r < 5; r++) {
+    const row = (wall && wall[r]) || [0, 0, 0, 0, 0];
+    out.push([row[0] || 0, row[1] || 0, row[2] || 0, row[3] || 0, row[4] || 0]);
+  }
+  return out;
 }
 
 // Aggregate floor penalty for N tiles on the floor (FLOOR_PENALTIES[0..6]).
@@ -763,43 +782,144 @@ function settledPlacements(prev, next, numPlayers) {
   return placements;
 }
 
-function roundEndSteps(prev, next, numPlayers) {
+// Per-tile settle duration. A bit faster than FLY_DURATION because the
+// tile travels a shorter distance (pattern row → adjacent wall cell)
+// and we'll be playing many in sequence; full FLY_DURATION per tile
+// adds up to a slow chain.
+const SETTLE_FLY_DURATION = 300;
+const SETTLE_POPUP_DURATION = 450;
+const SETTLE_INTER_TILE_PAUSE = 40;
+
+// Round-end settlement, played as a strict sequence:
+//   for each (player asc, row asc) settled placement:
+//     - fly the tile from pattern row → wall cell
+//     - on land: flip the wall cell from .ghost → .filled (so the just-
+//       arrived tile is visible; otherwise prev-render's ghost cell
+//       persists until next-state re-render and the tile looks like it
+//       vanished mid-animation — see WEB_DESIGN_PRINCIPLES §3 "中间状态")
+//     - on land: increment the local incrementalWall and pop a "+N"
+//       above the wall cell; N uses ONLY the cells settled so far, so
+//       row-then-row settlement order matches the C++ rule and a player
+//       with multiple rows clearing in one round sees correctly increasing
+//       neighbor runs (instead of every tile seeing the entire post-
+//       round wall as already present).
+//   then for each player with floor tiles in prev state, popup the floor
+//   penalty.
+function roundEndSteps(prev, next, numPlayers, actionContext) {
   const placements = settledPlacements(prev, next, numPlayers);
 
-  const flights = [];
-  const popups = [];
-
-  for (const { pi, row, col, color } of placements) {
-    const capacity = row + 1;
-    flights.push({
-      from: '[data-pattern-row="' + pi + '-' + row + '"]',
-      to: '[data-wall-cell="' + pi + '-' + row + '-' + col + '"]',
-      createElement: () => makeFlyingTile(color),
-      duration: FLY_DURATION, width: FLY_TILE_SIZE, height: FLY_TILE_SIZE,
-      // Instead of hiding the row (which erases the slot grid visually),
-      // swap its content to `capacity` empty tile placeholders so the
-      // slots stay in place while the colored sprite flies to the wall.
-      onStart: (el) => transformPatternRowToEmpty(el, capacity),
-    });
-    const nextWall = next.players[pi].wall;
-    const score = computePlacementScore(nextWall, row, col);
-    popups.push({
-      type: 'popup',
-      target: '[data-wall-cell="' + pi + '-' + row + '-' + col + '"]',
-      content: '+' + score,
-      duration: 1800,
-    });
+  // Pre-settlement floor counts per player. `prev.floor_count` is the
+  // count BEFORE the round-ending action; for the actor, the action
+  // itself usually adds tiles to the floor (overflow from a row that
+  // filled, an explicit floor-target placement, FP token from center).
+  // Those additions are part of what gets penalized at settlement, so
+  // include them here. Other players' floor counts didn't change.
+  // We can't read post-action floor_count from `next` because the
+  // engine has already cleared the floor as part of round-end.
+  const floorCounts = new Array(numPlayers).fill(0);
+  for (let pi = 0; pi < numPlayers; pi++) {
+    floorCounts[pi] = (prev.players[pi] && prev.players[pi].floor_count) || 0;
+  }
+  if (actionContext) {
+    const { actor, source, color, targetLine, isCenter } = actionContext;
+    const prevP = prev.players[actor] || {};
+    const tilesTaken = isCenter
+      ? ((prev.center || [])[color] || 0)
+      : (((prev.factories || [])[source] || [])[color] || 0);
+    let added;
+    if (targetLine === 5) {
+      added = tilesTaken;
+    } else {
+      const capacity = targetLine + 1;
+      const line = (prevP.pattern_lines || [])[targetLine] || { length: 0 };
+      const prevLen = line.length || 0;
+      added = Math.max(0, tilesTaken - (capacity - prevLen));
+    }
+    if (isCenter && prev.first_player_token_in_center) added += 1;
+    floorCounts[actor] += added;
   }
 
-  // Floor penalty popup — one per player that had anything on the floor.
+  // Build a per-player incremental wall — starts as prev.wall and grows
+  // tile-by-tile in placement order. Each placement reads the score from
+  // this wall *before* the tile is added, then writes the cell.
+  const incrementalWalls = {};
   for (let pi = 0; pi < numPlayers; pi++) {
-    const prevP = prev.players[pi];
-    if (!prevP) continue;
-    const floorCount = prevP.floor_count || 0;
+    const prevP = prev.players[pi] || {};
+    incrementalWalls[pi] = cloneWallMatrix(prevP.wall);
+  }
+
+  // settledPlacements returns rows sorted by (pi, row, col). settle order
+  // for scoring purposes is row-major within each player; placements is
+  // already in that order because the outer loops iterate pi then row
+  // then col, which matches the rule.
+  const steps = [];
+
+  // Brief hold so the just-completed pattern row(s) are visibly full
+  // before they start flying off. mainActionFlights's onComplete already
+  // patched the actor's row to look full at landing time; this pause
+  // gives users a beat to register that before settlement begins.
+  if (placements.length) {
+    steps.push({ type: 'pause', duration: 300 });
+  }
+
+  for (let i = 0; i < placements.length; i++) {
+    const { pi, row, col, color } = placements[i];
+    const capacity = row + 1;
+    const cellSel = '[data-wall-cell="' + pi + '-' + row + '-' + col + '"]';
+
+    // Score uses the wall as it stands BEFORE this cell is added.
+    const score = computePlacementScore(incrementalWalls[pi], row, col);
+    incrementalWalls[pi][row][col] = 1;
+
+    // Fly: pattern-row → wall cell.
+    steps.push({
+      type: 'fly',
+      from: '[data-pattern-row="' + pi + '-' + row + '"]',
+      to: cellSel,
+      createElement: () => makeFlyingTile(color),
+      duration: SETTLE_FLY_DURATION,
+      width: FLY_TILE_SIZE, height: FLY_TILE_SIZE,
+      // Source pattern row: swap to `capacity` empty placeholders so the
+      // row's slot grid stays in place visually as the sprite leaves.
+      onStart: (el) => transformPatternRowToEmpty(el, capacity),
+      // Destination wall cell: prev render gave it `.ghost` (faded
+      // outline). Flip to `.filled` AT landing, so the user sees the
+      // sprite arrive and the cell light up as a placed tile. Without
+      // this the sprite is removed at end-of-fly and the cell is still
+      // ghost until next-state re-render — perceived as "tile vanished".
+      onComplete: () => {
+        const cellEl = document.querySelector(cellSel);
+        if (cellEl) {
+          cellEl.classList.remove('ghost');
+          cellEl.classList.add('filled');
+          cellEl.style.opacity = '';
+        }
+      },
+    });
+
+    // Score popup right after the tile lands, on the same cell.
+    steps.push({
+      type: 'popup',
+      target: cellSel,
+      content: '+' + score,
+      duration: SETTLE_POPUP_DURATION,
+    });
+
+    if (i < placements.length - 1) {
+      steps.push({ type: 'pause', duration: SETTLE_INTER_TILE_PAUSE });
+    }
+  }
+
+  // Floor penalties — one popup per player with floor tiles, played as
+  // a single parallel group AFTER all settlement flies (so the user
+  // isn't reading scores in two places at once).
+  const penaltyPopups = [];
+  for (let pi = 0; pi < numPlayers; pi++) {
+    const floorCount = floorCounts[pi];
     if (floorCount <= 0) continue;
     const penalty = floorPenaltyTotal(floorCount);
     if (penalty === 0) continue;
-    popups.push({
+    penaltyPopups.push({
       type: 'popup',
       target: '[data-player="' + pi + '"] .floor-row',
       content: String(penalty),  // already negative
@@ -807,21 +927,11 @@ function roundEndSteps(prev, next, numPlayers) {
       duration: 1800,
     });
   }
+  if (penaltyPopups.length) {
+    if (placements.length) steps.push({ type: 'pause', duration: 200 });
+    steps.push({ type: 'group', children: penaltyPopups });
+  }
 
-  const steps = [];
-  // The current actor's target pattern row is patched inside the main
-  // fly's onComplete (see mainActionFlights), so the transition from
-  // "sprite lands" → "row looks full" is gap-less. Other players'
-  // settling rows were already rendered full in state_before.
-  // We just need a short hold so the user can see the full row(s)
-  // before they fly off to the wall.
-  if (placements.length) {
-    steps.push({ type: 'pause', duration: 300 });
-    steps.push({ type: 'flyGroup', flights });
-  }
-  if (popups.length) {
-    steps.push({ type: 'group', children: popups });
-  }
   return { steps };
 }
 
@@ -946,7 +1056,8 @@ function describeTransition(prevState, newState, actionInfo, actionId) {
   // ran inside do_action_fast).
   if (roundEnded || gameEnded) {
     steps.push({ type: 'pause', duration: SETTLE_PAUSE });
-    const settle = roundEndSteps(prev, next, numPlayers);
+    const settle = roundEndSteps(prev, next, numPlayers,
+        { actor, source, color, targetLine, isCenter });
     steps.push(...settle.steps);
   }
 

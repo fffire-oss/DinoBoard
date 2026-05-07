@@ -1,11 +1,11 @@
 {
   "difficulty_overrides": {
     "expert": {
-      "simulations": 500,
+      "simulations": 5000,
       "temperature": 0.0
     }
   },
-  "analysis_simulations": 500,
+  "analysis_simulations": 5000,
   "tail_solve": {
     "enabled": true,
     "depth_limit": 20,

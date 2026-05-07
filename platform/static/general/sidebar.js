@@ -76,9 +76,9 @@ export function createSidebar(sidebarEl, config, callbacks) {
         <button id="btn-force">替对手落子</button>
       </div>
       <button id="btn-hint">智能提示</button>
-      <button id="btn-load-replay">加载录像</button>
-      <input type="file" id="replay-file-input" accept=".json" style="display:none">
-      <label class="side-toggle">
+      <button id="btn-load-replay" data-mobile-hide>加载录像</button>
+      <input type="file" id="replay-file-input" accept=".json" style="display:none" data-mobile-hide>
+      <label class="side-toggle" data-mobile-hide>
         <input type="checkbox" id="toggle-show-replay">
         <span>对局中显示录像栏</span>
       </label>
