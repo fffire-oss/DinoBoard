@@ -182,34 +182,49 @@
 /* Guard guess panel — one row per valid target, row contains value
  * buttons 2..8. Fixed min-height so appearance/disappearance doesn't
  * yank the hand below. */
-.ll-guard-panel {
-  background: #eef5fa;
-  border: 1px solid #9db9cc;
-  border-radius: 10px;
-  padding: 10px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.ll-guard-panel-title {
-  font-size: 13px;
-  font-weight: 700;
-  color: #0f3554;
-}
-
-.ll-guard-target-row {
+/* Guard guess modal (OB-006): two-stage interaction. Stage 1 picks the
+   target via opponent area click (same affordance as Priest/Baron/King);
+   stage 2 opens this centered modal with one button per legal guess. */
+.ll-guess-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.55);
   display: flex;
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  justify-content: center;
+  z-index: 1000;
+  animation: ll-guess-fade 0.18s ease;
 }
 
-.ll-guard-target-label {
-  color: #334155;
-  font-size: 13px;
+@keyframes ll-guess-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.ll-guess-modal {
+  background: #fdf6e3;
+  border: 2px solid #b08968;
+  border-radius: 14px;
+  padding: 18px 20px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 320px;
+  max-width: 90vw;
+}
+
+.ll-guess-modal-title {
+  font-size: 16px;
   font-weight: 700;
-  min-width: 64px;
+  color: #1f2937;
+  text-align: center;
+}
+
+.ll-guess-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+  gap: 8px;
 }
 
 .ll-guess-btn {
@@ -229,6 +244,52 @@
   background: #fef3c7;
   border-color: #f59e0b;
   transform: translateY(-1px);
+}
+
+.ll-guess-btn-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-height: 64px;
+  padding: 6px 4px;
+}
+
+.ll-guess-btn-value {
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.ll-guess-btn-name {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.ll-guess-empty {
+  font-size: 13px;
+  color: #6b7280;
+  text-align: center;
+}
+
+.ll-guess-modal-actions {
+  display: flex;
+  justify-content: center;
+}
+
+.ll-guess-cancel {
+  background: transparent;
+  color: #475569;
+  border: 1px solid #94a3b8;
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.ll-guess-cancel:hover {
+  background: #e2e8f0;
 }
 
 /* Player hand area (below the stage, rendered by renderPlayerArea). */

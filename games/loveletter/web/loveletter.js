@@ -134,13 +134,20 @@ function renderBoard(container, gs, ctx) {
     if (p.protected) opp.classList.add('protected');
     if (pi === currentPlayer) opp.classList.add('current-turn');
 
-    const canTarget = playing && pendingCard > 0 && needsTarget(pendingCard) && !needsGuess(pendingCard);
+    const canTarget = playing && pendingCard > 0 && needsTarget(pendingCard);
     const validTargets = pendingCard > 0 ? getTargetsForCard(pendingCard, legalSet) : new Set();
     const isValidTarget = canTarget && validTargets.has(pi);
 
     if (isValidTarget) {
       opp.classList.add('selectable');
       opp.addEventListener('click', () => {
+        if (needsGuess(pendingCard)) {
+          // Guard: target chosen, now show the guess modal (stage 2).
+          // Don't submit yet.
+          pendingTarget = pi;
+          ctx.rerender();
+          return;
+        }
         const aid = resolveAction(pendingCard, pi, -1);
         if (legalSet.has(aid)) {
           resetPending();
@@ -187,64 +194,78 @@ function renderBoard(container, gs, ctx) {
   }
   board.appendChild(opponents);
 
-  if (playing && pendingCard === 1 && pendingTarget === -1) {
-    const guardPanel = document.createElement('div');
-    guardPanel.className = 'll-guard-panel';
-    const title = document.createElement('div');
-    title.className = 'll-guard-panel-title';
-    title.textContent = '侍卫：选择目标并猜测其手牌';
-    guardPanel.appendChild(title);
-    const validTgts = getTargetsForCard(1, legalSet);
-    // Engine appends a self-fallback action (target=me, guess=2) when
-    // every opponent is protected. Skip self here — it becomes a
-    // one-button "discard with no effect" row instead.
-    let rowsAdded = 0;
-    for (const t of validTgts) {
-      if (t === humanPlayer) continue;
-      const row = document.createElement('div');
-      row.className = 'll-guard-target-row';
-      const label = document.createElement('span');
-      label.className = 'll-guard-target-label';
-      label.textContent = '玩家' + t;
-      row.appendChild(label);
-      for (let g = 2; g <= 8; g++) {
-        const aid = GUARD_OFF + t * 7 + (g - 2);
-        if (!legalSet.has(aid)) continue;
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'll-guess-btn';
-        btn.textContent = CARD_LABELS[g] + '(' + g + ')';
-        btn.addEventListener('click', () => {
-          resetPending();
-          ctx.submitAction(aid);
-        });
-        row.appendChild(btn);
+  // Guard two-stage interaction (OB-006):
+  //   stage 1: player clicks a hand Guard → pendingCard=1, pendingTarget=-1.
+  //            opponent areas become selectable (same affordance as Priest/Baron/King).
+  //   stage 2: player clicks an opponent → pendingTarget=pi, then this modal
+  //            shows up centered with one button per legal guess card.
+  // Avoids the previous "target × guess" cartesian button grid which was
+  // unreadable in 3p/4p. (Self-fallback when all opps protected is handled
+  // earlier in the hand-card click handler — never reaches this UI.)
+  if (playing && pendingCard === 1 && pendingTarget >= 0 && pendingTarget !== humanPlayer) {
+    const overlay = document.createElement('div');
+    overlay.className = 'll-guess-modal-overlay';
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) {
+        // Click on backdrop cancels target selection but keeps the card pending.
+        pendingTarget = -1;
+        ctx.rerender();
       }
-      guardPanel.appendChild(row);
-      rowsAdded++;
-    }
-    if (rowsAdded === 0) {
-      const row = document.createElement('div');
-      row.className = 'll-guard-target-row';
-      const label = document.createElement('span');
-      label.className = 'll-guard-target-label';
-      label.textContent = '所有对手被保护';
-      row.appendChild(label);
+    });
+
+    const modal = document.createElement('div');
+    modal.className = 'll-guess-modal';
+
+    const title = document.createElement('div');
+    title.className = 'll-guess-modal-title';
+    title.textContent = '猜测玩家' + pendingTarget + ' 的手牌';
+    modal.appendChild(title);
+
+    const grid = document.createElement('div');
+    grid.className = 'll-guess-grid';
+    let buttonsAdded = 0;
+    for (let g = 2; g <= 8; g++) {
+      const aid = GUARD_OFF + pendingTarget * 7 + (g - 2);
+      if (!legalSet.has(aid)) continue;
       const btn = document.createElement('button');
       btn.type = 'button';
-      btn.className = 'll-guess-btn';
-      btn.textContent = '弃出无效';
+      btn.className = 'll-guess-btn ll-guess-btn-card card-' + g;
+      btn.innerHTML =
+        '<div class="ll-guess-btn-value">' + g + '</div>' +
+        '<div class="ll-guess-btn-name">' + CARD_LABELS[g] + '</div>';
       btn.addEventListener('click', () => {
-        const aid = GUARD_OFF + humanPlayer * 7;
-        if (legalSet.has(aid)) {
-          resetPending();
-          ctx.submitAction(aid);
-        }
+        resetPending();
+        ctx.submitAction(aid);
       });
-      row.appendChild(btn);
-      guardPanel.appendChild(row);
+      grid.appendChild(btn);
+      buttonsAdded++;
     }
-    board.appendChild(guardPanel);
+    modal.appendChild(grid);
+
+    if (buttonsAdded === 0) {
+      // Defensive: target was selectable but no legal guess survived.
+      // Shouldn't happen — clear pending and let player retry.
+      const empty = document.createElement('div');
+      empty.className = 'll-guess-empty';
+      empty.textContent = '没有可猜的牌';
+      modal.appendChild(empty);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'll-guess-modal-actions';
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'll-guess-cancel';
+    cancel.textContent = '换一个目标';
+    cancel.addEventListener('click', () => {
+      pendingTarget = -1;
+      ctx.rerender();
+    });
+    actions.appendChild(cancel);
+    modal.appendChild(actions);
+
+    overlay.appendChild(modal);
+    board.appendChild(overlay);
   }
 
   container.appendChild(board);
@@ -365,7 +386,9 @@ function renderPlayerArea(container, gs, ctx) {
     const hint = document.createElement('div');
     hint.className = 'll-pending-hint';
     if (needsGuess(pendingCard)) {
-      hint.textContent = '请选择目标和猜测的牌';
+      hint.textContent = pendingTarget >= 0
+        ? '猜测玩家' + pendingTarget + ' 的手牌'
+        : '请点击目标玩家';
     } else if (needsTarget(pendingCard)) {
       hint.textContent = selfIsValidTarget && pendingCard === 5
         ? '请点击目标玩家（可点击你自己）'
