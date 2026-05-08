@@ -40,8 +40,8 @@ def test_love_letter_with_dirichlet_no_validate_failures():
     We simply run many selfplay episodes and assert none throw.
     """
     try:
-        # Use warm-model if present; otherwise skip (needs a real model so the
-        # MCTS actually diversifies sims through UCB).
+        # Use the shared test model (needs a real model so MCTS actually
+        # diversifies sims through UCB).
         from tests.conftest import get_test_model
     except ImportError:
         sys.path.insert(0, str(PROJECT_ROOT / "tests"))

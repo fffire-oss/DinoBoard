@@ -13,16 +13,14 @@
 4. [IFeatureEncoder — 特征编码](#4-ifeatureencoder--特征编码)
 5. [GameBundle — 组件注册](#5-gamebundle--组件注册)
 6. [GameRegistrar — 注册模式](#6-gameregistrar--注册模式)
-7. [配置文件](#7-配置文件)（game.json 训练配置、web.json Web 平台配置）
+7. 配置文件已抽到独立文档：[CONFIG_REFERENCE.md](CONFIG_REFERENCE.md)（game.json + web.json）
 8. [构建集成](#8-构建集成)
 9. [训练可选特性](#9-训练可选特性)（Heuristic、TailSolver、Filter、AuxScorer、Adjudicator、Stats、Peek）
-10. [物理随机性](#10-物理随机性)（StochasticDetector、Chance Node、Truncate）
-11. [隐藏信息与 Belief Tracker](#11-隐藏信息与-belief-tracker)（ISMCTS 根采样、Encoder 信息屏障）
-12. [特征编码最佳实践](#12-特征编码最佳实践)
-13. [Web 前端开发](#13-web-前端开发)（Serializer、Descriptor、目录结构、交互设计、createApp）
-14. [Web 平台功能](#14-web-平台功能)（通用布局、高级操作、Pipeline 与动作分析、录像、API）
-15. [测试](#15-测试)（自动化测试套件、运行方式、接入新游戏）
-16. [完整 Checklist](#16-完整-checklist)
+10. [隐藏信息与 Belief Tracker（含物理随机性）](#10-隐藏信息与-belief-tracker含物理随机性)（ISMCTS 根采样、Encoder 信息屏障、物理随机性）
+11. Web 前端开发已独立成章，详见 [WEB_DEVELOPMENT_GUIDE.md](WEB_DEVELOPMENT_GUIDE.md)
+12. [测试](#12-测试)（自动化测试套件、运行方式、接入新游戏）
+13. [完整 Checklist](#13-完整-checklist)
+14. [AI API 分离验收](#14-ai-api-分离验收--信息泄漏的唯一证明)
 
 ---
 
@@ -79,7 +77,6 @@ class MyGameState final : public CloneableState<MyGameState> {
 
   // === 可选覆盖 ===
   // int first_player() const override;       // 默认返回 0
-  // std::uint64_t rng_nonce() const override; // 默认返回 0
 
   // === 游戏数据 ===
   int current_player_ = 0;
@@ -101,13 +98,14 @@ class MyGameState final : public CloneableState<MyGameState> {
 
 #### `state_hash(bool include_hidden_rng) -> StateHash64`
 
-返回当前状态的 64 位哈希。用于转置表和状态去重。
+返回当前状态的 64 位哈希。**仅用于 tail solver 和调试**——ISMCTS 不再用这个函数做节点 keying，节点 keying 走框架自动派生的 `state_hash_for_perspective(p)`（由 `hash_public_fields` + `hash_private_fields(p)` 组合而成）。
 
 **要求**：
 - 相同状态必须返回相同哈希
-- 不同状态应尽量返回不同哈希（使用 `hash_combine`）
-- `include_hidden_rng=true` 时，包含 RNG 种子等隐藏信息（用于 MCTS 树去重）
-- `include_hidden_rng=false` 时，只哈希可观察的棋盘状态（用于转置表）
+- `include_hidden_rng=true`：等价于"全字段 hash"（包含所有玩家 hidden + 内部 RNG 等任何会影响后续推进的字段），tail solver 用它做转置表
+- `include_hidden_rng=false`：只哈希可观察字段，用于调试
+
+**注意**：`state_hash` 和 `hash_public_fields` 是两套独立的 API。前者服务 tail solver / debug，后者服务 ISMCTS 的 DAG keying，两者的"public 范围"概念不重合（`state_hash(false)` 可以更宽松）。新游戏只要保证 `state_hash` 正确就行，不需要和 `hash_public_fields` 对齐。
 
 **示例**：
 ```cpp
@@ -160,10 +158,6 @@ void reset_with_seed(std::uint64_t seed) override {
   undo_stack.clear();
 }
 ```
-
-#### `rng_nonce() -> uint64_t`（可选）
-
-返回驱动 PRNG 的 state 字段值（如 `draw_nonce`），仅用于 debug 和 tail solver 的哈希去重。**ISMCTS 不依赖此字段**——root 采样后 descent 是 deterministic，框架通过 `step_count_` 保证 DAG acyclic，不需要检测随机转移。确定性游戏（如 Quoridor、TicTacToe）不需要覆盖。
 
 ### 2.3 UndoRecord 设计模式
 
@@ -314,61 +308,72 @@ void undo_action(IGameState& state, const UndoToken& token) const override {
 
 ### 4.1 必须实现的方法
 
+Encoder 接口按 hash scope 拆成 public / private 两半，**结构性约束**和 `hash_public_fields` / `hash_private_fields(p)` 完全对齐：
+
 ```cpp
 class MyGameFeatureEncoder final : public IFeatureEncoder {
  public:
-  int action_space() const override;     // 动作空间大小
-  int feature_dim() const override;      // 特征向量维度
-  bool encode(const IGameState& state,
-              int perspective_player,
-              const std::vector<ActionId>& legal_actions,
-              std::vector<float>* features,
-              std::vector<float>* legal_mask) const override;
+  int action_space() const override;          // 动作空间大小
+  int feature_dim() const override;           // = public + private 特征总维度
+  int public_feature_dim() const override;    // 公开特征维度
+  int private_feature_dim() const override;   // 一名玩家的私有特征维度（对所有玩家相同）
+
+  void encode_public(const IGameState& state,
+                     int perspective_player,
+                     std::vector<float>* out) const override;
+
+  void encode_private(const IGameState& state,
+                      int player,
+                      std::vector<float>* out) const override;
 };
 ```
+
+**硬约束**（`tests/framework/test_encoder_respects_hash_scope.py` 守护）：
+- `encode_public` 没有 player 所有权概念——即使带 `perspective_player` 参数（用来做"我 / 对手"的特征排序），也 **MUST NOT** 读任何玩家的 private 字段
+- `encode_private(p)` **MUST NOT** 读其他玩家的 private 字段，只读 player `p` 自己的 hidden 字段（手牌、盲压牌等）
+- 不需要自己实现 `encode(...)`——基类提供默认实现，会自动按 `[encode_public, encode_private(perspective)]` 顺序拼接，并填充 `legal_mask`。游戏直接 override `encode_public` + `encode_private` 即可
 
 #### `action_space() -> int`
 
 返回动作空间总大小（策略头的输出维度）。**必须和 game.json 中的 `action_space` 一致**。
 
-#### `feature_dim() -> int`
+#### `feature_dim() / public_feature_dim() / private_feature_dim() -> int`
 
-返回特征向量维度（网络输入大小）。**必须和 game.json 中的 `feature_dim` 一致**。
+总维度 = public + private 之和。**必须和 game.json 中的 `feature_dim` 一致**（game.json 只记录总维度）。完全公开游戏（TicTacToe、Quoridor）`private_feature_dim()` 返回 0、`encode_private` 是空实现。
 
-#### `encode(state, perspective_player, legal_actions, *features, *legal_mask) -> bool`
-
-核心编码函数。将游戏状态编码为浮点特征向量，并生成合法动作掩码。
-
-**参数**：
-- `perspective_player`：从哪个玩家的视角编码（"我" vs "对手"）
-- `legal_actions`：当前合法动作列表
-- `features`：输出，大小必须等于 `feature_dim()`
-- `legal_mask`：输出，大小必须等于 `action_space()`，合法动作位置为 1.0f，其余为 0.0f
-
-**示例**（TicTacToe，feature_dim=28）：
+**示例**（TicTacToe，public 28 维 + private 0 维）：
 ```cpp
-bool encode(const IGameState& state, int perspective_player,
-            const std::vector<ActionId>& legal_actions,
-            std::vector<float>* features,
-            std::vector<float>* legal_mask) const override {
+// tictactoe_net_adapter.h
+class TicTacToeFeatureEncoder final : public IFeatureEncoder {
+ public:
+  int action_space() const override { return 9; }
+  int feature_dim() const override { return 28; }
+  int public_feature_dim() const override { return 28; }
+  int private_feature_dim() const override { return 0; }
+
+  void encode_public(const IGameState& state, int perspective_player,
+                     std::vector<float>* out) const override;
+  void encode_private(const IGameState&, int, std::vector<float>*) const override {}
+};
+
+// tictactoe_net_adapter.cpp
+void TicTacToeFeatureEncoder::encode_public(
+    const IGameState& state, int perspective_player,
+    std::vector<float>* out) const {
   const auto& s = checked_cast<TicTacToeState>(state);
-  features->clear();
-  features->reserve(28);
-
-  // 9 个格子 × 3 通道（是我的、是对手的、是空的）
+  const int opp = 1 - perspective_player;
+  // 9 格 × 3 通道（是我的、是对手的、是空的）
   for (int i = 0; i < 9; ++i) {
-    features->push_back(s.board[i] == perspective_player ? 1.0f : 0.0f);
-    features->push_back(s.board[i] == (1 - perspective_player) ? 1.0f : 0.0f);
-    features->push_back(s.board[i] == kEmpty ? 1.0f : 0.0f);
+    out->push_back(s.board[i] == perspective_player ? 1.0f : 0.0f);
+    out->push_back(s.board[i] == opp ? 1.0f : 0.0f);
+    out->push_back(s.board[i] == kEmpty ? 1.0f : 0.0f);
   }
-  // 1 个标量：是否是先手
-  features->push_back(perspective_player == s.first_player() ? 1.0f : 0.0f);
-
-  // 合法动作掩码
-  fill_legal_mask(action_space(), legal_actions, legal_mask);
-  return true;
+  // 1 标量：是否先手
+  out->push_back(perspective_player == s.first_player() ? 1.0f : 0.0f);
 }
 ```
+
+**隐藏信息游戏的写法**：手牌、盲压牌、`tracker->known_hand(perspective)` 这些放进 `encode_private`；公开弃牌区、棋盘、当前玩家标记、tracker 公开知识放进 `encode_public`。两个函数被默认 `encode()` 自动按顺序拼接成单一 flat tensor 喂给网络——网络架构不变，纯粹是代码层面的强约束。
 
 ### 4.2 视角处理
 
@@ -377,20 +382,37 @@ bool encode(const IGameState& state, int perspective_player,
 原因详见 `docs/KNOWN_ISSUES.md` 第 4 条：棋盘旋转容易把和格子绑定的结构（例如 Quoridor 里墙的「挡哪两条边」语义）旋转错，而且训练看起来能跑、但有一方的策略永远学不好，这种 bug 非常难定位。网络自己可以学 P0/P1 的不对称，不需要我们帮它「归一化」视角。
 
 ```cpp
-// 正确示范：把 "我" 和 "对手" 的棋子都按 perspective_player 来选，棋盘坐标保持不变
+// 正确示范（写在 encode_public 里）：把 "我" 和 "对手" 的棋子都按
+// perspective_player 来选，棋盘坐标保持不变
 const int me = perspective_player;
 const int opp = 1 - perspective_player;
 for (int i = 0; i < kCells; ++i) {
-  features->push_back(s.board[i] == me ? 1.0f : 0.0f);
+  out->push_back(s.board[i] == me ? 1.0f : 0.0f);
 }
 for (int i = 0; i < kCells; ++i) {
-  features->push_back(s.board[i] == opp ? 1.0f : 0.0f);
+  out->push_back(s.board[i] == opp ? 1.0f : 0.0f);
 }
 // 告诉网络 "我" 是谁
-features->push_back(perspective_player == 0 ? 1.0f : 0.0f);
+out->push_back(perspective_player == 0 ? 1.0f : 0.0f);
 ```
 
 动作输出层面 `policy_action_ids` 直接用原始 `ActionId`，不做任何旋转映射。
+
+### 4.3 标量特征归一化
+
+将标量特征归一化到 [0, 1] 或 [-1, 1]：
+```cpp
+// 好
+out->push_back(static_cast<float>(walls_remaining) / kMaxWalls);
+out->push_back(static_cast<float>(move_count) / kMaxPlies);
+
+// 差
+out->push_back(static_cast<float>(walls_remaining));  // 原始值 0-10
+```
+
+### 4.4 合法掩码
+
+不需要游戏自己实现——基类 `encode()` 默认实现会用 `legal_actions` 自动填充 `legal_mask`，game-specific 代码只关心 features。
 
 ---
 
@@ -415,9 +437,9 @@ GameBundle 是一个聚合所有游戏组件的结构体。工厂函数返回一
 | 8b | `public_state_applier` | `PublicStateApplier` | 否 | **隐藏信息游戏必装**。`public_event_extractor` 在 `PublicEventTrace.public_snapshot` 里 dump post-action 的全部 public 字段；`public_state_applier` 反向把 snapshot 写回 state。API / web / selfplay 的 `apply_observation` 在 event 应用完之后调 applier，session state_ 的 public 字段因此完全由 message 重建，与 `do_action_fast` 基于采样 hidden 算出的公开字段无关——从结构上杜绝 "public 输出依赖 session 采样 hidden" 这一类泄漏。Round-trip 测试见 `tests/framework/test_public_snapshot_round_trip.py` |
 | 9 | `initial_observation_extractor` | `InitialObservationExtractor` | 否 | 提取 perspective 的开局可见信息 |
 | 10 | `initial_observation_applier` | `InitialObservationApplier` | 否 | 把 initial observation 填入 state（AI API 侧用） |
-| 11 | `state_serializer` | `StateSerializer` | 否 | 状态序列化为 JSON（Web 前端需要;**也用于规则不变量测试,详见 §11.4**） |
+| 11 | `state_serializer` | `StateSerializer` | 否 | 状态序列化为 JSON（Web 前端需要;**也用于规则不变量测试,详见 §10.6**） |
 | 12 | `action_descriptor` | `ActionDescriptor` | 否 | 动作语义描述（Web 前端需要） |
-| 13 | `heuristic_picker` | `HeuristicPicker` | 否 | 启发式策略（warm start + eval benchmark） |
+| 13 | `heuristic_picker` | `HeuristicPicker` | 否 | 启发式策略（heuristic guidance + eval benchmark） |
 | 14 | `tail_solver` | `unique_ptr<ITailSolver>` | 否 | 残局求解器（通常用 `AlphaBetaTailSolver`） |
 | 15 | `tail_solve_trigger` | `TailSolveTrigger` | 否 | 残局求解触发条件（未注册则 fallback 到 ply 阈值） |
 | 16 | `episode_stats_extractor` | `EpisodeStatsExtractor` | 否 | 每局自定义统计 |
@@ -517,7 +539,7 @@ board_ai::GameRegistrar reg("quoridor", [](std::uint64_t seed) {
   b.state_serializer = serialize_quoridor;
   b.action_descriptor = describe_quoridor;
 
-  // 启发式策略（warm start + eval benchmark）
+  // 启发式策略（heuristic guidance + eval benchmark）
   b.heuristic_picker = heuristic_pick_quoridor;
 
   // 残局求解器
@@ -573,328 +595,9 @@ board_ai::GameRegistrar reg_4p("splendor_4p", factory<4>);
 
 ## 7. 配置文件
 
-**位置**：`games/<game>/config/game.json`
+配置字段说明已抽到独立文档：[CONFIG_REFERENCE.md](CONFIG_REFERENCE.md)。涵盖 `games/<game>/config/game.json` 的全部顶层字段、`network` / `selfplay` / `replay` / `eval` / `arena` / `optimizer` / `tail_solve` / `mcts` / `mcts_schedule` / `heuristic_guidance` / `training_action_filter` / `auxiliary_score` 等子段，以及 `web.json` 的 Web 平台配置（AI 难度、tail-solve、动作过滤）。
 
-训练 pipeline 自动发现此文件（通过 `training/cli.py` 中的 `find_game_config()`）。
-
-### 7.1 顶层字段
-
-| 字段 | 类型 | 必须 | 说明 |
-|------|------|------|------|
-| `game_id` | string | 是 | 必须和 GameRegistrar 注册的 id 一致 |
-| `display_name` | string | 是 | 显示名称 |
-| `players.min` | int | 是 | 最少玩家数 |
-| `players.max` | int | 是 | 最多玩家数 |
-| `action_space` | int | 是 | 动作空间大小（必须和 encoder 一致） |
-| `feature_dim` | int | 是 | 特征维度（必须和 encoder 一致） |
-
-### 7.2 web.json — Web 平台配置
-
-**位置**：`games/<game>/config/web.json`（可选，不存在则全部用默认值）
-
-Web 平台相关的 AI 参数独立于训练配置，放在 `web.json` 中管理。
-
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `ai_use_action_filter` | bool | false | Web 对局时 AI 搜索是否遵循 `training_action_filter`。人类永远不受约束；只控制 AI（pipeline、ai-hint、precompute）。只有注册了 `training_action_filter` 的游戏才需要设置 |
-| `analysis_simulations` | int | 5000 | 录像分析和 precompute 的 MCTS 模拟次数。对局较短或决策空间较小的游戏可以调低，减少分析延迟 |
-| `difficulty_overrides` | object | {} | 按难度覆盖 AI 参数。键为难度名（casual/expert），值可包含 `simulations` 和 `temperature` |
-| `tail_solve` | object | {} | 残局求解配置。子字段见下 |
-| `tail_solve.enabled` | bool | false | 是否在 Web 对局中启用残局求解。只有注册了 `tail_solver` 的游戏才有效 |
-| `tail_solve.depth_limit` | int | 10 | 残局求解搜索深度上限 |
-| `tail_solve.node_budget` | int | 200000 | 残局求解节点预算 |
-
-**全局默认值**（未配置时）：casual=10 sim, expert=5000 sim，温度均为 0，分析 5000 sim。heuristic 难度不走 MCTS，直接调用 `get_heuristic_action()`，无需配置 simulations。
-
-**示例**（Coup 的 `config/web.json`）：
-```json
-{
-  "analysis_simulations": 2000,
-  "difficulty_overrides": {
-    "casual": {"simulations": 50, "temperature": 0.3},
-    "expert": {"simulations": 2000, "temperature": 0.1}
-  }
-}
-```
-
-**示例**（Quoridor 的 `config/web.json`，启用动作过滤和残局求解）：
-```json
-{
-  "ai_use_action_filter": true,
-  "tail_solve": {
-    "enabled": true,
-    "depth_limit": 10,
-    "node_budget": 200000
-  }
-}
-```
-
-**何时需要配置**：
-- 含隐藏信息或虚张声势的游戏（Coup、Love Letter）：加非零温度，避免 AI 完全确定性
-- 使用 training_action_filter 的游戏（Quoridor）：设置 `ai_use_action_filter: true`
-- 注册了 tail_solver 的完全信息游戏（Quoridor）：设置 `tail_solve.enabled: true`，AI 在终局阶段会尝试精确求解
-
-**向后兼容**：如果 `web.json` 不存在，平台会回退读取 `game.json` 中的 `web` 字段和 `ai_use_action_filter`。新游戏应使用 `web.json`。
-
-#### 7.2.1 分析 pipeline 的特殊行为（与 AI 实战路径的区别）
-
-录像里"掉点"那一栏来自分析 pipeline（`platform/game_service/pipeline.py`）。它和 AI 实战走 MCTS 的 GameSession 是**两份独立 session**，配置不一样——这条要在新游戏接入时记得：
-
-1. **始终 unfiltered**。无论 `ai_use_action_filter` 是 true 还是 false，分析 session 一律用 `engine.GameSession(..., False)`。原因：人类不受 filter 约束、可以走 filter 外的合法动作；如果分析 session 也带 filter，那一手不会进搜索树，`drop_score` 会**静默**报 0（看着像最佳着法）。AI 实战仍按 `ai_use_action_filter` 走，强度不变。
-
-2. **始终 `cover_root_edges=True`**。`get_ai_action(sims, temperature, cover_root_edges=True)`。该 flag 在 PUCT 之前先把每条 root legal edge 至少 visit 一次，保证 `action_values[a]` 对所有 legal `a` 都是真值，而不是 visit_count=0 时的默认 0（→ 50% 胜率假象）。AI 实战路径不开这个 flag，预算全给 PUCT。
-
-3. **不影响 belief / 隐藏信息处理**。cover 用的还是同一棵 search tree、同一套 root determinization、同一条 backup 路径——和 PUCT 自然采到的那一手语义一致。
-
-如果你新接入一款 `ai_use_action_filter: true` 的游戏，或合法动作空间特别大（比如 Quoridor 的 209 维）、5000 sim 都覆盖不全冷门 edge 的游戏，**不需要** 在配置里特别声明——以上行为是 pipeline 内部的硬规则，对所有游戏一视同仁。
-
-### 7.3 training 字段
-
-#### MCTS 搜索参数
-
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `simulations` | int | 200 | 最终 MCTS 模拟次数（eval 也用此值） |
-| `c_puct` | float | 1.4 | PUCT 探索常数 |
-| `temperature` | float | 1.0 | 基础温度（未启用 schedule 时使用） |
-| `temperature_initial` | float | -1 | 温度衰减起始值（-1 表示使用 temperature） |
-| `temperature_final` | float | -1 | 温度衰减终止值 |
-| `temperature_decay_plies` | int | 0 | 温度从 initial 线性衰减到 final 的步数 |
-| `dirichlet_alpha` | float | 0.3 | Dirichlet 噪声 alpha 参数 |
-| `dirichlet_epsilon` | float | 0.25 | 根节点先验中噪声的比例 |
-| `dirichlet_on_first_n_plies` | int | 30 | 只在前 N 步添加 Dirichlet 噪声 |
-| `max_game_plies` | int | 500 | 最大步数（超出后调用 adjudicator 或判和） |
-
-**温度调参建议**：
-- `alpha` 的经验法则：`alpha ≈ 10 / action_space`
-- 简单游戏（TicTacToe）：alpha=1.0, decay_plies=6
-- 复杂游戏（Quoridor）：alpha=0.05, decay_plies=24
-
-#### 训练循环参数
-
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `steps` | int | 1000 | 总训练步数 |
-| `episodes_per_step` | int | 200 | 每步自我对弈局数 |
-| `batch_size` | int | 512 | SGD mini-batch 大小 |
-| `learning_rate` | float | 0.001 | AdamW 优化器学习率 |
-| `weight_decay` | float | 1e-4 | AdamW weight decay |
-| `train_batches_per_step` | int | 3 | 每步从 replay buffer 随机采样训练的 mini-batch 数 |
-| `grad_clip_norm` | float | 1.0 | 梯度裁剪范数（0 表示不裁剪） |
-
-#### MCTS Schedule 参数
-
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `simulations` | int | 200 | 最终 MCTS 模拟次数（也用于 eval） |
-| `simulations_start` | int | =simulations | 训练初始 MCTS 模拟次数，线性递增到 `simulations` |
-
-如果 `simulations_start` 未设置或等于 `simulations`，则模拟次数全程固定（向后兼容）。
-
-递增公式：`sims = start + min(1.0, step / (steps * 0.3)) * (simulations - start)`
-
-即在前 30% 步数内线性爬坡到 `simulations`，之后固定。这样训练早期的自博弈更快，能更快形成有效的 replay buffer。
-
-**注意**：eval 对弈始终使用 `simulations`（最终值），确保评估标准一致。
-
-#### Eval 与 Gating 参数
-
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `gating_accept_win_rate` | float | N 人自适应 | latest vs best 的晋升阈值。不显式设置时，框架按 `1/N` 零和基线 + 同等置信区间自动推算（见下方说明）。 |
-| `eval_temperature` | float | 0.0 | gating 和 ONNX benchmark 对局的动作选择温度。0=贪心，>0 引入随机性。确定性游戏建议 0.1 |
-
-每 `--eval-every` 步触发一轮评估，包含两部分：
-
-**Benchmark eval**（通过 CLI `--eval-benchmark` 配置，可同时指定多个）：
-
-| Benchmark 值 | 说明 |
-|-------------|------|
-| `heuristic_constrained` | 模型 vs heuristic，模型受 action filter 约束 |
-| `heuristic_free` | 模型 vs heuristic，模型不受 action filter 约束 |
-| ONNX 文件路径 | 模型 vs 指定 ONNX 模型 |
-
-示例：
-```bash
-# Quoridor: constrained + free + gating
-python3 -m training.cli --game quoridor --output runs/quoridor_v12 \
-  --eval-benchmark heuristic_constrained heuristic_free
-
-# 不传 --eval-benchmark，只跑 gating
-python3 -m training.cli --game quoridor --output runs/quoridor_v12
-```
-
-**Gating eval**（固定执行，不受 `--eval-benchmark` 影响）：latest vs best 对打 `--eval-games` 局，胜率 ≥ `gating_accept_win_rate` 时 `shutil.copy2` 更新 `model_best.onnx`。
-
-**多人游戏的默认阈值**：N 人零和游戏的零假设胜率是 `1/N`，不是 0.5。固定 0.55 对 2 人合适但对 3p/4p 过于宽松（null 已在 0.333 / 0.25）。框架未显式配置时自动采用：
-
-```
-threshold = 1/N + z · sqrt((1/N)·(1 - 1/N) / eval_games)
-```
-
-`z ≈ 0.632` 经校准使 (2p, 40 局) 回到历史上的 0.55，保证各人数下相对 null 有同等单边置信超出。`eval_games=40` 时大致落点：2p ≈ 0.55、3p ≈ 0.38、4p ≈ 0.29。除非确有更严或更松的业务理由，**不要在 3p/4p 游戏的 `game.json` 里硬写 0.55**——那是"永远通不过"的门槛。需要手工覆盖时在 `training.gating_accept_win_rate` 里写明白值即可。
-
-训练过程中维护两个模型文件：
-- **latest** (`model_latest.onnx`)：每步训练后都重新导出，selfplay 立刻使用新权重，**永不被替换或回退**
-- **best** (`model_best.onnx`)：独立文件，只在 gating 通过时从 latest 复制过来
-
-Selfplay 始终使用 latest 模型。Gating 只影响 best 模型的保存。定期存档 `model_step_NNNNN.onnx` 按 `--save-every` 间隔保存，用于事后实验，不参与训练流程。
-
-#### Warm Start 参数
-
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `warm_start_episodes` | int | episodes_per_step | 预训练收集的局数 |
-| `warm_start_epochs` | int | 5 | 预训练 SGD epoch 数 |
-| `warm_start_heuristic` | bool | false | true 使用 heuristic 对局，false 使用随机对局 |
-| `warm_start_temperature` | float | 3.0 | heuristic warm start 时的温度（越高越探索） |
-
-#### Tail Solve 参数
-
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `tail_solve_enabled` | bool | false | 启用残局求解 |
-| `tail_solve_start_ply` | int | 40 | 最早尝试求解的步数 |
-| `tail_solve_depth_limit` | int | 5 | alpha-beta 最大深度 |
-| `tail_solve_node_budget` | int | 10000000 | 最大搜索节点数 |
-| `tail_solve_margin_weight` | float | 0.0 | 终局评估加入分差系数（需配合 auxiliary_scorer） |
-
-> **是否启用残局求解？** alpha-beta 在每个搜索节点调用 `legal_actions()`，因此开销 = `node_budget × legal_actions 单次耗时`。启用前评估你的游戏：
-> - 分支因子 < 20 且 `legal_actions` 廉价（如 TicTacToe）→ 推荐启用
-> - 分支因子 > 50 或 `legal_actions` 含 BFS/连通性检查（如 Quoridor ~130 分支，~35μs/次）→ 不推荐，200k 预算下单次求解耗时可达 800+ms，远超 800 次 MCTS simulation（~28ms）
->
-> 要实测你的游戏的 tail solve 开销，可用 `dinoboard_engine.tail_solve(game_id, seed, perspective_player, depth_limit, node_budget)` 在 Python 中直接调用，读取 `elapsed_ms` 和 `nodes_searched`。
-
-> **隐藏信息游戏的 tail solver 硬约束**：如果游戏同时注册了 `belief_tracker`（有非对称隐藏信息）和 `tail_solver`，必须：
-> 1. override `do_action_deterministic`，保证其 NEVER 从隐藏源（deck / 袋子 / 对手手牌）抽取数据。如果 `do_action_fast` 的回合推进会翻随机牌，deterministic 版本要用占位或冻结逻辑（参考 Splendor 的 `forced_draw_override`）
-> 2. 在 GameBundle 中显式设置 `stochastic_tail_solve_safe = true`，作为你已审阅过 `do_action_deterministic` 的声明
->
-> `GameRegistry::create_game()` 在检测到 belief_tracker + tail_solver 而没有 `stochastic_tail_solve_safe = true` 时会抛异常。这是防止 tail solver 偷看真实状态污染训练数据（违反 "AI 链路不读取隐藏字段" 的核心设计原则）。
-
-#### Heuristic Guidance 参数
-
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `heuristic_guidance_steps` | int | 0 | 启发式引导的训练步数（0 表示禁用） |
-| `heuristic_guidance_initial_ratio` | float | 0.5 | 初始概率（使用 heuristic 而非 MCTS） |
-| `heuristic_temperature` | float | 0.0 | 启发式动作选择温度（0=从最高分中均匀选，>0=softmax 采样） |
-
-在 `heuristic_guidance_steps` 步内，比例从 `initial_ratio` 线性衰减到 0。
-
-`heuristic_temperature` 控制 selfplay 中启发式步骤的动作选择随机性。温度为 0 时在得分最高的动作中均匀随机选择；温度 > 0 时对分数做 softmax（`exp(score/T)`）采样。policy target 对应实际使用的概率分布。
-
-#### Training Filter 参数
-
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `training_filter_steps` | int | 0 | 动作过滤的训练步数（0 表示禁用） |
-| `training_filter_initial_ratio` | float | 0.5 | 初始概率（应用 filter） |
-
-在 `training_filter_steps` 步内，比例从 `initial_ratio` 线性衰减到 0。之后在全动作空间训练。
-
-#### Peek 参数
-
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `peek_steps` | int | 0 | 前 N 个训练步用 peek 模式（跳过 root 采样，MCTS 看真相），之后切回 ISMCTS。0 表示始终 ISMCTS |
-
-Peek 模式下 `ismcts_enabled=False`，selfplay 调 `run_selfplay_episode` 时 belief_tracker 传 `nullptr`——MCTS 不调 `randomize_unseen`，直接在 truth state 上搜索。适合训练早期让 value head 先学到基本策略结构，再切到 ISMCTS 学习在信息不完全下决策。仅影响 selfplay，arena/eval 始终使用 ISMCTS。
-
-#### Auxiliary Score 参数
-
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `auxiliary_score` | bool | false | 启用辅助训练头 |
-| `auxiliary_score_weight` | float | 0.5 | 辅助损失的权重 |
-
-### 7.4 network 字段
-
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `hidden_layers` | int[] | `[256, 256]` | 隐层大小列表，如 `[256, 256, 256]` |
-
-> 激活函数当前硬编码为 ReLU，网络结构固定为 MLP。如需其他结构/激活，修改 `training/model.py`。
-
-> **Value head 维度**：自动由 `num_players`（从 C++ `game_metadata()` 获取）决定。输出 N 维 perspective-relative value，与 encoder 旋转对齐。无需在 config 中指定。
-
-### 7.5 完整示例
-
-<details>
-<summary>TicTacToe（最小配置）</summary>
-
-```json
-{
-  "game_id": "tictactoe",
-  "display_name": "Tic-Tac-Toe",
-  "players": {"min": 2, "max": 2},
-  "action_space": 9,
-  "feature_dim": 28,
-  "training": {
-    "simulations": 100,
-    "c_puct": 1.4,
-    "temperature": 1.0,
-    "temperature_initial": 1.0,
-    "temperature_final": 0.1,
-    "temperature_decay_plies": 6,
-    "dirichlet_alpha": 1.0,
-    "dirichlet_epsilon": 0.25,
-    "dirichlet_on_first_n_plies": 9,
-    "max_game_plies": 9,
-    "episodes_per_step": 200,
-    "batch_size": 256,
-    "learning_rate": 0.001,
-    "steps": 500
-  },
-  "network": {
-    "hidden_layers": [64, 64]
-  }
-}
-```
-</details>
-
-<details>
-<summary>Quoridor（完整配置）</summary>
-
-```json
-{
-  "game_id": "quoridor",
-  "display_name": "Quoridor",
-  "players": {"min": 2, "max": 2},
-  "action_space": 209,
-  "feature_dim": 295,
-  "training": {
-    "simulations": 200,
-    "c_puct": 1.4,
-    "temperature_initial": 1.0,
-    "temperature_final": 0.15,
-    "temperature_decay_plies": 24,
-    "dirichlet_alpha": 0.05,
-    "dirichlet_epsilon": 0.1,
-    "dirichlet_on_first_n_plies": 8,
-    "max_game_plies": 200,
-    "episodes_per_step": 100,
-    "batch_size": 2048,
-    "learning_rate": 0.001,
-    "steps": 1500,
-    "warm_start_episodes": 800,
-    "warm_start_epochs": 10,
-    "warm_start_heuristic": true,
-    "warm_start_temperature": 3.0,
-    "tail_solve_enabled": true,
-    "tail_solve_start_ply": 30,
-    "tail_solve_depth_limit": 10,
-    "tail_solve_node_budget": 200000,
-    "tail_solve_margin_weight": 0.01,
-    "heuristic_guidance_steps": 500,
-    "auxiliary_score": true,
-    "auxiliary_score_weight": 0.5
-  },
-  "network": {
-    "hidden_layers": [256, 256, 256]
-  }
-}
-```
-</details>
+训练 pipeline 自动发现 `games/<game>/config/game.json`（通过 `training/cli.py` 中的 `find_game_config()`）。
 
 ---
 
@@ -953,16 +656,14 @@ python -c "import dinoboard_engine; print(dinoboard_engine.available_games())"
 ### 9.1 HeuristicPicker — 启发式策略
 
 **用途**：
-1. Warm start 预训练：在 MCTS 训练前先用 heuristic 对局初始化网络权重
-2. Heuristic guidance：训练前期以一定概率使用 heuristic 代替 MCTS 选动作，在网络太弱无法有效搜索时推动游戏前进。启发式步骤生成训练样本（policy target 为 uniform over max-score actions）
-3. Eval benchmark：评估模型 vs heuristic 的胜率
+1. Heuristic guidance：selfplay 中按三段式 schedule（`heuristic_guidance_hold_steps` + `heuristic_guidance_steps` + `heuristic_guidance_initial_ratio`）以一定概率用 heuristic 代替 MCTS 选动作，在网络太弱无法有效搜索时推动游戏前进。hold 期可设 100% 启发式自博弈，样本走主 replay buffer
+2. Eval benchmark：评估模型 vs heuristic 的胜率
 
 **签名**：`(IGameState&, const IGameRules&, uint64_t rng_seed) -> HeuristicResult`
 
-**开发者只需给动作打分**。框架负责根据分数选择动作：
-- Selfplay guidance：由 `heuristic_temperature` 控制。温度=0 时走贪心 argmax；温度>0 时对分数做 softmax 采样（`exp(score/T)`）
-- Warm start：由 `warm_start_temperature` 独立控制。对分数做 softmax 采样（高温→更多探索）
-- Eval benchmark：**与 selfplay 使用同一套"分数 + 温度"选择规则**，温度同样取自 `heuristic_temperature`（通过 `run_constrained_eval_vs_heuristic` 的 `heuristic_temperature` 参数传入；训练 pipeline 会自动从 `game.json` 读取。温度=0 即贪心 argmax）
+**开发者只需给动作打分**。框架负责根据分数选择动作；selfplay 与 eval 使用同一套"分数 + 温度"规则但温度独立配置：
+- Selfplay guidance：由 `heuristic_guidance_temperature` 控制。温度=0 时走贪心 argmax；温度>0 时对分数做 softmax 采样（`exp(score/T)`）。常配高温（1.5–3.0）追求多样性
+- Eval benchmark：由 `heuristic_temperature` 控制（通过 `run_constrained_eval_vs_heuristic` 传入；训练 pipeline 自动从 `game.json` 读）。常配 0.0 求强度基准
 
 不需要在 heuristic 内部实现随机逻辑或 tiebreaking。启发式步骤也生成训练样本，policy target 对应实际使用的概率分布。
 
@@ -1137,9 +838,9 @@ value = terminal_value + margin_weight × auxiliary_scorer(state, perspective)
 - filter 接收**可变**的 `IGameState&`（可以 do/undo 来评估动作质量）
 - 如果 filter 返回空 vector，框架会 **fallback 到完整合法动作集**
 - filter 同时影响 selfplay MCTS 和 constrained eval
-- 详见 [BUG-003](KNOWN_ISSUES.md#bug-003-训练-评估动作空间不一致) 关于评估一致性的讨论
+- 详见 [BUG-003](../KNOWN_ISSUES.md#bug-003-训练-评估动作空间不一致) 关于评估一致性的讨论
 
-**legal_mask 与 filter 的关系**：filter 只影响 MCTS 搜索和动作选择的范围，训练样本的 `legal_mask` 始终使用完整合法动作集。被过滤的动作在 policy target 中 visits 为 0，通过 cross entropy 梯度，模型学到这些动作概率应该为 0。如果 `legal_mask` 也被 filter 缩小，模型不会收到任何关于被过滤动作的梯度信号，导致这些动作的 logit 保持随机值——在 free 模式下模型会错误地选择它们（见 [BUG-016](KNOWN_ISSUES.md#bug-016-legal-mask-被-filter-缩小导致-free-模式失效)）。
+**legal_mask 与 filter 的关系**：filter 只影响 MCTS 搜索和动作选择的范围，训练样本的 `legal_mask` 始终使用完整合法动作集。被过滤的动作在 policy target 中 visits 为 0，通过 cross entropy 梯度，模型学到这些动作概率应该为 0。如果 `legal_mask` 也被 filter 缩小，模型不会收到任何关于被过滤动作的梯度信号，导致这些动作的 logit 保持随机值——在 free 模式下模型会错误地选择它们（见 [BUG-016](../KNOWN_ISSUES.md#bug-016-legal-mask-被-filter-缩小导致-free-模式失效)）。
 
 ### 9.4 AuxiliaryScorer — 辅助训练信号
 
@@ -1203,7 +904,15 @@ b.episode_stats_extractor = [](const IGameState&,
 
 ---
 
-## 10. 物理随机性
+## 10. 隐藏信息与 Belief Tracker（含物理随机性）
+
+> **算法深入**：DAG 节点共享、UCT2、完整 search_root 流程、debug 指标——独立文档 [`docs/MCTS_ALGORITHM.md`](MCTS_ALGORITHM.md)。本节讲开发者接口。
+
+隐藏信息指玩家间的**非对称**信息——某个玩家知道、其他玩家不知道的游戏状态。如 Splendor 的盲压暗牌（执行者知道是什么牌，对手不知道）。
+
+对称无知的随机（如 Azul 袋子未来抽取顺序）**也**走 belief_tracker 通道——`hash_private_fields` 可以为空，`randomize_unseen` 负责洗袋子。见 §10.1。
+
+### 10.1 物理随机性
 
 物理随机性指翻牌、抽卡、掷骰等改变游戏状态的随机事件。确定性游戏（TicTacToe、Quoridor）不涉及此节。
 
@@ -1216,42 +925,15 @@ b.episode_stats_extractor = [](const IGameState&,
 
 **开发者要做的**（对有物理随机的游戏）：
 
-1. 在 `IGameState` 中实现 `rng_nonce()`（默认实现 `return draw_nonce` 等）
-2. `do_action_fast` 里用 `splitmix64(state.draw_nonce)` 或类似 PRNG 驱动随机抽取。保持 state 里的 deck 等随机源字段明确
-3. 实现 `IBeliefTracker::randomize_unseen(state, rng)` —— 把 state 里的隐藏字段（deck 内容 + 对手 hidden）按 belief 一次性采样填入
+1. `do_action_fast` 里用 `splitmix64(state.draw_nonce)` 或类似 PRNG 驱动随机抽取。保持 state 里的 deck 等随机源字段明确（这些字段会被 `randomize_unseen` 重写）
+2. 实现 `IBeliefTracker::randomize_unseen(state, rng)` —— 把 state 里的隐藏字段（deck 内容 + 对手 hidden）按 belief 一次性采样填入。**约束**：产出世界的 `hash_public_fields` 必须只取决于 tracker 的观察历史，不能依赖输入 state 的 hidden 内容或 RNG 特定值
 
 对**对称物理随机但无非对称 hidden info** 的游戏（如 Azul）：仍然要注册 `belief_tracker`，但 `hash_private_fields` 可空。`randomize_unseen` 只洗袋子。
 
----
+### 10.2 信息屏障：AI 链路从根源读不到真值
+完整论证见 [`CLAUDE.md` 「AI Pipeline Independence from Game State」](../CLAUDE.md#ai-pipeline-independence-from-game-state)：tracker 没有 `IGameState*`、session public 部分由 message 重建、session hidden 每步重新采样、selfplay/web/API 走同一套 per-perspective tracker——四条结构性约束让 AI 物理上没有路径可读真值。下文 §10.3 起讲各 hook 的具体签名与实装。
 
-## 11. 隐藏信息与 Belief Tracker
-
-> **算法深入**：DAG 节点共享、UCT2、完整 search_root 流程、debug 指标——独立文档 [`docs/MCTS_ALGORITHM.md`](MCTS_ALGORITHM.md)。本节讲开发者接口。
-
-隐藏信息指玩家间的**非对称**信息——某个玩家知道、其他玩家不知道的游戏状态。如 Splendor 的盲压暗牌（执行者知道是什么牌，对手不知道）。
-
-对称无知的随机（如 Azul 袋子未来抽取顺序）**也**走 belief_tracker 通道——`hash_private_fields` 可以为空，`randomize_unseen` 负责洗袋子。见 §10。
-
-### 11.0 为什么 AI 链路从根源上读不到真值
-
-这套框架的隐藏信息处理不是"请 AI 自觉不要读 hidden 字段"——**AI 在物理上就没有路径可以读到真值**。三根柱子：
-
-1. **Tracker 没有 `IGameState*`。** `init(perspective, initial_observation)` 和 `observe_public_event(actor, action, pre_events, post_events)` 两个接口只吃 message，没有能从它们指回 ground truth 的引用。tracker 的全部知识只来自 message 流，和一个物理玩家从桌面上能看到的东西一字不差。
-
-2. **会话 state_ 的 public 部分由 message 重建，不是由 `do_action_fast` 算出来的。** 每次 `apply_observation` 的末尾，`public_state_applier` 把 `PublicEventTrace.public_snapshot`（truth 侧 dump 的全部 public 字段）覆盖回 session state_。即使 `do_action_fast` 内部基于 session 当前采样的 hidden 字段算了什么公开输出，会被这一步无脑覆盖成 truth 发来的权威值——观察者 session 的 public 视图完全由 message 决定，不泄漏。
-
-3. **会话 state_ 的 hidden 部分每一步都重新采样。** 在 applier 之后，`randomize_unseen` 用 `(seed, ply)` 派生的 deterministic RNG 把 state_ 的全部 hidden 字段重写成一份 tracker-consistent 的新样本。session 的 hidden 字段因此**永远不是 truth 的副本**，只是一份 belief sample——下游代码哪怕不小心读了 `state_.hand[opp]`，读到的是"当前信仰分布的一个抽样"，不是真值。
-
-再加一条把上面三根柱子落到所有路径的**统一**：
-
-- **selfplay / web / API 都走同一套 per-perspective tracker**。每个座位一份 tracker、一局 init 一次、每个 public event 喂给每个 tracker；MCTS root 用 `per_perspective_trackers[current_player]`，那是当前座位累积了整局观测的 tracker。没有任何路径里 runner 会把 truth-state 或 truth-tracker 传给 search——这条是结构性保证，不是靠代码风格维持。
-
-**结果**：要写一个 bug 让 AI 偷看 truth，必须先找到一个 truth 能藏身的地方——上面三根柱子加上路径统一，让这种地方根本不存在。CI 里的 `test_public_snapshot_round_trip` / `test_public_hash_excludes_internal_rng` / `test_session_hidden_fields_resampled` / `test_api_belief_matches_selfplay` / `test_api_mcts_policy_invariance` 五件套每个 PR 都跑，任何让 truth 回流的改动都会立刻炸测试。
-
-下面 §11.1 开始讲各个 hook 的具体签名和实装。
-
-### 11.1 架构原理（ISMCTS）
-
+### 10.3 架构原理（ISMCTS）
 核心三层机制：
 
 1. **Root 采样 determinization**：每次 MCTS simulation 开头调 `belief_tracker->randomize_unseen(sim_state, rng)`，一次性把所有 hidden 字段（opp 手牌、deck 顺序、未来随机结果）采样成具体值。之后 descent **完全 deterministic**——动作按规则读 state 的采样值，不存在"chance 点重新抽"
@@ -1261,13 +943,12 @@ b.episode_stats_extractor = [](const IGameState&,
 **无 chance node 机制**——物理随机被 root 采样吞掉；observer-visible 后果通过 hash 自然分叉，observer-invisible 后果通过 hash 自然合并。
 
 **新游戏开发者要做**：
-- 覆盖 `IGameState::hash_public_fields` 和 `hash_private_fields(int player)`（§11.1b）——声明字段公开/私密归类
-- 实现 `IBeliefTracker`（§11.2）——`init` / `observe_public_event` / `randomize_unseen`
+- 覆盖 `IGameState::hash_public_fields` 和 `hash_private_fields(int player)`（§10.3b）——声明字段公开/私密归类
+- 实现 `IBeliefTracker`（§10.4）——`init` / `observe_public_event` / `randomize_unseen`
 - 实现 public-event protocol（`public_event_extractor` / `applier` / `initial_observation_extractor` / `applier`）
 - 框架自动接管 root 采样时机、DAG 节点复用、UCT2 UCB。**不需要**在 rules 里做任何防御性 nonce bump 或 hidden-info guard
 
-### 11.1b 声明式 hash API：hash_public_fields / hash_private_fields
-
+### 10.3b 声明式 hash API：hash_public_fields / hash_private_fields
 每个 `IGameState` 子类实现两个虚方法：
 
 ```cpp
@@ -1340,8 +1021,7 @@ void LoveLetterState<N>::hash_private_fields(int player, Hasher& h) const {
 
 **测试建议**：构造两个 state，public + 同 perspective 的 private 完全相同，但 opp private 不同；assert `state_hash_for_perspective(perspective)` 相等。这是 hash 归类正确性的基本检查，`tests/framework/test_encoder_respects_hash_scope.py` 提供模板。
 
-### 11.2 IBeliefTracker
-
+### 10.4 IBeliefTracker
 **用途**：维护当前玩家的信息认知，为 ISMCTS 根采样提供 prior。
 
 3 个必须实现的方法（2026-05-04 起的观察-only 接口）：
@@ -1378,8 +1058,7 @@ virtual void randomize_unseen(IGameState& state, std::mt19937& rng) const = 0;
 
 参考 `games/splendor/splendor_net_adapter.h` 中的 `SplendorBeliefTracker` 实现。
 
-### 11.3 Belief Tracker 生命周期
-
+### 10.5 Belief Tracker 生命周期
 所有代码路径（selfplay、arena、web GameSession、AI API）走同一个生命周期：每个座位一份 tracker（`per_perspective_trackers[p]`），一局 init 一次，之后每一步每个 tracker 都接收一次 `observe_public_event`——tracker 的观测单调累积到 game over，不会被 re-init 清空。
 
 ```
@@ -1407,8 +1086,7 @@ web / API 的 apply_observation 额外在 step 3 之后跑两件事：
 
 游戏开发者只需实现 `IBeliefTracker` 的 3 个方法 + `initial_observation_extractor` + `public_event_extractor`（+ `public_state_applier`，隐藏信息游戏必装）。extractor 调用封装见 `bindings/py_engine.cpp`。
 
-### 11.4 实现示例
-
+### 10.6 实现示例
 Belief tracker 有两种不同定位，由游戏的信息结构决定：
 
 **定位一：维护随机来源**（Splendor）——状态无法推导出完整的"见过什么"历史，tracker 增量追踪 seen 信息，为 `randomize_unseen` 提供准确的 unseen pool。
@@ -1454,8 +1132,7 @@ Coup 是**诈唬核心**游戏——公开声明（claim）和真实持牌可以
 
 参考实现：`games/coup/coup_net_adapter.cpp` 的 `CoupBeliefTracker::randomize_unseen`。这套模式适用于任何**手牌可能不匹配公开声明**的游戏——把 claim/challenge 历史转成 per-opp role prior，在池约束下联合采样。比完整的概率化 belief network（未来 work）实现成本低一个数量级。
 
-### 11.5 Encoder 信息屏障与 Tracker 协作
-
+### 10.7 Encoder 信息屏障与 Tracker 协作
 Feature encoder 必须在视角层强制信息隐藏。核心规则：**每个玩家只能看到自己通过合法途径获得的信息**。即使 `randomize_unseen` 已经把采样值写入 state，encoder 对非当前视角玩家的隐藏字段仍须输出占位符——除非 tracker 确认当前玩家合法知道该信息。
 
 Encoder 的信息源有两个，地位等价：
@@ -1489,18 +1166,16 @@ if (!is_self) {
 
 这保证了 encoder 在训练和搜索中看到的信息结构完全一致——训练时每个玩家的 sample 也是从该玩家视角编码的，看不到对手隐藏信息。
 
-### 11.6 框架限制
+### 10.8 框架限制
+ISMCTS 根采样 + encoder 信息屏障在双人游戏中完全自洽；多人游戏（3+）存在 determinization 方法的固有精度局限（无法建模"B 用 Priest 看了 C 的牌"等第三方私有知识）。完整说明见 [GAME_FEATURES_OVERVIEW.md「框架限制」](../GAME_FEATURES_OVERVIEW.md#框架限制)。
 
-ISMCTS 根采样 + encoder 信息屏障在**双人游戏**中完全自洽。多人游戏（3+）存在精度局限：搜索中模拟第三方玩家时，无法建模该玩家对其他人的私有知识（如"B 用 Priest 看了 C 的牌"）。这是 determinization 方法的固有限制，不影响双人游戏。
-
-### 11.7 开发者 Checklist
-
+### 10.9 开发者 Checklist
 1. 确认游戏是否有非对称隐藏信息（玩家间知道的不一样）。对称无知（如 Azul 的 bag）不需要 `hash_private_fields` 但仍然需要 `belief_tracker` 来驱动 `randomize_unseen`
-2. 实现 `IBeliefTracker` 的三个方法（`init` / `observe_public_event` / `randomize_unseen`），遵守"绝不读取隐藏字段"约束（§11.2）
-3. Encoder 中对非自身玩家的隐藏信息输出占位符（§11.5），严格只读 `public + current player's private` 范围的字段
-4. **实现 `hash_public_fields(Hasher&)` 和 `hash_private_fields(int player, Hasher&)`**（§11.1b）——声明式分离公开 / 玩家私有信息。框架用 `state_hash_for_perspective(p) = step_count + public + private(p)` 作 DAG 节点键，让信息集跨路径共享
+2. 实现 `IBeliefTracker` 的三个方法（`init` / `observe_public_event` / `randomize_unseen`），遵守"绝不读取隐藏字段"约束（§10.4）
+3. Encoder 中对非自身玩家的隐藏信息输出占位符（§10.7），严格只读 `public + current player's private` 范围的字段
+4. **实现 `hash_public_fields(Hasher&)` 和 `hash_private_fields(int player, Hasher&)`**（§10.3b）——声明式分离公开 / 玩家私有信息。框架用 `state_hash_for_perspective(p) = step_count + public + private(p)` 作 DAG 节点键，让信息集跨路径共享
 5. **在 `do_action_fast` 里调 `state.begin_step()`，在 `undo_action` 里调 `state.end_step()`**，`reset_with_seed` 里重置 `this->step_count_ = 0`。`step_count_` 单调递增保证 DAG 结构性 acyclic
-6. **实现 public-event protocol**（`extract_events` / `apply_event` / `extract_initial_observation` / `apply_initial_observation`）——框架用它在 `GameSessionWrapper` 里维护每个 perspective 的 ai_view，同时驱动外部 AI API 的观察流。详见 §17 事件协议章节（或直接参考 `games/loveletter/loveletter_register.cpp`）
+6. **实现 public-event protocol**（`extract_events` / `apply_event` / `extract_initial_observation` / `apply_initial_observation`）——框架用它在 `GameSessionWrapper` 里维护每个 perspective 的 ai_view，同时驱动外部 AI API 的观察流。详见 §14 事件协议章节（或直接参考 `games/loveletter/loveletter_register.cpp`）
 7. 在 `make_<game>` 里注册 `belief_tracker` + `public_event_extractor` + `public_event_applier` + `initial_observation_extractor` + `initial_observation_applier`
 8. **验证测试**：
    - `tests/framework/test_ai_api_separation.py::test_full_game_via_api[<game>]` 必须过（API 契约）
@@ -1509,8 +1184,7 @@ ISMCTS 根采样 + encoder 信息屏障在**双人游戏**中完全自洽。多�
    - 建议自己写黑盒统计测试（类似 `TestLoveLetterGuardAccuracy`）：在某个会读隐藏信息的决策点上，验证 AI 的选择分布和无先验情况下的基线一致
    - 建议加 hash 单元测试：两个相同 info set 的 state（公开字段 + 视角玩家 private 字段全同，其他玩家 private 可不同）的 `state_hash_for_perspective(p)` 必须相等
 
-### 11.7a 为什么这么多 hook
-
+### 10.9a 为什么这么多 hook
 ISMCTS 让开发者**不需要在游戏规则里做任何防御性代码**（没有 `++nonce`、没有 hidden-info guard、没有 MCTS 特殊路径）。所有隐藏信息处理都在框架层，代价是开发者要把"观察者视角下能看到什么"精确表达出来——这是 hook 列表看起来长的原因。每个 hook 的职责都有清晰语义：
 
 | Hook | 说什么 |
@@ -1526,523 +1200,29 @@ ISMCTS 让开发者**不需要在游戏规则里做任何防御性代码**（没
 
 ---
 
-## 12. 特征编码最佳实践
+## 11. Web 前端开发
 
-### 12.1 视角编码
+Web 前端开发已独立成章，详见 [WEB_DEVELOPMENT_GUIDE.md](WEB_DEVELOPMENT_GUIDE.md)。该文档涵盖 StateSerializer / ActionDescriptor / 目录结构 / 交互设计原则 / `createApp(config)` 框架 API、通用布局、悔棋/替对手落子/智能提示等高级操作、AI Pipeline 与掉分分析、录像回放、统一录像格式、模型评估工具、common.js 通用功能、核心 API 与交互流程。
 
-**始终从 `perspective_player` 的视角编码**。将 "我的" 和 "对手的" 分开，而不是 "玩家0的" 和 "玩家1的"。这让网络学到的策略对两个玩家通用。
+视觉与交互的总体原则见 [WEB_DESIGN_PRINCIPLES.md](WEB_DESIGN_PRINCIPLES.md)，新游戏前端开发**必读**。
 
-```cpp
-// 好：视角无关
-features->push_back(cell_owner == perspective_player ? 1.0f : 0.0f);  // 是我的
-features->push_back(cell_owner == opponent ? 1.0f : 0.0f);            // 是对手的
-
-// 差：玩家绑定
-features->push_back(cell_owner == 0 ? 1.0f : 0.0f);  // 是玩家0的
-features->push_back(cell_owner == 1 ? 1.0f : 0.0f);  // 是玩家1的
-```
-
-### 12.2 不要旋转棋盘
-
-棋盘对称游戏（如 Quoridor 两个玩家面对面）**不要**物理旋转棋盘。只做「我 / 对手」特征交换 + 一个方向 scalar，详见 4.2 节。旋转棋盘引入过的 bug 会让某一方的策略永远学不出来，不值得这个省事。
-
-### 12.3 标量特征归一化
-
-将标量特征归一化到 [0, 1] 或 [-1, 1]：
-```cpp
-// 好
-features->push_back(static_cast<float>(walls_remaining) / kMaxWalls);
-features->push_back(static_cast<float>(move_count) / kMaxPlies);
-
-// 差
-features->push_back(static_cast<float>(walls_remaining));  // 原始值 0-10
-```
-
-### 12.4 合法掩码
-
-使用 `fill_legal_mask()` 辅助函数：
-
-```cpp
-fill_legal_mask(action_space(), legal_actions, legal_mask);
-```
+Web 平台配置（AI 难度、tail-solve、动作过滤等）见本文档 [§7 配置文件](#7-配置文件) 中的 `web.json` 字段说明。
 
 ---
 
-## 13. Web 前端开发
 
-本章描述游戏开发者需要实现的部分。框架提供的通用功能见 [§14 Web 平台功能](#14-web-平台功能)。
-
-### 13.1 StateSerializer — 状态序列化
-
-**用途**：Web 前端通过 `/api/games/{session_id}` 获取游戏状态 JSON。
-
-**签名**：`(const IGameState&) -> AnyMap`
-
-`AnyMap` 是 `std::map<std::string, std::any>`。Python bindings 自动将 `std::any` 转为 Python 对象，支持的类型：
-
-| C++ 类型 | Python 类型 |
-|----------|-------------|
-| `int` | `int` |
-| `double` / `float` | `float` |
-| `bool` | `bool` |
-| `std::string` | `str` |
-| `std::vector<int>` | `list[int]` |
-| `std::vector<AnyMap>` | `list[dict]` |
-| `AnyMap` | `dict` |
-
-**示例**：
-```cpp
-AnyMap serialize_quoridor(const IGameState& state) {
-  const auto& s = checked_cast<QuoridorState>(state);
-  AnyMap m;
-  m["current_player"] = std::any(s.current_player());
-  m["board_size"] = std::any(static_cast<int>(kBoardSize));
-
-  std::vector<AnyMap> pawns;
-  for (int i = 0; i < kPlayers; ++i) {
-    pawns.push_back({
-        {"player", std::any(i)},
-        {"row", std::any(static_cast<int>(s.pawn_row[i]))},
-        {"col", std::any(static_cast<int>(s.pawn_col[i]))},
-    });
-  }
-  m["pawns"] = std::any(pawns);
-  return m;
-}
-```
-
-### 13.2 ActionDescriptor — 动作描述
-
-**用途**：Web 前端将 ActionId 翻译为人类可读的描述。
-
-**签名**：`(ActionId) -> AnyMap`
-
-```cpp
-AnyMap describe_quoridor(ActionId action) {
-  AnyMap m;
-  m["action_id"] = std::any(static_cast<int>(action));
-  if (is_move_action(action)) {
-    m["type"] = std::any(std::string("move"));
-    m["row"] = std::any(decode_move_row(action));
-    m["col"] = std::any(decode_move_col(action));
-  }
-  // ...
-  return m;
-}
-```
-
-### 13.3 目录结构
-
-```
-games/<game>/web/
-├── index.html    # 主页面
-├── styles.css    # 样式
-└── <game>.js     # 游戏逻辑
-```
-
-`platform/app.py` 会自动扫描 `games/*/web/` 并挂载到 `/games/<game>/`。
-
-### 13.4 交互设计原则
-
-> 完整的视觉与交互指引见 [WEB_DESIGN_PRINCIPLES.md](WEB_DESIGN_PRINCIPLES.md)。本节只列实现相关要点。
-
-**自然交互——不要给每个动作一个按钮**。动作空间可能有几百个，逐一列出既不美观也不可操作。按照物理游戏的交互方式设计 UI：
-
-| 游戏动作类型 | 推荐交互方式 | 说明 |
-|-------------|-------------|------|
-| 移动棋子 | 点击棋子 → 高亮可到达位置 → 点击目标 | 两步点击 |
-| 放置墙/棋子 | 悬停预览 → 点击确认 | 鼠标跟随 |
-| 选择资源 | 点击资源池 → 点击目标位置 | 拖放或两步点击 |
-| 组合动作 | 分步骤引导，每步缩小选择范围 | 层级选择 |
-
-游戏 JS 负责将手势翻译为 `ActionId`，通过 `ctx.submitAction(actionId)` 提交。玩家不需要看到或理解 ActionId 编码。
-
-**空间锚定——固定区域不动，只有内容变化**。游戏中固定存在的容器（棋盘格、工厂盘、中心区、玩家面板、牌库位置）必须有固定的屏幕位置和尺寸，不随内容数量变化而移动、缩放或重排。只有容器内部的元素（棋子、牌、token）可以出现、消失、移动。
-
-玩家靠空间记忆快速定位信息——"左下角是我的图案线，右上角是公共牌库"。如果容器位置随内容增减而漂移（比如 Azul 中心区的 token 被拿走后区域收缩，导致旁边的工厂盘位移），玩家每步都要重新扫描整个画面，严重影响可玩性。物理桌游天然满足这个约束（棋盘不会自己挪位置），前端实现时要显式保持这一点。
-
-实践要点：
-- 用固定尺寸的容器（`width`/`height` 写死或 `min-width`/`min-height`），不用 `fit-content`
-- 元素减少时容器留白，不收缩；元素增加时内部滚动或缩放，容器不撑大
-- 避免对容器级元素使用 `flexbox` 的 `gap` + 自动换行——内容变化会改变行数，推动后续容器位移
-
-### 13.5 createApp(config) — 通用框架 API
-
-游戏前端的入口是调用 `createApp(config)`（从 `general/app.js` 导入）。框架处理所有通用逻辑（开局、AI 对弈、悔棋、提示、录像），游戏只需提供渲染和格式化函数。
-
-#### config 对象字段
-
-| 字段 | 类型 | 必须 | 说明 |
-|------|------|------|------|
-| `gameId` | string | 是 | 游戏 ID，匹配 game_registry 注册的 id |
-| `numPlayers` | int | 否 | 玩家数（默认 2） |
-| `renderBoard` | `(container, gameState, ctx)` | 是 | 渲染公共游戏区域（棋盘/牌桌） |
-| `renderPlayerArea` | `(container, gameState, ctx)` | 是 | 渲染玩家私有区域 |
-| `formatOpponentMove` | `(actionInfo, actionId) -> string` | 否 | 格式化对手上一步的文字描述 |
-| `formatSuggestedMove` | `(actionInfo, actionId) -> string` | 否 | 格式化 AI 提示推荐动作的文字描述 |
-| `getPlayerSymbol` | `(aiPlayer) -> string` | 否 | 返回玩家身份描述（默认"先手"/"后手"） |
-| `extensions` | `(gameState) -> [{label, value}]` | 否 | 信息栏扩展内容（如"牌堆剩余"） |
-| `gameIntro` | string | 否 | 开局后写入侧栏 ops-msg 的简短操作说明，AI 第一次落子时自动清空，后续让位给"已悔棋"/掉分提示等瞬态信息 |
-| `disableForce` | bool | 否 | 默认 false。设 true 时禁用"替对手落子"——侧栏不渲染按钮，pipeline 也不会进入 forceMode。隐藏信息游戏必须开启，见下文 §13.5.1 |
-| `showWinrateDefault` | bool | 否 | "显示胜率预估"复选框的默认值（可被 localStorage 覆盖）。默认 true（完全信息游戏开启）；隐藏信息游戏必须显式置为 false，见下文 §13.5.1 |
-| `onGameStart` | `() -> void` | 否 | 开局回调（可用于清理 UI 状态） |
-| `onActionSubmitted` | `() -> void` | 否 | 玩家提交动作后回调 |
-| `onUndo` | `() -> void` | 否 | 悔棋后回调 |
-
-#### ctx 对象（传给 renderBoard/renderPlayerArea）
-
-| 方法/属性 | 说明 |
-|-----------|------|
-| `ctx.canPlay` | 当前是否允许人类操作（综合判断：非终局、非 busy、轮到人类或替对手模式） |
-| `ctx.state` | 当前 app 状态（含 `aiPlayer`、`busy`、`forceMode` 等） |
-| `ctx.submitAction(actionId)` | 提交玩家动作。游戏将点击/拖拽手势翻译为 actionId 后调用此方法 |
-| `ctx.rerender()` | 强制重新渲染（用于游戏内部状态变化后触发更新） |
-
-#### gameState 对象（来自后端 state_serializer）
-
-后端 `session_response()` 返回的对象，包含：
-- `current_player`：当前玩家
-- `is_terminal`：是否终局
-- `winner`：胜者（-1 为平局或未终局）
-- `legal_actions`：合法动作 ID 列表
-- `last_action_id`：上一步动作 ID
-- `last_action_info`：上一步 `action_descriptor` 返回的信息
-- `difficulty`：当前难度
-- 游戏自定义字段（由 `state_serializer` 返回的所有 key-value）
-
-#### 典型游戏 JS 结构
-
-```javascript
-import { createApp } from '/static/general/app.js';
-
-createApp({
-  gameId: 'mygame',
-  numPlayers: 2,
-
-  renderBoard(container, gameState, ctx) {
-    if (!gameState) { window.DinoBoard.showNotStarted(); return; }
-    window.DinoBoard.hideNotStarted();
-    // 根据 gameState 渲染棋盘到 container
-    // 用户交互后调用 ctx.submitAction(actionId)
-  },
-
-  renderPlayerArea(container, gameState, ctx) {
-    // 渲染玩家手牌/个人区域
-  },
-
-  formatOpponentMove(actionInfo, actionId) {
-    return `对手${actionInfo.type === 'move' ? '移动到' : '放置墙于'} (${actionInfo.row},${actionInfo.col})`;
-  },
-
-  formatSuggestedMove(actionInfo, actionId) {
-    return `建议${actionInfo.type === 'move' ? '移动到' : '放墙于'} (${actionInfo.row},${actionInfo.col})`;
-  },
-});
-```
-
-#### 13.5.1 隐藏信息游戏的两个必备开关
-
-如果游戏存在对人类玩家不可见的对手私密状态（手牌、身份牌等），必须在 `createApp({...})` 同时设置：
-
-```js
-disableForce: true,
-showWinrateDefault: false,
-```
-
-两者都是为了**避免 Web 前端从 AI 决策中泄漏隐藏信息回给玩家**：
-
-- **替对手落子（`disableForce`）**：force 模式让人类替 AI 走一步，但人类看不到对手手牌，任意动作都是猜测——更糟的是提交后引擎会按真实手牌检查合法性，等于把"哪些动作合法"反馈给玩家。等价于让玩家看牌。所以 Love Letter / Coup 这类全靠手牌的游戏直接关闭这个功能。
-- **胜率预估（`showWinrateDefault`）**：信息栏胜率读的是 MCTS 根节点 `root_values[humanPlayer]`，搜索从**真实状态**（含人类已知的自己手牌 + 对手隐藏手牌）出发，胜率会随对手实际拿到的牌剧烈摆动；玩家逆向就能推出对手的牌。"掉分分析"也来自同一份 root values，所以由同一个开关同时管控（同时不显示"失误/严重失误"标记）。隐藏信息游戏默认关闭，玩家想看可在侧栏「高级功能 → 显示胜率预估」自行开启。
-
-部分隐藏的游戏（Splendor 牌堆暗保留 vs 桌面明保留）可以**只屏蔽暗的部分**，不需要整体 `disableForce`——这种粒度由游戏前端在 `renderPlayerArea` 中按 `item.visible` 自行决定哪些动作在 force 模式下点不了即可，参考 `games/splendor/web/splendor.js`。
-
-### 13.6 参考实现
-
-- **简单参考**：`games/tictactoe/web/`（9 格棋盘，最简交互）
-- **复杂参考**：`games/quoridor/web/`（9×9 棋盘 + 墙放置 + 棋子跳跃）
-
----
-
-## 14. Web 平台功能
-
-本章描述框架提供的通用功能，游戏开发者了解即可，无需额外代码。
-
-### 14.1 通用布局
-
-general 层提供统一的页面布局，游戏前端只需填充内容区域：
-
-```
-┌─────────────────────────────────────────────────────┐
-│                    上方区域                           │
-│  ┌──────────────────────┐  ┌──────────────────────┐  │
-│  │                      │  │  信息栏               │  │
-│  │                      │  │  回合指示 / 胜率 /    │  │
-│  │   公共游戏区          │  │  AI 提示              │  │
-│  │   （棋盘 / 牌桌）     │  ├──────────────────────┤  │
-│  │                      │  │  录像窗口              │  │
-│  │                      │  │  （对局中隐藏，        │  │
-│  │                      │  │   结束后显示）         │  │
-│  └──────────────────────┘  └──────────────────────┘  │
-├─────────────────────────────────────────────────────┤
-│                    玩家区域                           │
-│  2 人：左右分列                                       │
-│  ┌────────────────────┐  ┌────────────────────┐      │
-│  │     玩家 0          │  │     玩家 1          │      │
-│  └────────────────────┘  └────────────────────┘      │
-│                                                      │
-│  3-4 人：网格排列                                     │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐│
-│  │  玩家 0  │ │  玩家 1  │ │  玩家 2  │ │  玩家 3  ││
-│  └──────────┘ └──────────┘ └──────────┘ └──────────┘│
-└─────────────────────────────────────────────────────┘
-```
-
-- **上方左侧**：`renderBoard()` 渲染的公共区域（棋盘、牌桌、公共资源等）
-- **上方右侧**：general 层自动管理的信息栏（上半）和录像窗口（下半）。信息栏包含回合指示、对手上一步描述（`formatOpponentMove`）、AI 胜率/提示。录像窗口在对局中隐藏，结束后显示
-- **下方**：`renderPlayerArea()` 渲染的玩家私有区域。2 人游戏左右分列，3-4 人游戏自动切换为网格排列
-
-### 14.2 高级操作
-
-general 层统一实现以下操作，游戏前端**不需要额外代码**：
-
-| 操作 | API | 说明 |
-|------|-----|------|
-| **悔棋** | `POST /step-back` | 回到人类上一串连续行动的起点。循环调用 step-back，跳过 AI 回应和人类的连续回合（通过 `last_actor` 判断）。Splendor 拿币→退币退到拿币处；Azul 跨轮连续行动退到该串的第一步。本质上不区分子动作和连续回合，统一按 `last_actor` 处理 |
-| **替对手落子** | `ctx.state.forceMode` | 回退到目标 AI 玩家的一串连续行动起点，由人类替其选动作。同样通过 `last_actor` 跳过连续回合。多人游戏侧边栏有每个 AI 的独立按钮，可指定替哪个 AI 落子。**`config.disableForce: true` 时该按钮整组不渲染**，用于隐藏信息游戏（见 §13.5.1） |
-| **智能提示** | `POST /ai-hint` | AI 推荐最佳动作和胜率，不落子。`formatSuggestedMove()` 格式化显示 |
-| **显示胜率预估** | 侧栏勾选 | 控制信息栏胜率 pill 与"失误/严重失误"标记是否显示。状态写入 `localStorage['dinoboard.showWinrate.<gameId>']`，默认值由 `config.showWinrateDefault` 决定（完全信息默认 true，隐藏信息必须 false） |
-| **对局中显示录像栏** | 侧栏勾选 | 状态写入 `localStorage['dinoboard.showReplayPanelAlways']`，全游戏共享 |
-
-**侧栏 ops-msg 的瞬态语义**：开局时写入 `config.gameIntro`（操作提示）；AI 第一次落子时自动清空；悔棋时显示"已悔棋"；点击"替对手落子"时显示该流程的简短说明；后续掉分提示等覆盖写入。新开局时配合 `infoPanel.reset()` 一并清掉上一局残留 pill。
-
-### 14.3 AI Pipeline 与动作分析
-
-Pipeline 协调对局中的 AI 决策和分析。核心设计：**每个 human-to-play 局面只跑一次 MCTS（precompute），结果同时用于"智能提示"和"人类走棋后的掉分分析"**。
-
-#### 每个 human→AI 循环的 MCTS 运行
-
-| 运行 | 触发时机 | 用途 |
-|------|---------|------|
-| **Precompute** | AI 落子完成后（或游戏开局 / 悔棋后）立刻启动，用 `analysis_simulations` 次模拟在**当前 human-to-play 局面**上跑 MCTS | 一份结果两用：① 人类点"智能提示"时直接返回 ② 人类落子后读取缓存的 `action_values[chosen_action]` 算掉分 |
-| **AI decision** | 人类落子后进入 AI 回合，用 `simulations` 次模拟在 AI-to-play 局面上跑 MCTS | AI 决定下一步 |
-
-**不存在"分析用户上一步"和"下一轮提示"两次独立搜索**——同一个 precompute 结果在两个时刻被消费。
-
-#### Pipeline 阶段机
-
-```
-[AI 落子完成] → [done] → 立即启动 precompute（后台）
-  │
-  ▼ 人类走棋
-  │
-[analyzing] —— 纯缓存读取：等待当前 precompute 完成（如果还没好），从其
-               action_values 中取出人类所选动作的 Q 值，计算掉分
-  │
-  ▼
-[ai_thinking] —— AI 的 MCTS 决策
-  │
-  ▼
-[done] —— 触发下一轮 precompute，循环继续
-```
-
-**关键**：`[analyzing]` 阶段只是等 precompute 的结果 + 读缓存，**不触发新的 MCTS**。只有当 precompute 异常（被取消、8 秒超时）才有兜底的 inline MCTS。
-
-非专家难度跳过 analyzing 阶段和 precompute，只做 AI 思考落子。
-
-#### 智能提示（ai-hint）
-
-人类回合点击"智能提示"按钮时：
-
-1. 前端立即在信息栏显示"局面分析中..."
-2. `POST /ai-hint` 后端：
-   - 如果 precompute 结果已就绪 → 立即返回
-   - 如果仍在跑 → 阻塞等待至多 8 秒后返回
-3. 前端更新信息栏为提示结果
-
-用户看起来是无缝的："分析没好时显示分析中，好了就显示结果"。后端用的仍然是同一份 precompute，不产生额外 MCTS。
-
-前端通过轮询 `GET /pipeline` 获取当前阶段（`analyzing` / `ai_thinking` / `done` / `error`）。pipeline 在后台线程执行 MCTS，GIL 已通过 `py::gil_scoped_release` 释放，不阻塞前端请求。
-
-#### 动作分析（掉分检测）
-
-分析基于 precompute 的 MCTS 结果。搜索树的每个根边记录 N 维 Q 值（`action_values: {action_id: [p0_q, p1_q, ...]}`），是该边所有叶子的 per-player value 均值。
-
-**计算公式**：
-- `best_wr = (root_values[human_player] + 1) / 2`：最优动作对应的人类胜率
-- `actual_wr = (action_values[chosen_action][human_player] + 1) / 2`：用户实际选择的动作对应的人类胜率
-- `drop = (best_wr - actual_wr) * 100`：掉分百分比
-
-一次搜索同时得到所有合法动作的 Q 值，直接读取 `human_player` 维度即可，支持任意人数。
-
-**掉分阈值**：≥5% 标记为失误（warn），≥10% 标记为严重失误（blunder）。
-
-#### 高级操作与 pipeline 的交互
-
-| 操作 | 与 pipeline 的关系 |
-|------|-------------------|
-| **悔棋** (`POST /step-back`) | 先 `cancel_pipeline` 终止正在进行的搜索，回退动作历史，重建 GameSession，然后重新触发 precompute |
-| **智能提示** (`POST /ai-hint`) | 优先复用 precompute 已有的搜索结果（等待最多 8s）；超时或无结果则临时跑一次独立 MCTS。不触发 pipeline，不落子 |
-| **替对手落子** (`POST /action` with forceMode) | 和正常用户走棋相同流程，触发 pipeline |
-
-**实现文件**：`platform/game_service/pipeline.py`（调度和分析）、`platform/game_service/routes.py`（API 端点）。
-
-#### 交互规范
-
-所有用户操作遵循"先渲染、后计算"——用户点击后立即看到画面更新，后台任务异步执行。
-
-**用户走棋**：
-1. cancel 旧 pipeline，立即 apply 并渲染新画面
-2. 若 precompute 分析已完成：显示掉分分析，然后触发 AI 思考
-3. 若 precompute 分析未完成：等分析完成后显示掉分，再触发 AI 思考
-4. AI 思考完成后渲染 AI 落子，触发下一轮 precompute
-
-**悔棋**：
-1. cancel 当前 pipeline
-2. 循环 step-back：跳过 AI 回应和人类的连续行动（`last_actor` 匹配），直到回到人类一串行动的真正起点
-3. 立即渲染正确画面
-4. 立即触发 precompute 分析新局面
-
-**替对手落子**：
-1. cancel 当前 pipeline
-2. 循环 step-back：跳过连续行动（`last_actor` 匹配），直到到达目标 AI 玩家一串行动的起点
-3. 立即渲染，等用户替对手落子后，按正常"用户走棋"流程处理
-
-**智能提示**：
-- 专家难度且 precompute 已完成：直接显示分析结果
-- 专家难度但 precompute 未完成：显示"局面分析中"，完成后自动更新
-- 非专家难度：显示"局面分析中"，临时跑分析，完成后显示
-- 提示过程中用户仍可正常落子（提示不阻塞交互）
-
-### 14.4 录像回放
-
-仅**专家难度**可用。对局结束后自动进入回放模式。
-
-**功能**：
-- 每帧附带掉分分析（见 §14.3）
-- general 层提供回放控制（前进/后退/跳到下一个失误）
-- 游戏前端只需确保 `renderBoard()` 能渲染任意帧的状态（通过 `GET /replay` 获取帧列表）
-
-**开发者无需额外代码**：只要 `state_serializer` 和 `renderBoard()` 正确实现，录像功能自动可用。
-
-### 14.5 统一录像格式
-
-在线对局和测试脚本使用统一的 JSON 格式：
-
-```json
-{
-  "game_id": "quoridor",
-  "seed": 42,
-  "players": {
-    "player_0": {"name": "latest_step500", "type": "model"},
-    "player_1": {"name": "heuristic_t0.2", "type": "heuristic"}
-  },
-  "result": {"winner": 0, "draw": false, "total_plies": 75},
-  "config": { ... },
-  "action_history": [42, 130, 5, ...],
-  "frames": [...]
-}
-```
-
-- **actor** 统一为 `"player_0"` / `"player_1"` / ... / `"start"`，通过 `players` 字典标注名字和类型（human/model/heuristic/ai）
-- **frames** 可选：在线对局包含完整帧（带 analysis），测试录像仅含 `action_history`，前端加载时通过 `POST /api/replay/build` 自动回放生成帧
-- 录像核心模块：`platform/game_service/replay.py`（`make_replay_frame`、`build_frames_from_actions`、`build_replay_dict`）
-
-### 14.6 模型评估工具
-
-`platform/tools/eval_model.py` — 独立评估训练成果的脚本，支持并行对局和胜率统计：
-
-```bash
-# 快速评估：40 局 4 worker 并行，只看胜率（不保存录像）
-python3 platform/tools/eval_model.py \
-  --game quoridor \
-  --model-a runs/quoridor_v14/models/model_best.onnx \
-  --sims 400 --games 40 --workers 4 --no-save -o /tmp/eval
-
-# model vs heuristic，保存录像供前端回放
-python3 platform/tools/eval_model.py \
-  --game quoridor \
-  --model-a runs/quoridor_v14/models/model_latest.onnx --name-a latest \
-  --heuristic-temp 0.2 --sims 800 --games 20 \
-  -o games/quoridor/replay/latest_vs_heuristic
-
-# model vs model
-python3 platform/tools/eval_model.py \
-  --game quoridor \
-  --model-a models/step500.onnx --name-a step500 \
-  --model-b models/warm.onnx --name-b warm \
-  --temp 0.1 --games 20 --workers 4 \
-  -o games/quoridor/replay/step500_vs_warm
-
-# constrained 模式（动作过滤）
-python3 platform/tools/eval_model.py \
-  --game quoridor --constrained \
-  --model-a models/latest.onnx --name-a latest \
-  --games 10 -o games/quoridor/replay/constrained_test
-```
-
-参数说明：`--workers N` 并行跑 N 局，`--no-save` 只输出统计不写文件。自动交替先后手，输出按先后手分别统计胜率。录像为轻量 JSON（仅含 action_history），前端加载时自动回放生成帧。
-
-### 14.7 通用功能（common.js）
-
-`common.js` 提供以下自动注入的通用功能，所有游戏前端自动获得：
-
-| 功能 | 说明 |
-|------|------|
-| 缩放控件 | 左上角 +/- 按钮，缩放棋盘区域，状态保存到 localStorage |
-| 侧边栏收起 | 侧边栏边缘"收起/展开"按钮，状态保存到 localStorage |
-| 尚未开局提示 | 棋盘区域显示"尚未开局"占位文字 |
-
-**尚未开局提示**：`common.js` 在 `#board-stage` 中自动注入 `#not-started-placeholder`。游戏 JS 通过以下 API 控制显隐：
-
-```javascript
-// 游戏开始后隐藏
-window.DinoBoard.hideNotStarted();
-
-// 需要重新显示时（如重置）
-window.DinoBoard.showNotStarted();
-```
-
-游戏的 `renderBoard()` 函数应在 `gameState` 为空时调用 `showNotStarted()`，在有状态时调用 `hideNotStarted()`。
-
-### 14.8 核心 API
-
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/api/games/available` | GET | 列出已注册游戏（ID、显示名、玩家数、是否有 web） |
-| `/api/games` | POST | 创建新游戏，参数：`game_id`, `seed`, `human_player`, `difficulty` |
-| `/api/games/{id}` | GET | 获取当前状态（调用 `state_serializer`） |
-| `/api/games/{id}/action` | POST | 执行玩家动作，参数：`action_id` |
-| `/api/games/{id}/ai-action` | POST | 触发 AI 落子（AI 先手时用） |
-| `/api/games/{id}/pipeline` | GET | 轮询 AI 响应状态 |
-| `/api/games/{id}/ai-hint` | POST | 获取 AI 推荐动作（不落子） |
-| `/api/games/{id}/step-back` | POST | 悔棋 |
-| `/api/games/{id}/replay` | GET | 获取完整录像帧（含 players 信息） |
-| `/api/replay/build` | POST | 从 action_history 回放生成帧（参数：game_id, seed, action_history） |
-| `/api/replay/file` | GET | 读取项目内的录像 JSON 文件（参数：path） |
-
-### 14.9 交互流程
-
-1. POST `/api/games` 创建对局 → 得到 `session_id`
-2. GET `/api/games/{id}` 获取状态 → 渲染棋盘
-3. 用户点击 → 将点击映射为 `action_id`
-4. POST `/api/games/{id}/action` 提交动作
-5. 轮询 GET `/api/games/{id}/pipeline` 直到 `phase == "done"`
-6. 重新获取状态 → 渲染新棋盘
-
----
-
-## 15. 测试
+## 12. 测试
 
 DinoBoard 采用**两层测试架构**:框架层不变量 + 每个游戏自己完整的验收清单。新游戏 ready 的标志是「`pytest tests/<新游戏>/` 一次全绿」。
 
-### 15.1 两层架构概念
+### 12.1 两层架构概念
 
 - **`tests/framework/`** — 框架不变量。在固定 3 游戏 matrix carrier(`FRAMEWORK_GAMES = ["quoridor", "azul", "loveletter"]`)上跑——这三个游戏一起最小完备覆盖了框架关心的每个结构特征(确定/对称随机/非对称隐藏、2p/2-4p、tail solver、belief tracker 有无 per-player private 字段、淘汰)。**这是项目维护者改框架时的护栏**,新游戏不需要被加到这层。
 - **`tests/<game>/`** — 每个游戏自己完整的验收清单,**与框架层有意冗余**。你的工作流就是在这一层完成的。
 
 详见 [新游戏验收测试指南 § 测试架构原则](NEW_GAME_TEST_GUIDE.md#测试架构原则两层测试)。
 
-### 15.2 运行测试
+### 12.2 运行测试
 
 ```bash
 # 全部(框架 + 所有游戏)
@@ -2055,7 +1235,7 @@ python -m pytest tests/<your_game>/ -v
 python -m pytest tests/framework/ -q
 ```
 
-### 15.3 接入新游戏:写一份独立的验收清单
+### 12.3 接入新游戏:写一份独立的验收清单
 
 **不需要**修改 `tests/framework/` 或 `tests/conftest.py::FRAMEWORK_GAMES`。流程:
 
@@ -2070,7 +1250,7 @@ python -m pytest tests/framework/ -q
 
 4. `pytest tests/<your_game>/ -v` 迭代到全绿。**全绿就是 ready 的明确信号**。
 
-### 15.4 测试辅助工具
+### 12.4 测试辅助工具
 
 `tests/conftest.py` 严格遵守白名单原则:框架层只认识 `FRAMEWORK_GAMES = ["quoridor", "azul", "loveletter"]` 三个 carrier 游戏,**不存在「所有游戏 metadata 全局表」**。Per-game checklist 通过 `load_game_config(GAME)` 自己加载配置。
 
@@ -2085,7 +1265,7 @@ python -m pytest tests/framework/ -q
 | `assert_api_belief_matches_selfplay(game_id, public_keys, ...)` | 函数 | **隐藏信息游戏的标准三层等价断言** —— belief/public state/legal actions。在 per-game checklist 里调用一次即可,无需重复实现 |
 | `game_id` / `game_config` / `model_path` | fixture | **仅供框架层使用**——参数化为 `FRAMEWORK_GAMES`。Per-game checklist 自己 hardcode `GAME = "..."`,不用这些 fixture |
 
-### 15.5 规则不变量与 `state_serializer` 的"测试可见性"
+### 12.5 规则不变量与 `state_serializer` 的"测试可见性"
 
 每个 per-game checklist 都应该包含一个 `TestRuleInvariants` 类——通过 `run_random_episode_states` 驱动随机对局,逐步从 `state_dict` 上断言**这个游戏自己的守恒律**(token 总量、卡总量、容量上限、可达性等)。完整模式与例子见 [新游戏验收测试指南 § 第 11 步](NEW_GAME_TEST_GUIDE.md#第-11-步规则不变量强制)。
 
@@ -2106,7 +1286,7 @@ for (auto tile : s.box_lid) {
 m["box_counts"] = std::any(box_counts);
 ```
 
-### 15.6 ISMCTS 根采样必须尊重 tracker 已知信息
+### 12.6 ISMCTS 根采样必须尊重 tracker 已知信息
 
 每个有 `belief_tracker` 的游戏要在 `tests/framework/test_ismcts_samples_respect_tracker.py` 里加一个 checker:`belief_tracker.randomize_unseen` 给 MCTS 仿真填充隐藏槽位时,必须尊重 tracker 已经知道的事实(例如 Love Letter 用 Priest 看过对手手牌后,`known_hand[opp]` 不能在 sample 里被随机覆盖)。
 
@@ -2114,7 +1294,7 @@ m["box_counts"] = std::any(box_counts);
 
 ---
 
-## 16. 完整 Checklist
+## 13. 完整 Checklist
 
 ### 必须完成
 
@@ -2163,7 +1343,7 @@ m["box_counts"] = std::any(box_counts);
 
 ---
 
-## 17. AI API 分离验收 —— 信息泄漏的唯一证明
+## 14. AI API 分离验收 —— 信息泄漏的唯一证明
 
 > **这一节的硬性要求**：一个新游戏的 AI 实现不通过本节所有测试就不能算验收合格，哪怕 selfplay 能跑、ONNX 能导出、Web 对局能完成。
 >
@@ -2173,7 +1353,7 @@ m["box_counts"] = std::any(box_counts);
 
 框架提供一个观察驱动的 AI 推理 API（`platform/ai_service/`），把 AI 决策暴露为 HTTP 端点。外部调用者只通过动作 ID 与 AI 交互，任何 state 字段都不会跨越边界。这同时也是未来对接第三方数字化桌游团队的接口。
 
-### 17.1 两道门槛
+### 14.1 两道门槛
 
 两层测试都通过才算合格：
 
@@ -2189,7 +1369,7 @@ m["box_counts"] = std::any(box_counts);
 - 终局公开 state 必须完全相等
 - perspective 回合的 legal actions 必须完全相等
 
-### 17.2 新游戏需要做什么
+### 14.2 新游戏需要做什么
 
 > 注意:`tests/framework/` 在固定 3 游戏 matrix 上跑(见 §15.1),它**不会自动跑你的新游戏**。下面的 "把 game_id 加入 _PLY_BUDGET / _DETERMINISTIC_GAMES / GAMES_WITH_EVENT_PROTOCOL / _PUBLIC_KEYS" 仅当你想让框架层也用你的游戏作为 carrier 时才需要——这是**项目维护层面**的决定,通常新游戏只在 `tests/<game>/test_checklist.py` 里完成验收即可。
 
@@ -2206,7 +1386,7 @@ m["box_counts"] = std::any(box_counts);
    - `initial_observation_extractor` / `initial_observation_applier` — 初始设置同步
 4. 在 `tests/<your_game>/test_checklist.py` 里加一个 `TestApiBeliefEquivalence` 类(参考 `tests/loveletter/` / `tests/splendor/` / `tests/coup/test_checklist.py`),调用 `assert_api_belief_matches_selfplay(GAME, PUBLIC_KEYS)` —— 这个 helper 一次完成三层等价断言(belief snapshot 每步一致 / 公开 state 字段终局相等 / perspective 回合 legal actions 相等),不需要重新实现
 
-### 17.3 Public-Event 协议设计
+### 14.3 Public-Event 协议设计
 
 事件负责在 AI 侧同步 ground truth 的公开事实（翻的新卡、抽到的公共牌、挑战揭露的身份等）。AI 内部 state 在 do_action_fast 跑出来的随机结果会被 event 覆盖，belief tracker 通过 `observe_public_event(actor, action, pre_events, post_events)` 读到正确的事件流。
 
@@ -2227,7 +1407,7 @@ m["box_counts"] = std::any(box_counts);
 
 **初始观察**：`initial_observation_extractor` 输出 perspective 视角能看到的开局信息（比如 Love Letter 的 `my_hand`、Splendor 的 `tableau` + `nobles`）。`initial_observation_applier` 在 API session 启动时 apply。
 
-### 17.4 参考实现
+### 14.4 参考实现
 
 | 游戏 | 事件类型 | 关键特点 | 位置 |
 |------|---------|---------|------|

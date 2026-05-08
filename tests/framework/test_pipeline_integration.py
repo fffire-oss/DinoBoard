@@ -1,4 +1,4 @@
-"""Pipeline orchestration tests: CLI config, batch functions, warm start, gating, scheduling."""
+"""Pipeline orchestration tests: CLI config, batch functions, heuristic episodes, gating, scheduling."""
 import json
 import math
 import tempfile
@@ -249,11 +249,12 @@ def test_simulation_rampup_formula():
 
 
 # ---------------------------------------------------------------------------
-# Warm start data collection
+# Heuristic episode data collection (used by run_eval_vs_heuristic; the old
+# warmstart path that consumed these is gone — see WARMSTART_INTO_HEURISTIC_GUIDANCE).
 # ---------------------------------------------------------------------------
 
-def test_warm_start_heuristic_episodes():
-    """Heuristic episodes for warm start should produce valid training data."""
+def test_heuristic_episode_samples():
+    """Heuristic episodes should produce valid training-shaped samples."""
     episodes = []
     for i in range(5):
         ep = dinoboard_engine.run_heuristic_episode(
@@ -283,11 +284,11 @@ def test_warm_start_heuristic_episodes():
             if total_p > 0:
                 assert abs(total_p - 1.0) < 1e-5
 
-    assert total_samples > 0, "no valid warm start samples"
+    assert total_samples > 0, "no valid heuristic episode samples"
 
 
-def test_warm_start_features_vary():
-    """Warm start heuristic episodes should produce varying features."""
+def test_heuristic_episode_features_vary():
+    """Heuristic episodes should produce varying features across plies."""
     ep = dinoboard_engine.run_heuristic_episode(
         game_id="quoridor", seed=42,
         temperature=3.0, max_game_plies=50,
@@ -367,32 +368,37 @@ def test_mini_training_loop(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Warm start + training loop (end-to-end through run_training_loop)
+# Heuristic guidance hold period (replaces the old warmstart loop test)
 # ---------------------------------------------------------------------------
 
-def test_warm_start_training_loop(tmp_path):
-    """run_training_loop with warm_start_heuristic should complete without error."""
-    cfg = find_game_config("quoridor")
+def test_heuristic_guidance_hold_period(tmp_path):
+    """run_training_loop with hold-period heuristic guidance schedule.
+
+    hold=2, decay_end=5, initial_ratio=1.0 → step 1,2 fully heuristic;
+    step 3,4 in linear decay; step 5+ pure network. No model_warm.onnx
+    should ever be exported (the special path is gone).
+    """
+    cfg = find_game_config("tictactoe")
     cfg["training"] = {
-        **cfg["training"],
-        "warm_start_heuristic": True,
-        "warm_start_episodes": 10,
-        "warm_start_epochs": 2,
-        "warm_start_temperature": 3.0,
+        **cfg.get("training", {}),
         "simulations": 10,
         "simulations_start": 10,
-        "max_game_plies": 50,
-        "steps": 2,
+        "max_game_plies": 9,
+        "steps": 6,
         "episodes_per_step": 3,
-        "heuristic_guidance_steps": 0,
+        "heuristic_guidance_hold_steps": 2,
+        "heuristic_guidance_steps": 5,
+        "heuristic_guidance_initial_ratio": 1.0,
+        "heuristic_guidance_temperature": 1.0,
+        "heuristic_temperature": 0.0,
         "training_filter_steps": 0,
         "tail_solve_enabled": False,
     }
     run_training_loop(
-        game_id="quoridor",
+        game_id="tictactoe",
         game_config=cfg,
         output_dir=tmp_path,
-        steps=2,
+        steps=6,
         episodes_per_step=3,
         eval_every=0,
         eval_games=0,
@@ -402,9 +408,38 @@ def test_warm_start_training_loop(tmp_path):
         seed=42,
     )
     assert (tmp_path / "models" / "model_init.onnx").exists()
-    assert (tmp_path / "models" / "model_warm.onnx").exists()
     assert (tmp_path / "models" / "model_latest.onnx").exists()
+    assert not (tmp_path / "models" / "model_warm.onnx").exists(), \
+        "model_warm.onnx should not be produced after warmstart removal"
     assert (tmp_path / "checkpoint.pt").exists()
+
+
+def test_legacy_warm_start_keys_rejected(tmp_path):
+    """Legacy warm_start_* keys must raise ValueError with migration guidance."""
+    cfg = find_game_config("tictactoe")
+    cfg["training"] = {
+        **cfg.get("training", {}),
+        "warm_start_heuristic": True,
+        "warm_start_episodes": 10,
+        "simulations": 10,
+        "max_game_plies": 9,
+        "steps": 1,
+        "episodes_per_step": 2,
+    }
+    with pytest.raises(ValueError, match="warm_start_"):
+        run_training_loop(
+            game_id="tictactoe",
+            game_config=cfg,
+            output_dir=tmp_path,
+            steps=1,
+            episodes_per_step=2,
+            eval_every=0,
+            eval_games=0,
+            max_workers=1,
+            batch_size=32,
+            learning_rate=0.001,
+            seed=42,
+        )
 
 
 def test_full_training_loop_with_eval(tmp_path):

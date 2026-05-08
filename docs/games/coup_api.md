@@ -134,7 +134,7 @@ Coup 的 tracker 不是 uniform 采样。它在内部维护每个对手对每个
 
 **接入方什么都不用做**，只要正确发 `card_revealed` / `exchange_complete` 事件，AI 的启发式自己就工作。
 
-详见 `docs/GAME_DEVELOPMENT_GUIDE.md` §11.4 的 Coup 子节。
+详见 `docs/guide/GAME_DEVELOPMENT_GUIDE.md` §11.4 的 Coup 子节。
 
 ---
 

@@ -21,7 +21,12 @@
     "batch_size": 512,
     "learning_rate": 0.001,
     "steps": 2000,
-    "peek_steps": 0
+    "peek_steps": 0,
+    "heuristic_guidance_hold_steps": 10,
+    "heuristic_guidance_steps": 20,
+    "heuristic_guidance_initial_ratio": 1.0,
+    "heuristic_guidance_temperature": 0.0,
+    "heuristic_temperature": 0.0
   },
   "network": {
     "type": "mlp",

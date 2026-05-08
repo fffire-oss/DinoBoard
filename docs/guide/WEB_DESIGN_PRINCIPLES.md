@@ -1,6 +1,6 @@
 # Web 前端设计原则
 
-给游戏前端开发者的视觉与交互指引。技术实现细节（createApp API、ctx 对象、common.js 工具）见 [GAME_DEVELOPMENT_GUIDE.md §13](GAME_DEVELOPMENT_GUIDE.md#13-web-前端开发)。
+给游戏前端开发者的视觉与交互指引。技术实现细节（createApp API、ctx 对象、common.js 工具）见 [WEB_DEVELOPMENT_GUIDE.md](WEB_DEVELOPMENT_GUIDE.md)。
 
 ---
 
@@ -260,7 +260,7 @@ data-deck="1"              牌堆（tier）
 --slot: floor(min(34px, calc((100vw - 40px) / 17)));
 ```
 
-想法是"不认 `floor()` 的浏览器会丢弃第二行，fallback 到第一行"。**但 CSS 自定义属性（`--x: ...`）的值里可以包含任何 token，解析时不验证函数名，第二行永远覆盖第一行**。某些手机浏览器支持 `floor()` 语法但在 `floor(min(...))` 嵌套下算出 0 或 NaN，结果 `repeat(17, 0)` 把整个棋盘挤成一条线。实测翻车，见 [KNOWN_ISSUES BUG-027](KNOWN_ISSUES.md#bug-027)。
+想法是"不认 `floor()` 的浏览器会丢弃第二行，fallback 到第一行"。**但 CSS 自定义属性（`--x: ...`）的值里可以包含任何 token，解析时不验证函数名，第二行永远覆盖第一行**。某些手机浏览器支持 `floor()` 语法但在 `floor(min(...))` 嵌套下算出 0 或 NaN，结果 `repeat(17, 0)` 把整个棋盘挤成一条线。实测翻车，见 [KNOWN_ISSUES BUG-027](../KNOWN_ISSUES.md#bug-027)。
 
 **正确做法（从最可靠到最兜底）**：
 

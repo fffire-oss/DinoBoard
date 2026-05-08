@@ -6,7 +6,7 @@
 >
 > 给 Claude Code 一句话「加上 Azul」,它自己查规则书、写 C++、跑全量测试、训练出超越人类的 AI、生成 Web 前端。你只负责验收。
 
-通用棋盘游戏 AI 引擎——**一套框架、一次工程投入、无限游戏复用**。AlphaZero 风格 MCTS + 神经网络自我对弈,支持 2-4 人游戏。
+通用桌游 AI 引擎——**一套框架、一次工程投入、无限游戏复用**。AlphaZero 风格 MCTS + 神经网络自我对弈,支持 2-4 人游戏。
 
 ---
 
@@ -29,7 +29,7 @@ DinoBoard 把这条路径一次性打通,变成**可复用的引擎 + 可调用�
 
 ### ISMCTS:面向隐藏信息游戏的 DAG 搜索
 
-针对隐藏信息游戏的原生 MCTS 重构。**Root-sampling determinization + per-acting-player info-set keying + UCT2**——每次 simulation 从 belief 采一个完整世界,之后 descent 完全 deterministic;同一 info set 从不同路径到达共享 DAG 节点。详见 [docs/MCTS_ALGORITHM.md](docs/MCTS_ALGORITHM.md)。
+针对隐藏信息游戏的原生 MCTS 重构。**Root-sampling determinization + per-acting-player info-set keying + UCT2**——每次 simulation 从 belief 采一个完整世界,之后 descent 完全 deterministic;同一 info set 从不同路径到达共享 DAG 节点。详见 [docs/guide/MCTS_ALGORITHM.md](docs/guide/MCTS_ALGORITHM.md)。
 
 ### Observation-Only AI API:训练完就能被第三方调用
 
@@ -79,7 +79,7 @@ DELETE /ai/sessions/{id}                  → 结束会话
 你已经不需要手写 game bundle。典型工作流:
 
 1. 对 Claude Code 说「加上 [游戏名]」
-2. AI 读 `docs/GAME_DEVELOPMENT_GUIDE.md` 和 `docs/KNOWN_ISSUES.md`,模仿 Quoridor / Splendor 等范例实现规则
+2. AI 读 `docs/guide/GAME_DEVELOPMENT_GUIDE.md` 和 `docs/KNOWN_ISSUES.md`,模仿 Quoridor / Splendor 等范例实现规则
 3. 在 `tests/<新游戏>/` 下放一份 `test_checklist.py`(从最相近的现有游戏复制,改 `GAME = "..."`)——`pytest tests/<新游戏>/` 一次全绿就是「游戏 ready」的明确信号
 4. AI 根据测试失败迭代修复,直到全绿
 5. `python -m training.cli --game <id>` 启动训练
@@ -182,7 +182,7 @@ python -c "import dinoboard_engine; print(dinoboard_engine.available_games())"
 # TicTacToe — 约 5 分钟
 python -m training.cli --game tictactoe --output runs/tictactoe_001
 
-# Quoridor — 数小时(含 warm start + heuristic guidance)
+# Quoridor — 数小时(含 heuristic guidance 调度)
 python -m training.cli --game quoridor --output runs/quoridor_001 \
     --workers 4 --eval-every 25 --eval-games 40 --eval-benchmark heuristic
 ```
@@ -203,19 +203,19 @@ open http://localhost:8000
 
 ## 核心概念速记
 
-- **GameBundle 注册** — 每个游戏一个工厂函数,返回 state + rules + encoder + 若干可选组件。详见 [游戏开发指南](docs/GAME_DEVELOPMENT_GUIDE.md)。
-- **ISMCTS** — Root sampling + DAG + UCT2,隐藏信息游戏的原生方案。详见 [docs/MCTS_ALGORITHM.md](docs/MCTS_ALGORITHM.md)。
-- **AI API** — Observation-only REST 接口,第三方桌游 app 直接调用,无需嵌入引擎代码。同时作为 AI 不作弊的信息论证明。详见 [GAME_DEVELOPMENT_GUIDE §17](docs/GAME_DEVELOPMENT_GUIDE.md#17-ai-api-分离验收)。
-- **训练管线** — 自我对弈 → Replay Buffer → SGD → ONNX 导出 → gating eval(≥60% 胜率更新 best)。支持 Warm Start、Heuristic Guidance、Auxiliary Score、Training Action Filter、MCTS Schedule。
+- **GameBundle 注册** — 每个游戏一个工厂函数,返回 state + rules + encoder + 若干可选组件。详见 [游戏开发指南](docs/guide/GAME_DEVELOPMENT_GUIDE.md)。
+- **ISMCTS** — Root sampling + DAG + UCT2,隐藏信息游戏的原生方案。详见 [docs/guide/MCTS_ALGORITHM.md](docs/guide/MCTS_ALGORITHM.md)。
+- **AI API** — Observation-only REST 接口,第三方桌游 app 直接调用,无需嵌入引擎代码。同时作为 AI 不作弊的信息论证明。详见 [GAME_DEVELOPMENT_GUIDE §14](docs/guide/GAME_DEVELOPMENT_GUIDE.md#14-ai-api-分离验收--信息泄漏的唯一证明)。
+- **训练管线** — 自我对弈 → Replay Buffer → SGD → ONNX 导出 → gating eval(≥60% 胜率更新 best)。支持 Heuristic Guidance 三段式调度(hold → 线性衰减 → 0)、Auxiliary Score、Training Action Filter、MCTS Schedule。
 
 ---
 
 ## 文档
 
 - **[功能概览](docs/GAME_FEATURES_OVERVIEW.md)** — 框架能力速查
-- **[游戏开发指南](docs/GAME_DEVELOPMENT_GUIDE.md)** — 添加新游戏的单一权威来源
-- **[MCTS 算法](docs/MCTS_ALGORITHM.md)** — ISMCTS 的 DAG 搜索推导
-- **[新游戏验收测试](docs/NEW_GAME_TEST_GUIDE.md)** — 11 步验收流程 + 两层测试架构原则
+- **[游戏开发指南](docs/guide/GAME_DEVELOPMENT_GUIDE.md)** — 添加新游戏的单一权威来源
+- **[MCTS 算法](docs/guide/MCTS_ALGORITHM.md)** — ISMCTS 的 DAG 搜索推导
+- **[新游戏验收测试](docs/guide/NEW_GAME_TEST_GUIDE.md)** — 11 步验收流程 + 两层测试架构原则
 - **[已知问题与踩坑](docs/KNOWN_ISSUES.md)** — BUG-001~022 postmortem + 设计取舍
 
 ---

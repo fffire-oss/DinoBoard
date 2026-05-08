@@ -103,18 +103,6 @@ def _worker_eval_vs_heuristic(args: tuple) -> dict[str, Any]:
     )
 
 
-def _worker_warm_start(args: tuple) -> dict[str, Any]:
-    """Run a single heuristic episode for warm-start data."""
-    import dinoboard_engine
-    game_id, seed, temperature, max_plies = args
-    return dinoboard_engine.run_heuristic_episode(
-        game_id=game_id,
-        seed=seed,
-        temperature=temperature,
-        max_game_plies=max_plies,
-    )
-
-
 def normalize_policy(action_ids: list[int], visits: list[int], action_space: int) -> list[float]:
     total = sum(max(0, v) for v in visits)
     policy = [0.0] * action_space
@@ -274,10 +262,34 @@ def rotate_z_values(z_values: list[float], player: int, num_players: int = 0) ->
     return [z_values[(player + i) % n] for i in range(n)]
 
 
-def compute_schedule_ratio(step: int, total_steps: int, initial_ratio: float) -> float:
-    if step >= total_steps:
+def compute_schedule_ratio(
+    step: int,
+    decay_end_step: int,
+    initial_ratio: float,
+    hold_steps: int = 0,
+) -> float:
+    """Three-segment schedule: hold → linear decay → zero.
+
+    - step <= hold_steps                       → initial_ratio
+    - step >= decay_end_step                   → 0.0
+    - hold_steps < step < decay_end_step       → linear interpolation
+
+    decay_end_step <= 0 disables the schedule (always 0). Configuration
+    error if 0 < decay_end_step <= hold_steps — caller must validate.
+    """
+    if decay_end_step <= 0:
         return 0.0
-    return initial_ratio * (1.0 - step / total_steps)
+    if decay_end_step <= hold_steps:
+        raise ValueError(
+            f"compute_schedule_ratio: decay_end_step ({decay_end_step}) must be "
+            f"> hold_steps ({hold_steps})"
+        )
+    if step <= hold_steps:
+        return initial_ratio
+    if step >= decay_end_step:
+        return 0.0
+    span = decay_end_step - hold_steps
+    return initial_ratio * (decay_end_step - step) / span
 
 
 def run_training_loop(
@@ -322,81 +334,31 @@ def run_training_loop(
     initial_onnx = models_dir / "model_init.onnx"
     export_onnx(net, initial_onnx, feature_dim)
 
-    # Warm start: pre-train on heuristic episodes
-    warm_start_episodes = train_cfg.get("warm_start_episodes", 0)
-    warm_start_epochs = train_cfg.get("warm_start_epochs", 5)
-    warm_start_heuristic = train_cfg.get("warm_start_heuristic", False)
-    warm_start_temperature = train_cfg.get("warm_start_temperature", 3.0)
+    # Warmstart was removed in favour of a three-segment heuristic_guidance
+    # schedule (hold → linear decay → zero). See
+    # docs/plans/WARMSTART_INTO_HEURISTIC_GUIDANCE.md.
+    legacy_warm_keys = [k for k in train_cfg if k.startswith("warm_start_")]
+    if legacy_warm_keys:
+        raise ValueError(
+            "Legacy warm_start_* keys are no longer supported. Migrate to the "
+            "three-segment heuristic_guidance schedule:\n"
+            "  warm_start_episodes / warm_start_epochs → heuristic_guidance_hold_steps "
+            "+ heuristic_guidance_steps (decay end)\n"
+            "  warm_start_heuristic → set heuristic_guidance_initial_ratio = 1.0\n"
+            "  warm_start_temperature → heuristic_guidance_temperature "
+            "(eval-time temperature stays in heuristic_temperature)\n"
+            f"Found legacy keys in game.json training: {sorted(legacy_warm_keys)}"
+        )
 
-    if warm_start_heuristic and warm_start_episodes > 0:
-        logger.info(f"Warm start: collecting {warm_start_episodes} heuristic episodes (temp={warm_start_temperature})")
-        max_plies = train_cfg.get("max_game_plies", 200)
-        warm_tasks = [
-            (game_id, seed + i, warm_start_temperature, max_plies)
-            for i in range(warm_start_episodes)
-        ]
-        warm_episodes = []
-        with ProcessPoolExecutor(max_workers=max_workers) as pool:
-            for r in pool.map(_worker_warm_start, warm_tasks):
-                warm_episodes.append(r)
-
-        warm_features, warm_policies, warm_values, warm_masks, warm_aux = [], [], [], [], []
-        for ep in warm_episodes:
-            for sample in ep["samples"]:
-                feats = sample["features"]
-                if len(feats) != feature_dim:
-                    raise ValueError(
-                        f"warm start: feature dim mismatch: got {len(feats)}, expected {feature_dim}")
-                warm_features.append(feats)
-                policy = normalize_policy(
-                    sample["policy_action_ids"],
-                    sample["policy_action_visits"],
-                    action_space,
-                )
-                warm_policies.append(policy)
-                z_vals = sample["z_values"]
-                player = sample["player"]
-                warm_values.append(rotate_z_values(z_vals, player, num_players))
-                warm_masks.append(sample["legal_mask"])
-                warm_aux.append(float(sample["auxiliary_score"]))
-
-        if warm_features:
-            feat_t = torch.tensor(warm_features, dtype=torch.float32)
-            pol_t = torch.tensor(warm_policies, dtype=torch.float32)
-            val_t = torch.tensor(warm_values, dtype=torch.float32)
-            mask_t = torch.tensor(warm_masks, dtype=torch.float32)
-            aux_t = torch.tensor(warm_aux, dtype=torch.float32) if auxiliary_score else None
-            n = feat_t.size(0)
-            grad_clip = train_cfg.get("grad_clip_norm", 1.0)
-            logger.info(f"Warm start: training on {n} samples for {warm_start_epochs} epochs")
-            for epoch in range(warm_start_epochs):
-                perm = torch.randperm(n)
-                total_loss = 0.0
-                num_batches = max(1, n // batch_size)
-                for b in range(num_batches):
-                    idx = perm[b * batch_size: (b + 1) * batch_size]
-                    metrics = train_step(
-                        net, optimizer, feat_t[idx], pol_t[idx], val_t[idx],
-                        legal_mask=mask_t[idx],
-                        auxiliary_targets=aux_t[idx] if aux_t is not None else None,
-                        auxiliary_weight=auxiliary_score_weight,
-                        grad_clip_norm=grad_clip,
-                    )
-                    total_loss += metrics["loss"]
-                avg = total_loss / max(1, num_batches)
-                logger.info(f"  warm epoch {epoch+1}/{warm_start_epochs}: loss={avg:.4f}")
-
-            warm_onnx = models_dir / "model_warm.onnx"
-            export_onnx(net, warm_onnx, feature_dim)
-            logger.info(f"Warm start model exported: {warm_onnx}")
-
-    current_model_path = str(models_dir / "model_warm.onnx") if (models_dir / "model_warm.onnx").exists() else str(initial_onnx)
+    current_model_path = str(initial_onnx)
     best_model_path = current_model_path
 
-    # Scheduling parameters
+    # Scheduling parameters (three-segment: hold → linear decay → zero)
+    heuristic_guidance_hold_steps = train_cfg.get("heuristic_guidance_hold_steps", 0)
     heuristic_guidance_steps = train_cfg.get("heuristic_guidance_steps", 0)
-    heuristic_guidance_initial = train_cfg.get("heuristic_guidance_ratio",
-                                                train_cfg.get("heuristic_guidance_initial_ratio", 0.5))
+    heuristic_guidance_initial = train_cfg.get("heuristic_guidance_initial_ratio",
+                                                train_cfg.get("heuristic_guidance_ratio", 0.5))
+    training_filter_hold_steps = train_cfg.get("training_filter_hold_steps", 0)
     training_filter_steps = train_cfg.get("training_filter_steps", 0)
     training_filter_initial = train_cfg.get("training_filter_initial_ratio", 0.5)
     peek_steps = train_cfg.get("peek_steps", 0)
@@ -407,18 +369,15 @@ def run_training_loop(
     replay_buffer_size = episodes_per_step * 50 * 20
     replay_buffer: deque[tuple[list, list, list, list, float]] = deque(maxlen=replay_buffer_size)
 
-    # Seed replay buffer with warm start data so step 1 trains on a rich buffer
-    if warm_start_heuristic and warm_start_episodes > 0 and warm_features:
-        for i in range(len(warm_features)):
-            replay_buffer.append((
-                warm_features[i], warm_policies[i], warm_values[i],
-                warm_masks[i], warm_aux[i],
-            ))
-        logger.info(f"Warm start: seeded replay buffer with {len(replay_buffer)} samples")
-
     logger.info(f"Starting training: game={game_id}, steps={steps}, episodes/step={episodes_per_step}")
-    logger.info(f"  heuristic_guidance_steps={heuristic_guidance_steps}, initial_ratio={heuristic_guidance_initial}")
-    logger.info(f"  training_filter_steps={training_filter_steps}, initial_ratio={training_filter_initial}")
+    logger.info(
+        f"  heuristic_guidance: hold={heuristic_guidance_hold_steps}, "
+        f"decay_end={heuristic_guidance_steps}, initial_ratio={heuristic_guidance_initial}"
+    )
+    logger.info(
+        f"  training_filter: hold={training_filter_hold_steps}, "
+        f"decay_end={training_filter_steps}, initial_ratio={training_filter_initial}"
+    )
     logger.info(f"  simulations: start={simulations_start}, full={simulations_full}")
     logger.info(f"  peek_steps={peek_steps}")
     logger.info(f"  tail_solve: enabled={train_cfg.get('tail_solve_enabled', False)}")
@@ -427,9 +386,19 @@ def run_training_loop(
     for step in range(1, steps + 1):
         t0 = time.perf_counter()
 
-        # Compute scheduled ratios
-        heuristic_ratio = compute_schedule_ratio(step, heuristic_guidance_steps, heuristic_guidance_initial)
-        filter_ratio = compute_schedule_ratio(step, training_filter_steps, training_filter_initial)
+        # Compute scheduled ratios (three-segment: hold → decay → zero)
+        heuristic_ratio = compute_schedule_ratio(
+            step,
+            heuristic_guidance_steps,
+            heuristic_guidance_initial,
+            hold_steps=heuristic_guidance_hold_steps,
+        )
+        filter_ratio = compute_schedule_ratio(
+            step,
+            training_filter_steps,
+            training_filter_initial,
+            hold_steps=training_filter_hold_steps,
+        )
 
         # Ramp simulations
         sim_frac = min(1.0, step / max(1, steps * 0.3))
@@ -452,7 +421,10 @@ def run_training_loop(
             "temperature_final": _get_temperature_key(train_cfg, "final", -1.0),
             "temperature_decay_plies": _get_temperature_key(train_cfg, "decay_plies", 0),
             "heuristic_guidance_ratio": heuristic_ratio,
-            "heuristic_temperature": train_cfg.get("heuristic_temperature", 0.0),
+            # Selfplay heuristic branch uses guidance temperature (high = diverse
+            # exploration during warm period). Eval vs heuristic uses the
+            # separate `heuristic_temperature` (low = strength benchmark).
+            "heuristic_temperature": train_cfg.get("heuristic_guidance_temperature", 0.0),
             "training_filter_ratio": filter_ratio,
             # peek_steps=N means "first N steps use peek". When step < N the
             # searcher disables root sampling (ismcts_enabled=False) and runs

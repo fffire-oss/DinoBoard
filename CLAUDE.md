@@ -1,5 +1,9 @@
 # DinoBoard Design Principles
 
+## Read onboarding before non-trivial work
+
+Before doing any non-trivial work in this repo — adding a game, changing the framework, modifying the web frontend, touching the training pipeline, or fixing anything beyond a single-line bug — read `docs/VIBE_CODING_ONBOARDING.md` first. It contains hard rules, a per-task read-order routing table, and the framework's non-goals (e.g. combinatorial action explosion like DouDizhu, mixed-strategy equilibria like poker, long-history-dependent games like Hanabi — these cannot be patched in here). Read it before paraphrasing the user's request back, before asking clarifying questions, and before writing any code. This is mandatory, not a suggestion.
+
 ## Training Pipeline
 
 - Training is config-driven: only `game.json` parameters, no code changes per training run.
@@ -88,9 +92,9 @@ This compatibility does **not** extend to 3p/4p: `value_len == 1 && num_players 
 
 ## Web Frontend Design
 
-**Before touching any web frontend code — new game or modification — read `docs/WEB_DESIGN_PRINCIPLES.md` and follow it. It is mandatory, not a style suggestion.** When you design a new game frontend, update the doc if you discover a new principle worth codifying for the next game; don't carry the lesson only in your head.
+**Before touching any web frontend code — new game or modification — read `docs/guide/WEB_DESIGN_PRINCIPLES.md` and follow it. It is mandatory, not a style suggestion.** When you design a new game frontend, update the doc if you discover a new principle worth codifying for the next game; don't carry the lesson only in your head.
 
-Full visual/interaction guide: `docs/WEB_DESIGN_PRINCIPLES.md`.
+Full visual/interaction guide: `docs/guide/WEB_DESIGN_PRINCIPLES.md`.
 
 - Web frontend is mandatory. It is the primary interface for players to play and for the developer to verify training results.
 - Actions must NOT be mapped naively to individual buttons. Design interactions as the player would naturally play the physical game.
@@ -106,7 +110,7 @@ When implementing a new feature or fixing a bug, update documentation immediatel
 
 - **README.md** — keep concise; only mention the feature exists, don't explain implementation details.
 - **docs/GAME_FEATURES_OVERVIEW.md** — high-level "what's available" for developers. Training pipeline, search, decision-making, training enhancements, eval, web frontend, randomness handling, optional component reference, config reference, and new game development steps. Start here for a quick overview of what the framework can do.
-- **docs/GAME_DEVELOPMENT_GUIDE.md** — detailed implementation guide. Covers IGameState, IGameRules, IFeatureEncoder, GameBundle registration, GameRegistrar patterns, game.json config format (all fields), CMake/setup.py build integration, all 12 optional components with signatures and examples, feature encoding best practices, and web frontend integration (createApp API, ctx/gameState objects, common.js utilities). This is the single source of truth for "how to add a new game."
+- **docs/guide/GAME_DEVELOPMENT_GUIDE.md** — detailed implementation guide. Covers IGameState, IGameRules, IFeatureEncoder, GameBundle registration, GameRegistrar patterns, game.json config format (all fields), CMake/setup.py build integration, all 12 optional components with signatures and examples, feature encoding best practices, and web frontend integration (createApp API, ctx/gameState objects, common.js utilities). This is the single source of truth for "how to add a new game."
 - **docs/KNOWN_ISSUES.md** — bug postmortems and design trade-off records. BUG-001 through BUG-022 covers every shipped regression: tail solver TT flags, draw z-value, train-eval action space mismatch, FilteredRulesWrapper const_cast, replay buffer utilization, feature encoding pipeline bug, Splendor temperature schedule, replay buffer loss, ONNX silent degradation, model export order, z_values incomplete, legal mask filter, belief tracker peeking, adjudicator z_values + 3p+ evaluator, 2p-hardcoded multiplayer paths, pipeline stats-key mismatch, fly animation inheriting container size + sequential playback, cancel_pipeline side-effect wiping precompute cache. Plus general pitfalls and design decisions. Read this before writing new game logic or modifying the pipeline.
-- **docs/NEW_GAME_TEST_GUIDE.md** — step-by-step verification checklist for new game implementations. 9 steps: registration + config consistency, GameSession interaction, do/undo consistency, feature encoding (BUG-007 regression), selfplay sample integrity, ONNX round-trip, training tensor validation, optional component verification (heuristic, tail solver, filter, adjudicator, auxiliary scorer, hidden info), and multiplayer variants. Includes instructions for joining the existing 600+ parametrized test suite.
+- **docs/guide/NEW_GAME_TEST_GUIDE.md** — step-by-step verification checklist for new game implementations. 9 steps: registration + config consistency, GameSession interaction, do/undo consistency, feature encoding (BUG-007 regression), selfplay sample integrity, ONNX round-trip, training tensor validation, optional component verification (heuristic, tail solver, filter, adjudicator, auxiliary scorer, hidden info), and multiplayer variants. Includes instructions for joining the existing 600+ parametrized test suite.
 - **docs/devlog/YYYY-MM-DD.md** — daily development log. Record what was implemented, key decisions made, config changes, and training observations. Keep entries concise and factual.

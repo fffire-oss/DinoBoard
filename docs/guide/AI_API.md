@@ -9,7 +9,8 @@
 
 - **No state crosses the boundary.** API 只在 `action_id`（整数）和事件（`{kind, payload}` 字典）这两种形态上通信。第三方**从不**需要向 AI 传递游戏的完整 state——所有观察都以动作和事件的形式流入。
 - **AI 自己维护所看到的一切。** 每个 session 内部持有一份 "从 AI 视角观察到的" 游戏 state + belief tracker。接入方只负责把 ground truth 的动作和公开事件翻成 API 请求。
-- **随机/隐藏信息对接 ≠ 泄漏 truth。** AI 的内部 state 由**独立的 RNG seed** 初始化，对手暗牌/deck 顺序和真实情况无关。AI 靠 `observe` 推送的"公开事件"同步 public facts，靠 belief tracker 采样隐藏信息。
+- **Public state 完全由消息流重建**。每次 `observe` 之后，session 的所有公开字段（牌面、分数、棋盘等 `hash_public_fields` 涵盖的字段）都从 `post_events` 里附带的 public snapshot 反向覆写——不依赖 `do_action_fast` 在采样隐藏值上的输出，所以即使 AI 的采样和 truth 不同，observer 看到的公开局面也跟 truth byte-equal（`test_public_snapshot_round_trip` 守护）。
+- **Hidden state 是采样、不是拷贝**。AI 的 hidden 字段由 `seed` 控制的 RNG 通过 belief tracker **每次 observe 后重新采样**，跟 truth 在数值上独立。`seed` 只影响 hidden 部分；public 部分跟 seed 无关（`test_public_hash_excludes_internal_rng` 守护）——这意味着接入方的 `seed` 选择不会让 AI 看到的公开局面和 truth 漂移。
 
 ---
 

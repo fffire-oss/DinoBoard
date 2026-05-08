@@ -12,6 +12,15 @@
 
 ## 目录
 
+### 通用踩坑事项
+
+- [通用踩坑事项](#通用踩坑事项) — 9 条新游戏接入前必读的隐性陷阱
+
+### 设计决策（DEC）
+
+- [DEC-001] 旧 2p 标量价值头永久兼容（显式契约，不是 BUG）
+- [DEC-002] Warmstart 并入 heuristic_guidance schedule
+
 ### 框架层 Issues（搜索 / 训练 / 运行时 / 平台）
 
 - [BUG-001] Tail Solver 转置表标志位反转
@@ -21,7 +30,7 @@
 - [BUG-005] FilteredRulesWrapper 的 const_cast
 - [BUG-006] Replay Buffer 样本利用率
 - [BUG-007] pipeline.py 用初始局面特征训练所有样本
-- [BUG-008] pipeline.py 读取嵌套 `temperature_schedule` 时静默失败
+- [BUG-008] Splendor temperature_schedule 被静默忽略
 - [BUG-009] pipeline.py 重写丢失三项训练改进
 - [BUG-010] pipeline.py 重写丢失 Replay Buffer
 - [BUG-011] ONNX 未编译导致 MCTS 使用均匀策略
@@ -39,16 +48,206 @@
 - [BUG-025] pipeline.py `nopeek_enabled` off-by-one：peek_steps=0 被错误解读为"第 0 步 peek"
 - [BUG-026] ISMCTS DAG hash collision → MCTS 选中非法 action 崩溃
 - [BUG-027] Quoridor 手机端棋盘 UI 连环坑 —— button UA baseline 偏移 + 固定像素尺寸在小 slot 下退化
+- [BUG-029] tail-solve 采纳 ProvenWin 路径未填 `root_values`，专家模式终局窗口 45s 后才显示
+- [BUG-031] Web 隔离 AI 会话没有继承 `tail_solve` 配置（web AI 实际未启用 tail-solve）
+- [BUG-032] Selfplay per-perspective trackers 未被初始化 → randomize_unseen 覆写当前玩家自己的手牌 (OB-011)
+- [BUG-034] 体验版（casual）AI 走子后没显示对手胜率——前端 difficulty gate 把已经算好的数字扔了 (OB-013)
 
 ### 游戏层 Issues（具体游戏的规则 / 编码器 / tracker）
 
-- [BUG-017] SplendorBeliefTracker 偷看牌堆内容（Splendor）
-- [BUG-023] Love Letter AI 永远猜对 Guard — terminal-by-elimination 漏过 NoPeek 检测（Love Letter，**已被 ISMCTS 重构整体解决**）
-- [BUG-028] public hash 混入不可观察随机源，导致 ISMCTS DAG 按隐藏信息分裂（Azul / Splendor）
-- [BUG-029] tail-solve 采纳 ProvenWin 路径未填 `root_values`，专家模式终局窗口 45s 后才显示
+- [BUG-017] SplendorBeliefTracker 偷看牌堆内容
+- [BUG-023] Love Letter AI 永远猜对 Guard — terminal-by-elimination 漏过 NoPeek 检测
+- [BUG-028] public hash 混入不可观察随机源，导致 ISMCTS DAG 按隐藏信息分裂
+- [BUG-030] Love Letter encoder 把 tracker 知识泄漏到非 perspective 玩家视角
+- [BUG-033] Azul 轮末结算飞砖落地后砖消失 + 多行同结算时 +score 偏高 (OB-012 / OB-008)
+- [BUG-035] Azul 轮末地板扣分用错时间点的 floor_count——actor 在结算回合扔的砖没算进去
 
 ---
 
+## 通用踩坑事项
+
+### 1. UndoToken 的 undo_depth 必须在 push 前设置
+
+```cpp
+UndoToken token{};
+token.undo_depth = static_cast<std::uint32_t>(s->undo_stack.size());  // push 之前！
+// ... push UndoRecord ...
+// ... 修改状态 ...
+return token;
+```
+
+如果在 push 之后设置 undo_depth，undo 时会弹出错误的记录。
+
+### 2. state_hash 必须是确定性的
+
+对于相同的游戏状态，`state_hash()` 必须始终返回相同的哈希值。常见错误：
+- 忘记哈希某个影响游戏走向的字段（如 current_player）
+- 使用了内存地址或指针值
+- 没有处理 `include_hidden_rng` 参数
+
+### 3. game.json 的 feature_dim 和 action_space 必须和 encoder 一致
+
+`config/game.json` 中的 `feature_dim` 和 `action_space` 必须精确匹配 `IFeatureEncoder` 的 `feature_dim()` 和 `action_space()` 返回值。不一致会导致：
+- 训练时 PyTorch 模型输入/输出维度错误
+- ONNX 推理时 tensor shape mismatch crash
+
+### 4. 不要做棋盘旋转（canonicalize_action）
+
+早期版本 `IFeatureEncoder` 提供了 `canonicalize_action` / `decanonicalize_action` 钩子，允许把棋盘旋转到「当前玩家视角」。实测这是陷阱：
+
+- 格子旋转容易写对，但和格子绑定的附加结构（如 Quoridor 墙的「挡哪两条边」的语义）非常容易旋转错
+- 写错时训练看上去能跑，loss 正常下降，但某一方的策略永远学不出来（因为旋转后的动作 id 对应的物理语义根本和 encoder 看到的局面不匹配）
+- 这类 bug 极难被发现，Quoridor 训不动就是这么来的
+
+正确做法：**不旋转棋盘**。视角处理只做「我的特征 / 对手的特征」的交换（把 perspective_player 放前面，对手放后面），再加一个 scalar 特征告诉网络「我是先手还是后手」（或等价的「我走哪个方向」）。网络自己会学到 P0/P1 的不对称，省下来的复杂度远超过这个 scalar 的代价。
+
+### 5. do_action_fast 和 undo_action 必须完美逆操作
+
+`undo_action` 必须将状态精确恢复到 `do_action_fast` 之前的状态。常见遗漏：
+- 忘记恢复 `current_player`、`winner`、`terminal`
+- 忘记恢复 score 数组
+- 忘记清除放置的棋子/墙/牌
+
+这个 bug 特别隐蔽：MCTS 的 tree search 重度依赖 do/undo 循环，状态恢复不完整会导致搜索树污染，表现为莫名其妙的走法。
+
+### 6. 随机游戏的 rng_nonce() 必须在每次随机事件后变化
+
+`default_stochastic_detector` 通过比较 `rng_nonce()` 的变化来检测随机转移。如果你的游戏有隐藏信息或随机事件（如翻牌、抽卡），`rng_nonce()` 必须在每次这类事件后返回不同的值。否则 NoPeek 系统无法正确工作。
+
+### 7. 使用 checked_cast 而非 static_cast 做状态类型转换
+
+引擎提供了 `board_ai::checked_cast<T>(state)` 辅助函数，它在 cast 失败时抛出 `std::invalid_argument`。在 Rules 和 Encoder 的实现中，始终使用 `checked_cast` 而非 `static_cast` 来确保类型安全。
+
+### 8. legal_actions 在 terminal 状态必须返回空
+
+如果 `is_terminal()` 为 true，`legal_actions()` 必须返回空 vector。否则 selfplay 循环不会正确终止，可能导致无限循环或崩溃。
+
+### 9. 多人变体的 feature_dim 和 2p 不同
+
+如果你的游戏支持 3p/4p 变体，**每个变体的 feature_dim 通常不相等**。因为 encoder 会为每个对手编码独立的特征通道——2p 有 1 个对手通道，3p 有 2 个，4p 有 3 个。
+
+实测数据（单位：float 个数）：
+
+| 游戏 | 2p | 3p | 4p |
+|------|-----|-----|-----|
+| Splendor | 295 | 355 | 415 |
+| Azul | 163 | 235 | 307 |
+
+**影响**：
+- `game.json` 中的 `feature_dim` 只记录了 2p 的值——因为 3p/4p 变体共享同一个 `game.json`
+- 多人变体的 encoder 在运行时报告正确的 `feature_dim()`，**网络创建和 ONNX 导出必须使用 encoder 报告的值**，不能从 config 文件读
+- **每个人数变体需要独立训练独立的网络**——2p 模型无法用于 3p/4p 对局（tensor shape 不匹配）
+
+**常见错误**：
+
+```python
+# 错：用 config 里的 feature_dim 创建 3p 模型
+cfg = load_game_config("splendor")  # feature_dim=295, 但 3p 实际是 355
+net = PVNet(cfg["feature_dim"], ...)  # shape 错误
+
+# 对：用 encoder 报告的实际值
+info = dinoboard_engine.encode_state("splendor_3p", seed=42)
+net = PVNet(info["feature_dim"], ...)  # 355, 正确
+```
+
+**建议**：如果要支持多人变体训练，每个变体应有独立的训练配置（或由 pipeline 动态查询 encoder 的 feature_dim），不能假设和 2p 相同。
+
+---
+
+# 设计决策（DEC）
+
+以下条目记录显式架构决策（不是 bug 修复），作用域跨越框架，未来重构时必须显式确认或迁移。
+
+## [DEC-001] 旧 2p 标量价值头永久兼容（显式契约，不是 BUG）
+
+### 背景
+
+引入 N-dim value head 之前，所有 2p 游戏（tictactoe / quoridor 2p / splendor 2p / azul 2p / loveletter 2p / coup 2p）训练出的 `model_best.onnx` 都是 `[1, 1]` 标量输出 = perspective player 在 [-1, 1] 上的期望价值。这些模型已经在 web 对局、录像分析、智能提示、eval 流水线中被反复使用，重新训练成本不可忽视。
+
+### 契约
+
+`OnnxPolicyValueEvaluator::evaluate`（`engine/infer/onnx_policy_value_evaluator.cpp`）在 `value_len == 1 && num_players == 2` 时显式按 zero-sum 把标量 `v` 展开为 `(v_perspective, -v_opponent)` 并返回长度 2 的 values 向量。下游一切（`net_mcts.cpp` 的 leaf backup、`bindings/py_engine.cpp` 暴露的 `root_values` / `action_values`、`platform/game_service/pipeline.py` 的 winrate pill / drop-score）都是维度无关的，不需要也不应该有 scalar-aware 分支。
+
+3p+ 的 `value_len == 1` 必须抛错——zero-sum 在 N>2 没有唯一分解，silent broadcast 违反 "No silent degradation" 原则。
+
+### 回归保护
+
+`tests/framework/test_scalar_value_head_compat.py` 把以下行为钉死：
+
+- 标量 `[1, 1]` ONNX 在 `GameSession.get_ai_action` / selfplay / arena 三条路径都能跑，`root_values` 长度=2 且 zero-sum。
+- `pipeline._human_wr_from_stats` / `_human_wr_for_action` 在标量模型上返回 [0, 1] 之间的胜率，且两个玩家胜率互补。
+- 3p loveletter + 标量 head 必须抛 `value output length` 错误。
+
+### 教训
+
+旧二阶段模型（pre-N-dim）+ 新代码（N-dim 期望）是一种隐性 ABI。重构 value 解码路径时（任何对 `OnnxPolicyValueEvaluator::evaluate` value branch 的修改），必须先确认 scalar 2p 分支保留或显式迁移；一行删掉就会让所有 2p 旧模型悄无声息地失效——症状是 web 胜率/分析直接 throw `value output length 1 for 2 players` 之类的运行期错误，没有 evaluator 这一层兜底就根本走不通推理路径。
+
+---
+
+## [DEC-002] Warmstart 并入 heuristic_guidance schedule
+
+**类型**：架构决策（不是 BUG）
+**日期**：2026-05-08
+
+### 决策
+
+删除独立的 warm start 阶段（`_worker_warm_start` + 一次性收集 N 局 + 跑 M epoch + 导出 `model_warm.onnx` + 种子 replay buffer 整套约 90 行）。把它的角色完全并入 `heuristic_guidance` 三段式 schedule（hold → 线性衰减 → 0）。`heuristic_guidance_initial_ratio = 1.0` + 大 `heuristic_guidance_hold_steps` 等价于"前 N 步 100% 启发式自博弈"，样本走主 replay buffer，每步训练。
+
+### 配置变化
+
+废弃（出现即 `raise ValueError`）：
+
+- `warm_start_episodes` / `warm_start_epochs` / `warm_start_heuristic` / `warm_start_temperature`
+
+新增 / 拆分：
+
+- `heuristic_guidance_hold_steps`：hold 期长度（前 N 步锁在 `initial_ratio`）
+- `heuristic_guidance_temperature`：**selfplay** 启发式分支温度（warm 期多样性，旧 `warm_start_temperature` 的延续）
+- `heuristic_temperature`：**eval vs heuristic** 时启发式对手温度（强度基准，独立于 selfplay）
+
+旧 `warm_start_temperature` 与 `heuristic_temperature` 的语义混淆（同一温度用于两个完全不同目标）就此消除。
+
+### 旧痛点 → 新方案对应
+
+1. **warmstart 局数受内存限制** → 三段式每步只收集 `episodes_per_step` 局，进 deque maxlen，永远不会爆。
+2. **N epoch full pass 相关性高** → hold 期每步只抽 `train_batches_per_step` 个 mini-batch（默认 3），样本随 replay buffer 自然 decorrelate。
+3. **配置面冗余** → 4 + 3 = 7 键 → 5 键（去掉 4 个 warm_start_*，加 1 个 hold_steps + 1 个 temperature 拆分）。
+4. **`model_warm.onnx` 特殊路径** → 删除。selfplay 在 hold 期 `heuristic_guidance_ratio = 1.0` 时，`use_heuristic` 分支结构性 short-circuit 不调 evaluator，即使读 `model_init.onnx` 也根本不评估，所以特殊导出多余（参考 `engine/runtime/selfplay_runner.cpp:93-192`）。
+
+### 训练增强屏蔽（结构性，非配置）
+
+hold 期 `heuristic_guidance_ratio = 1.0` 时，selfplay_runner 的 `use_heuristic` 分支在 `continue` 之前完全不触碰 dirichlet / tail_solve / training_filter / simulations。屏蔽是结构性的，不依赖把这些选项配 0；用户依然可以保留它们的全局配置，hold 期自然不生效，hold 之后 ratio 衰减时按调度概率混合走 MCTS 时这些增强才生效。
+
+### 兼容旧 `model_warm.onnx`
+
+外部脚本如果还引用 `models/<game>/model_warm.onnx`（例如旧的 arena 比对命令），改读 `model_init.onnx`（hold 期开始前的初始网络快照）或 `model_step_NNNNN.onnx`（按 `save_every` 存档）。
+
+### 迁移示例
+
+旧 `quoridor` 配置：
+```
+"warm_start_episodes": 800,
+"warm_start_epochs": 10,
+"warm_start_heuristic": true,
+"warm_start_temperature": 3.0,
+```
+
+新等价：
+```
+"heuristic_guidance_hold_steps": 8,
+"heuristic_guidance_steps": 200,
+"heuristic_guidance_initial_ratio": 1.0,
+"heuristic_guidance_temperature": 3.0,
+```
+
+折算依据：旧 warmstart 总有效样本数 ≈ `warm_start_episodes`（一个样本被训 `warm_start_epochs` 次，但相关性高，按一次计入）。新方案每步 `episodes_per_step = 100` 局；hold 8 步 ≈ 800 局，等量。`decay_end = 200` 让网络在 hold 期之后再有 ~200 步线性衰减平滑接管。
+
+### 教训
+
+- **重复 abstraction 是配置的债**。两条几乎同样目标（启发式当老师）的路径并存几个月，每加一个游戏就要在两套语义之间选——选错只会在多周训练后才暴露。统一到一条 schedule 后，hold 期 vs 衰减期 vs 0 期的过渡是一条平滑曲线，没有"warmstart 结束-MCTS 开始"那个突变点。
+- **特殊路径多一个就多一个失败点**。`model_warm.onnx` 在 BUG-010（init / warm 同 hash）和 BUG-011（silent ONNX 退化）里都参与过排查，但它本身不解决任何问题——只是 warmstart 阶段为了"区分 init 和 warmed 的网络"留下来的中间产物。删掉之后这个角色由 `model_init.onnx`（已存在）+ `model_step_NNNNN.onnx`（存档机制已有）覆盖，不留特殊点。
+
+---
 # 框架层 Issues
 
 以下所有 issue 都位于 `engine/` / `engine/runtime/` / `engine/search/` / `training/` / `bindings/` / `platform/` ——修改框架代码前应通读，跨所有游戏生效。
@@ -505,96 +704,6 @@ current_model_path = "model_warm.onnx"
 
 ---
 
-## 通用踩坑事项
-
-### 1. UndoToken 的 undo_depth 必须在 push 前设置
-
-```cpp
-UndoToken token{};
-token.undo_depth = static_cast<std::uint32_t>(s->undo_stack.size());  // push 之前！
-// ... push UndoRecord ...
-// ... 修改状态 ...
-return token;
-```
-
-如果在 push 之后设置 undo_depth，undo 时会弹出错误的记录。
-
-### 2. state_hash 必须是确定性的
-
-对于相同的游戏状态，`state_hash()` 必须始终返回相同的哈希值。常见错误：
-- 忘记哈希某个影响游戏走向的字段（如 current_player）
-- 使用了内存地址或指针值
-- 没有处理 `include_hidden_rng` 参数
-
-### 3. game.json 的 feature_dim 和 action_space 必须和 encoder 一致
-
-`config/game.json` 中的 `feature_dim` 和 `action_space` 必须精确匹配 `IFeatureEncoder` 的 `feature_dim()` 和 `action_space()` 返回值。不一致会导致：
-- 训练时 PyTorch 模型输入/输出维度错误
-- ONNX 推理时 tensor shape mismatch crash
-
-### 4. 不要做棋盘旋转（canonicalize_action）
-
-早期版本 `IFeatureEncoder` 提供了 `canonicalize_action` / `decanonicalize_action` 钩子，允许把棋盘旋转到「当前玩家视角」。实测这是陷阱：
-
-- 格子旋转容易写对，但和格子绑定的附加结构（如 Quoridor 墙的「挡哪两条边」的语义）非常容易旋转错
-- 写错时训练看上去能跑，loss 正常下降，但某一方的策略永远学不出来（因为旋转后的动作 id 对应的物理语义根本和 encoder 看到的局面不匹配）
-- 这类 bug 极难被发现，Quoridor 训不动就是这么来的
-
-正确做法：**不旋转棋盘**。视角处理只做「我的特征 / 对手的特征」的交换（把 perspective_player 放前面，对手放后面），再加一个 scalar 特征告诉网络「我是先手还是后手」（或等价的「我走哪个方向」）。网络自己会学到 P0/P1 的不对称，省下来的复杂度远超过这个 scalar 的代价。
-
-### 5. do_action_fast 和 undo_action 必须完美逆操作
-
-`undo_action` 必须将状态精确恢复到 `do_action_fast` 之前的状态。常见遗漏：
-- 忘记恢复 `current_player`、`winner`、`terminal`
-- 忘记恢复 score 数组
-- 忘记清除放置的棋子/墙/牌
-
-这个 bug 特别隐蔽：MCTS 的 tree search 重度依赖 do/undo 循环，状态恢复不完整会导致搜索树污染，表现为莫名其妙的走法。
-
-### 6. 随机游戏的 rng_nonce() 必须在每次随机事件后变化
-
-`default_stochastic_detector` 通过比较 `rng_nonce()` 的变化来检测随机转移。如果你的游戏有隐藏信息或随机事件（如翻牌、抽卡），`rng_nonce()` 必须在每次这类事件后返回不同的值。否则 NoPeek 系统无法正确工作。
-
-### 7. 使用 checked_cast 而非 static_cast 做状态类型转换
-
-引擎提供了 `board_ai::checked_cast<T>(state)` 辅助函数，它在 cast 失败时抛出 `std::invalid_argument`。在 Rules 和 Encoder 的实现中，始终使用 `checked_cast` 而非 `static_cast` 来确保类型安全。
-
-### 8. legal_actions 在 terminal 状态必须返回空
-
-如果 `is_terminal()` 为 true，`legal_actions()` 必须返回空 vector。否则 selfplay 循环不会正确终止，可能导致无限循环或崩溃。
-
-### 9. 多人变体的 feature_dim 和 2p 不同
-
-如果你的游戏支持 3p/4p 变体，**每个变体的 feature_dim 通常不相等**。因为 encoder 会为每个对手编码独立的特征通道——2p 有 1 个对手通道，3p 有 2 个，4p 有 3 个。
-
-实测数据（单位：float 个数）：
-
-| 游戏 | 2p | 3p | 4p |
-|------|-----|-----|-----|
-| Splendor | 295 | 355 | 415 |
-| Azul | 163 | 235 | 307 |
-
-**影响**：
-- `game.json` 中的 `feature_dim` 只记录了 2p 的值——因为 3p/4p 变体共享同一个 `game.json`
-- 多人变体的 encoder 在运行时报告正确的 `feature_dim()`，**网络创建和 ONNX 导出必须使用 encoder 报告的值**，不能从 config 文件读
-- **每个人数变体需要独立训练独立的网络**——2p 模型无法用于 3p/4p 对局（tensor shape 不匹配）
-
-**常见错误**：
-
-```python
-# 错：用 config 里的 feature_dim 创建 3p 模型
-cfg = load_game_config("splendor")  # feature_dim=295, 但 3p 实际是 355
-net = PVNet(cfg["feature_dim"], ...)  # shape 错误
-
-# 对：用 encoder 报告的实际值
-info = dinoboard_engine.encode_state("splendor_3p", seed=42)
-net = PVNet(info["feature_dim"], ...)  # 355, 正确
-```
-
-**建议**：如果要支持多人变体训练，每个变体应有独立的训练配置（或由 pipeline 动态查询 encoder 的 feature_dim），不能假设和 2p 相同。
-
----
-
 ## [BUG-013] ONNX 不是每步导出，selfplay 用旧模型
 
 **状态**：已修复
@@ -674,59 +783,6 @@ z_values 为空的路径（非终局截断，无 adjudicator）仍然存在。`r
 ### 教训
 
 mask 机制有两种语义：(1) "不合法，不存在"——应该 mask 掉；(2) "合法但不好"——应该让模型学到概率为 0。Training filter 属于后者，不能复用 legal mask 通道。
-
----
-
-## [BUG-017] SplendorBeliefTracker 偷看牌堆内容
-
-**分类**：游戏层（Splendor）— 开发新游戏时请参考此案例避免 tracker 读 state 隐藏字段
-**状态**：已修复
-**文件**：`games/splendor/splendor_net_adapter.cpp`
-**严重程度**：高 — AI 精确知道牌堆组成，等于作弊
-
-### 问题描述
-
-`SplendorBeliefTracker::randomize_unseen` 直接读取 `data.decks` 来构建 unseen pool——等于 AI 知道牌堆里有哪些牌。belief tracker 本应是"玩家的记忆"，只通过 `init` 和 `observe_action` 积累信息来推导 unseen pool。
-
-```cpp
-// 修复前（偷看）：
-for (auto cid : d.decks[tier]) {
-    unseen_pool.push_back(cid);  // 直接从真实牌堆读
-}
-
-// 修复后（正确）：
-for (int cid = 0; cid < 90; ++cid) {
-    if (seen_cards_.find(cid) == seen_cards_.end() && card_pool[cid].tier == tier) {
-        unseen_pool.push_back(cid);  // 从 全卡池-seen 推导
-    }
-}
-```
-
-### 根因分析
-
-初始实现把 `randomize_unseen` 当成"shuffle 已知内容"，但正确语义是"基于观察推导可能的内容并采样"。两者在单机自我对弈中看似等价（state 对自己可见），但在对外 API 场景（真实隐藏状态在别人服务器上）下完全不可行。
-
-### 修复方案
-
-1. `SplendorBeliefTracker` 增加 `seen_cards_: std::unordered_set<int>` 和 `initialized_: bool` 成员
-2. `init(state, player)` 首次调用时扫描所有公开位置（tableau + visible reserved + 自己的 reserved）建立 seen set
-3. `observe_action(before, action, after)` 增量追踪新揭示的卡：
-   - BuyFaceup/ReserveFaceup → 比较 state_after 的 tableau 与 state_before，新出现的 card_id 加入 seen
-   - ReserveDeck 且 actor == perspective_player → 新预留的暗牌 card_id 加入 seen
-4. `randomize_unseen(state, rng)` 用 `全卡池(90) - seen_cards_` 按 tier 分组构建 unseen pool，shuffle 后回填
-
-### 验证
-
-新增 5 个测试（`TestSplendorBeliefTracker`）验证：
-- 随机化后的牌堆组成与真实牌堆不同（证明不偷看）
-- tableau 卡不出现在随机化牌堆中
-- 牌堆大小不变
-- 多次随机化产生不同结果
-- 无重复卡牌
-
-### 教训
-
-**belief tracker 是玩家的记忆，不是上帝视角**。`randomize_unseen` 的正确语义是"根据我所知推测未知"，不是"重排我已知的真相"。测试验证方式：`全卡池 - seen` 与 `真实 deck 内容` 在有牌被购买后必然不同——如果每次都相同，说明在偷看。
 
 ---
 
@@ -996,52 +1052,6 @@ std::vector<std::unique_ptr<OnnxPolicyValueEvaluator>> ai_evaluators_;
 2. **"现有 API 模式测试过了，让其他地方也用 API 模式的路径"不一定对**：本次第一版方案就是这么说的，但深挖发现 API 模式自己也没物理隔离，只是"对手字段是随机占位"的偶然掩盖。正确方案是直接在 `GameSessionWrapper` 层做物理隔离。
 3. **当用户反复让检测某个怀疑方向时，比起反复跑既有测试、应该主动设计一个能直接测量该怀疑的新测试**。BUG-023 本来如果更早写黑盒命中率测试，就不需要用户催五次。
 4. **架构层修复优先于补丁层修复**。BUG-023 单个修的话是 5 行 nonce bump，但一眼看上去不知道是不是还有同类 bug 漏。架构修完，一整类根本问题清零。
-
----
-
-## [BUG-023] Love Letter AI 永远猜对 Guard — terminal-by-elimination 漏过 NoPeek 检测
-
-**分类**：游戏层（Love Letter）— 只在旧的 NoPeek 架构下成立，**ISMCTS 重构后不再可能**（root 采样不依赖 rng_nonce 触发）。保留作为"游戏规则中隐藏-信息-依赖动作要触发随机化"的历史教训
-**状态**：已修复（后被 ISMCTS 整体架构替代）
-**文件**：`games/loveletter/loveletter_rules.cpp`
-**严重程度**：严重 — AI 对隐藏信息游戏直接读取真实状态决策，相当于作弊
-
-### 问题描述
-
-用户实测发现 Love Letter AI 打 Guard 时命中率异常高（后经量化：无 Priest/Baron 先验的情况下命中率 76%，随机基线 14.3%）。既有两层 AI API 分离测试（`test_ai_api_separation` 和 `test_api_belief_matches_selfplay`）全部通过，说明 API 契约层面没有泄漏；feature encoder 直检也确认不经由特征通道泄漏对手手牌。
-
-### 根因
-
-问题在 **NoPeek traversal limiter 的激活条件**。框架用"rng_nonce 是否改变"判定 stochastic 转移（`default_stochastic_detector`），只有跨越 stochastic 边界时才 `randomize_unseen` + 重新应用动作。
-
-但 Love Letter 的 Guard 正确猜中→对手淘汰→`advance_turn` 开头 `check_end_game` 发现 2p 终局→直接 return，**不抽牌**→`draw_nonce` 不变→stochastic_detector 返回 false→NoPeek 不触发→MCTS 看到的 child 是用**真实手牌**算出来的终局 win 结果（Q=1.0）。
-
-对比猜错分支：对手不死→`advance_turn` 抽牌→nonce 变→NoPeek 正常触发→随机化后重算 Guard→有一定概率命中→Q ≈ 1/7。
-
-结果：MCTS 把"猜中对应的 guess"这条分支估得 Q=1.0，其他 guess 都是 ~0.14。AI 每次都精确选中真实手牌那一个 guess。本质上 MCTS 偷看了一次真实状态来做局部决策。
-
-同类问题存在于 Baron（比大小直接淘汰到终局）、Prince（牌堆空了 draw 不到会不抽，此时无 nonce 变化）、King（交换手牌无 draw）。Priest 不受影响——其效果是 `hand_exposed[target]=1`，并不依赖隐藏信息做分支。
-
-### 修复
-
-`loveletter_rules.cpp::do_action_fast` 在 switch 之后、`advance_turn` 之前，对 Guard/Baron/Prince/King 无条件 `++d.draw_nonce`。这样任何读取过隐藏手牌的动作都会产生 nonce 变化，NoPeek 正常触发并随机化对手手牌。
-
-修复前后实测（2p，80 盘，AI=player0，对手随机）：
-
-| 指标 | 修复前 | 修复后 | 基线 |
-|------|--------|--------|------|
-| Guard 无先验命中率 | 76.0% | 14.0% | 14.3% |
-| tracker 有先验时的命中率 | ~100% | ~100% | — |
-
-修复后命中率严格匹配 1/7 基线；有 Priest/Baron 先验时仍然 100% 命中（合法使用公开信息）。
-
-### 教训
-
-1. **nonce-based stochastic detector 的语义是"存在 RNG 消耗"，而我们真正需要的语义是"转移结果依赖观察者不知道的信息"**。这两者大多数时候等价（draw 是最常见的隐藏消耗），但在 terminal-by-elimination 或 deck-empty 的边界上不等价。此类游戏中所有"读隐藏手牌"的动作都需要显式 nonce 增量。
-2. **两层 API 分离测试不能抓这类 bug**。现有测试覆盖"API 契约是否携带隐藏字段"和"observation-only belief 是否等价于 selfplay belief"，但不覆盖 "MCTS 在 GameSession 路径下实际搜索的世界是否真的用了 belief 而不是 true state"。修复后应补一个"AI 决策不应显著优于无先验基线"的统计测试。
-3. **用户主观"AI 太强"的反馈在隐藏信息游戏里永远是硬信号**，要优先怀疑泄漏，不要先辩护"也许是合理推断"。本次排查先假设是合理的 Priest 先验推断（对 AI 有利的解释），险些漏掉 bug；直到跑量化检查才暴露。
-4. **新游戏接入 Checklist 里应加一条**：对隐藏信息读取型动作（Guard/Baron/King 类），确认 nonce 会在应用时变化。在 `docs/NEW_GAME_TEST_GUIDE.md` 里加一个对应测试模板。
-5. 现有 Coup 暂停开发的理由（诈唬核心游戏 uniform-sampling ISMCTS 不适用）是更抽象的 bias 问题；本 bug 是具体实现问题。两者都属于 ISMCTS 采样逻辑的潜在坑，开发隐藏信息游戏时都要盯。
 
 ---
 
@@ -1320,6 +1330,295 @@ def _rewrite_asset_refs(html: str, web_dir: Path) -> str:
 
 ---
 
+## [BUG-029] tail-solve 采纳 ProvenWin 路径未填 `root_values`，专家模式终局窗口 45s 后才显示
+
+**分类**：框架层（search / web pipeline）
+**状态**：已修复
+**文件**：`engine/search/net_mcts.cpp`、`platform/static/general/pipeline.js`、`tests/framework/test_tail_solve_root_values.py`
+**严重程度**：中（用户可观察）— 体感像彻底卡死
+
+### 症状
+
+Azul 专家模式（`difficulty=expert`，启用分析路径）打到终局，最后一回合的结算/终局动画都不渲染、终局弹窗不出现，浏览器看起来直接“冻死”。等 45 秒后弹一个 timeout。
+体验版（`difficulty=casual`，无分析）能正常终局；情书 / Quoridor 等其他启用 tail-solve 的游戏没出现，因为它们的对局结构很少在“人类该走那一步”的预计算位置触发 ProvenWin 采纳。
+
+### Root cause
+
+`NetMcts::search_root` 中，当 `tail_solver` 返回 `kProvenWin && value >= 1.0` 时走的是“早返回”分支，把 `tail_solved=true` 等字段写好就返回 best_action。但这条路径**没有填 `stats->root_values` 也没有填 `stats->root_edge_values`**，二者保持空 vector。
+
+下游 `pipeline.py::_human_wr_from_stats` 对 `root_values[human_player]` 做下标访问，空 vector 直接 `IndexError`。
+`_pipeline_worker` 的 `except Exception` 捕获后把 `phase` 置为 `"error"`。前端 `pipeline.js` 的 poll 循环只识别 `done` / `idle` 退出，`error` 不退、继续轮询直到 45s 整体 timeout —— 看起来就是“卡住”。
+
+体验版用 `_pipeline_worker_ai_only`，根本不调 `_analyze_user_move`，所以打不到这条空 vector 解码 → 体验版正常终局。问题是“专家模式才有的分析路径 × tail-solve 在人类下一步的预计算位置触发 × `root_values` 空”这三者凑齐才会暴露。
+
+### 修复
+
+1. `engine/search/net_mcts.cpp` ProvenWin 早返回前：填 `root_values` 为 `(actor=+1, others 均分 -1)` 的零和向量；填 `root_edge_values`，被采纳 action 的位置写入同样向量、其余 `0`。语义上 ProvenWin 的胜率本就是 100% / 0%，这只是把它显式表达出来，下游解码路径全部可用。
+2. `platform/static/general/pipeline.js`：把 `phase === "error"` 当成终止条件直接退出 poll 循环并触发 `onError`，避免今后任何 worker 异常都让浏览器静默等满 45s。
+3. `tests/framework/test_tail_solve_root_values.py`：回归测试。从 Azul 2p 局推到 tail-solve 采纳，断言 `root_values` 长度等于 num_players、零和、actor 位置等于 +1，且 `action_values` 含选中 action 且向量与 `root_values` 一致。
+
+### 教训
+
+- “提前返回 + 部分填字段”的优化路径必须把所有下游字段都填到“跟正常路径一样合法”的状态，否则就是另一个 BUG-011 那种 silent contract violation。Stats struct 不是只给 logger 用的，平台层 / web 层都会拿来当导航数据。
+- Web pipeline 的 `phase=error` 必须有显式分支处理。任何能把 worker 推进 `except` 的 bug 都会被 45s timeout 覆盖成“假冒卡死”，让 root cause 极难被注意到。
+- 难度模式（casual / expert）走不同 worker 是个值得记住的差异：casual 不跑 analysis，所以分析路径独有的 bug 不会出现在 casual 复现里——遇到“专家模式才挂”的报告，先 diff `_pipeline_worker` vs `_pipeline_worker_ai_only`。
+
+---
+
+## [BUG-031] Web 隔离 AI 会话没有继承 `tail_solve` 配置（web AI 实际未启用 tail-solve）
+
+**分类**：平台层（Web / 隔离 GameSession）
+**状态**：已修（2026-05-07）
+**文件**：`platform/game_service/sessions.py`、`platform/game_service/pipeline.py`、`platform/game_service/routes.py`
+**严重程度**：高 — silent degradation，用户和开发者都误判 AI 强度
+
+### 问题描述
+
+`web.json` 里的 `tail_solve` 配置（depth_limit / node_budget / time_limit_ms / margin_weight）只在创建主 `GameSession` 时被 `configure_tail_solve()` 调用。但 web AI 落子、precompute、hint fallback、analysis 这些路径都会**新建隔离 GameSession**（为了 hash scope 隔离 + 避免污染主 session 的 belief tracker）。新建的隔离会话默认 `ts_enabled_=false`，**`web.json` 的 tail_solve 配置永远不生效**。
+
+### 影响
+
+- 用户和开发者都误以为 web AI = expert（latest + tail-solve），**实际只是 latest**
+- 所有 "web 看起来强不强"、"expert 是不是真的比 latest 强一档"、"端局收官准不准" 的主观判断全都被这条静默偏置污染
+- Eval / arena 结果用 web 配置作 sanity check 时口径错位
+- 属于 BUG-011（ONNX 未编译 → MCTS 走 uniform 静默几周）那一族
+
+### 症状
+
+Web AI 落子 stats 中 `tail_solve_attempted=0`，但 web.json 里明明配了 tail_solve depth/budget。当时没暴露这个 stat 到响应所以肉眼看不出，打开后端日志能看到 ts 走的是 disabled 路径。
+
+### 修复
+
+1. 把 tail-solve 配置（depth, node_budget, time_limit_ms, margin_weight）存进 `sess` 对象
+2. 所有用于 AI move / precompute / analysis / hint fallback 的隔离 `GameSession` 创建后立刻 `configure_tail_solve()`。涉及 `sessions.py` / `pipeline.py` / `routes.py` 三处
+3. `bindings/py_engine.cpp::get_ai_action()` stats 暴露 `tail_solve_attempted / completed / elapsed_ms`，web 响应透传，"是否真的跑了 tail-solve" 肉眼可验证
+4. 加测试：`tests/web/...` 用 Quoridor 末段 8 步内必胜的局面创建 web session，断言 `r["stats"]["tail_solve_attempted"] >= 1`
+
+### 教训
+
+**用户配置和实际生效之间永远要有 stat 暴露**。这是框架级原则：任何 "配置 → 实际行为" 的中间环节都必须有一个可观测的 stat（通过响应 / 日志 / metric）让运维 / 开发者能一眼验证配置生效了。隔离 GameSession 的创建是看不见的"配置重置"节点，必须显式复制配置。原则写入 CLAUDE.md 或 GAME_DEVELOPMENT_GUIDE.md 的 "隔离 session" 章节。
+
+---
+
+## [BUG-032] Selfplay per-perspective trackers 未被初始化 → randomize_unseen 覆写当前玩家自己的手牌 (OB-011)
+
+### 背景
+
+- BG-008 Phase 2 stage 5 引入 per-perspective trackers（每 seat 一份 tracker，观测事件累积到 game over），替代"每 ply re-init 单例 tracker"的旧路径
+- selfplay_runner 里已经循环 `per_perspective_trackers[p]->init(p, init_obs)` 并在每一步给每个 tracker 喂 `observe_public_event` —— 看起来是完备的
+- MCTS 搜索 acting player 的决策时：`mcts_tracker = per_perspective_trackers[current_player]`，调 `randomize_unseen` 采样一个 belief 相容的隐藏世界
+- 但启用这条路径后 `test_selfplay_sample_integrity[loveletter]` 立刻炸 `DAG node legal-action mismatch`，错误里 `node_edges=[Handmaid, Princess]` 而 `current_legal=[Guard+target1, Prince+self/target1]`
+
+### 根因
+
+`bindings/py_engine.cpp::run_selfplay_episode_py` 的初始化顺序：
+
+```cpp
+runtime::PublicEventExtractor trace_extractor;         // 空 std::function
+runtime::InitialObservationExtractor trace_obs_extractor;  // 空
+if (trace_perspective >= 0) {  // 默认 -1，通常走不进
+  ...
+  trace_extractor = bundle.public_event_extractor;
+  trace_obs_extractor = bundle.initial_observation_extractor;
+}
+...
+run_selfplay_episode(..., trace_extractor, trace_obs_extractor);
+```
+
+`trace_extractor / trace_obs_extractor` 这两个名字误导——它们**不只是 trace 专用**。`run_selfplay_episode` 里把它们当成整个 episode 的 `public_event_extractor` 和 `initial_observation_extractor` 用：pp_trackers 的 `init()` 在游戏开始调用时，如果 `initial_observation_extractor` 为空，**直接跳过 init**（`if (per_perspective_trackers[p] && initial_observation_extractor)` 短路），tracker 的 `perspective_player_` 永久停留在默认 `-1`。
+
+然后 MCTS 调 `per_perspective_trackers[0]->randomize_unseen(sim, rng)`：LoveLetter 的 randomize 代码里 "跳过 perspective 自己的 hand" 用的是 `if (p == perspective_player_) continue`。`perspective_player_ == -1` 意味着**没有任何 p 等于它** —— 包括真正的 current player——所以 `d.hand[0]` 被从 unseen 池里重新采样成另一张牌，`d.drawn_card` 同样被 `d.current_player != perspective_player_` 判 true 而覆写。
+
+结果：real root expand 得到的 edges=[Handmaid, Princess]（基于真 hand），sim_state 在 randomize_unseen 后 hand=Guard drawn=Prince（被覆写），legal_actions 完全不一致，DAG 检查炸。
+
+### 症状关键词
+
+- `DAG node legal-action mismatch; selected action X is not legal in current state`
+- `depth=0 step_count=0`（在 root 就炸，因为 randomize_unseen 在 root 前第一次调用）
+- node_edges 和 current_legal 两组动作**对应完全不同的 (hand, drawn) 组合**
+- 只在启用 per_perspective trackers 的 routing 后出现；legacy 单 tracker 路径 `belief_tracker->init(player, obs)` 在 selfplay_runner 里每 ply 显式调所以看不到
+
+### 为什么 legacy 路径不炸
+
+Legacy `belief_tracker` 路径在 selfplay_runner 的 `else if (belief_tracker)` 分支里显式调 `belief_tracker->init(player, main_init_obs)` —— 这里也用到 `initial_observation_extractor`，但它 re-init 时即使 obs 为空 map，`init()` 内部实现（以 LoveLetter 为例）是 `it_h != end() ? cast : 0` —— own_hand_ 被置 0，perspective_player_ **正确**设为 player。所以 legacy 单 tracker 是安的。
+
+问题特有于"不在 selfplay_runner 自己 re-init、而是依赖 py_engine 之前把 extractor 传进来"的 pp_trackers 路径。
+
+### 修复
+
+`bindings/py_engine.cpp::run_selfplay_episode_py`：无条件从 bundle 填 extractor，不再让 `trace_perspective >= 0` 这个 tracing flag 门禁它：
+
+```cpp
+runtime::PublicEventExtractor trace_extractor = bundle.public_event_extractor;
+runtime::InitialObservationExtractor trace_obs_extractor =
+    bundle.initial_observation_extractor;
+std::unique_ptr<GameBundle> trace_bundle;
+IBeliefTracker* trace_bt = nullptr;
+if (trace_perspective >= 0) {
+  trace_bundle = ...;
+  trace_bt = trace_bundle->belief_tracker.get();
+  if (!trace_bt || !trace_extractor) throw ...;
+}
+```
+
+并在 `LoveLetterBeliefTracker::randomize_unseen` 入口加一道硬 assertion：
+
+```cpp
+if (perspective_player_ < 0 || perspective_player_ >= NPlayers) {
+  throw std::runtime_error(
+      "LoveLetterBeliefTracker::randomize_unseen called with uninitialized "
+      "perspective_player_=" + std::to_string(perspective_player_) +
+      " (init() must run before search)");
+}
+```
+
+这条 assertion 是**框架级契约**：任何 tracker 在被 search 调用前必须已 init。下次有人写新游戏的 belief_tracker 或重构 runner 时，如果 init 被漏掉，这里会炸而不是静默污染。
+
+### 教训
+
+1. **变量名带有"trace"字样但被用于通用路径，是最容易踩的坑**。`trace_extractor / trace_obs_extractor` 原本只给 trace 用，后来 BG-008 stage 5 复用它们承载 pp_trackers 的 extractor 需求，名字没改。下次同类扩展要么重命名（`public_event_extractor / initial_observation_extractor`），要么在 bundle 上单独引一对字段给 pp_trackers 用。
+
+2. **默认值 `-1` 的 sentinel + "跳过 perspective" 的语义是个静默泄漏陷阱**。LL 的 randomize 代码用 `if (p == perspective_player_) continue` 跳过自己——perspective_player_=-1 时这个条件对任何 p 都 false，所有 p 都被覆写。改成 assertion 前，这是一个**"不崩溃、不报错、只是悄悄把当前玩家的手牌换掉"**的 bug，在 MCTS 没 DAG 检查的话永远抓不到。属于 BUG-028 / BUG-030 族的"silent correctness 漏洞"——只要有 silent 路径能让不变式被绕过，就一定要补 assertion。
+
+3. **用 DAG 校验撞出逻辑 bug 是这套框架的强项，要珍惜**。`DAG node legal-action mismatch` 本来是为"hash scope 漏字段"设计的错误信号，这次它抓到的是"tracker 没 init"这种相邻问题——因为 tracker 错了会让 sim_state 和 real state 出现公共观测不一致，表现出来就是 hash 撞上了但 legal 对不齐。下次遇到 DAG mismatch，除了查 hash 字段覆盖，还要查"tracker 是不是也出了别的错让状态被污染"。
+
+4. **修复不只是打补丁，还要防守**。这次修 py_engine 的 extractor wiring 是主菜，但在 LL 的 randomize_unseen 入口加"perspective 必须 init 过"的 assertion 是主菜之外的保险——未来任何新的 runner / binding 如果漏 init，这里会崩，不会再"silently 降级再让 DAG 检查去撞"。Coup 的 belief tracker 同样应该加一道类似 assertion（参见 DC 2026-05-07 笔记，建个 SM 任务跟进）。
+
+---
+
+## [BUG-034] 体验版（casual）AI 走子后没显示对手胜率——前端 difficulty gate 把已经算好的数字扔了 (OB-013)
+
+### 背景
+
+- Web 前端有"显示胜率"开关（默认开），AI 走完一步后 info panel 应该显示这一步对人类胜率的估值
+- 用户反馈"体验版（casual）AI 走完没胜率"
+- 第一反应是"casual 不跑 analysis pipeline，所以没胜率数据"——错
+
+### 根因
+
+数据其实一直到了前端：
+1. `_pipeline_worker_ai_only`（casual 路径）→ `_commit_ai_move` → `pipe["ai_stats"] = ai_stats`（pipeline.py:267）。AI 自己 MCTS 跑完产生的 `root_values` 已经塞进 pipeline status
+2. `/pipeline` endpoint 透出 `ai_stats`（routes.py:163）
+3. poller `pipeline.js` 从 `st.ai_stats.root_values[humanPlayer]` 算出 `humanWinrate` 传给 `onDone`
+4. **但** `app.js:445` 把赋值 `state.lastAiWinrate = result.humanWinrate` 关在 `if (state.difficulty === 'expert')` 里。casual 拿到 humanWinrate 立刻扔。
+
+`sidebar.getShowWinrate()` 用户开关是另一条独立路径（在 `setWinrate` 调用处守门）；这次的 difficulty gate 是冗余的、且直接掐死了 casual 的合理用例。
+
+### 修复
+
+`platform/static/general/app.js`：删 difficulty gate，casual / expert 都把 humanWinrate 赋给 state。注释说明：casual 跳过的是 analysis pipeline（drop-score、smart hint），不是 AI 自己的 MCTS——AI 自己的 root_values 一直都在。
+
+### 教训
+
+1. **debug 跨服务流时先 trace 端到端数据流，不要靠直觉猜哪一段没产数据**。本来想在 backend casual 路径加 root_values 上报，结果 backend 早就上报了，问题在 frontend 一行 difficulty gate。直觉走的是"casual = 没数据"，实际走的是"casual = 数据被前端最后一步丢了"。下次类似 bug：先用 devtools 看 `/pipeline` 响应里有没有数据，再决定改哪一端。
+
+2. **同一个用户开关不要在多个地方守门**。`getShowWinrate()` 在 `setWinrate` 调用处已经守了"用户不要看胜率"，`difficulty === 'expert'` 的 gate 是另一个角色（"casual 难度不该有胜率"），但这两个角色有重叠——如果用户在 casual 也想看，开关明明开着却看不见，UX 矛盾。原则：**用户开关的语义边界要单一**，每个开关只在唯一一处守门，避免"开关开了但被另一处守门掐掉"的隐性失效。
+
+---
+
+# 游戏层 Issues
+
+以下所有 issue 都位于 `games/<name>/` 下——开发新游戏时**应着重参考本节**，里面的模式（Splendor 不偷看、Love Letter 揭牌事件、Azul 动画等）是游戏开发者常见的踩坑点。
+
+## [BUG-017] SplendorBeliefTracker 偷看牌堆内容
+
+**分类**：游戏层（Splendor）— 开发新游戏时请参考此案例避免 tracker 读 state 隐藏字段
+**状态**：已修复
+**文件**：`games/splendor/splendor_net_adapter.cpp`
+**严重程度**：高 — AI 精确知道牌堆组成，等于作弊
+
+### 问题描述
+
+`SplendorBeliefTracker::randomize_unseen` 直接读取 `data.decks` 来构建 unseen pool——等于 AI 知道牌堆里有哪些牌。belief tracker 本应是"玩家的记忆"，只通过 `init` 和 `observe_action` 积累信息来推导 unseen pool。
+
+```cpp
+// 修复前（偷看）：
+for (auto cid : d.decks[tier]) {
+    unseen_pool.push_back(cid);  // 直接从真实牌堆读
+}
+
+// 修复后（正确）：
+for (int cid = 0; cid < 90; ++cid) {
+    if (seen_cards_.find(cid) == seen_cards_.end() && card_pool[cid].tier == tier) {
+        unseen_pool.push_back(cid);  // 从 全卡池-seen 推导
+    }
+}
+```
+
+### 根因分析
+
+初始实现把 `randomize_unseen` 当成"shuffle 已知内容"，但正确语义是"基于观察推导可能的内容并采样"。两者在单机自我对弈中看似等价（state 对自己可见），但在对外 API 场景（真实隐藏状态在别人服务器上）下完全不可行。
+
+### 修复方案
+
+1. `SplendorBeliefTracker` 增加 `seen_cards_: std::unordered_set<int>` 和 `initialized_: bool` 成员
+2. `init(state, player)` 首次调用时扫描所有公开位置（tableau + visible reserved + 自己的 reserved）建立 seen set
+3. `observe_action(before, action, after)` 增量追踪新揭示的卡：
+   - BuyFaceup/ReserveFaceup → 比较 state_after 的 tableau 与 state_before，新出现的 card_id 加入 seen
+   - ReserveDeck 且 actor == perspective_player → 新预留的暗牌 card_id 加入 seen
+4. `randomize_unseen(state, rng)` 用 `全卡池(90) - seen_cards_` 按 tier 分组构建 unseen pool，shuffle 后回填
+
+### 验证
+
+新增 5 个测试（`TestSplendorBeliefTracker`）验证：
+- 随机化后的牌堆组成与真实牌堆不同（证明不偷看）
+- tableau 卡不出现在随机化牌堆中
+- 牌堆大小不变
+- 多次随机化产生不同结果
+- 无重复卡牌
+
+### 教训
+
+**belief tracker 是玩家的记忆，不是上帝视角**。`randomize_unseen` 的正确语义是"根据我所知推测未知"，不是"重排我已知的真相"。测试验证方式：`全卡池 - seen` 与 `真实 deck 内容` 在有牌被购买后必然不同——如果每次都相同，说明在偷看。
+
+---
+
+## [BUG-023] Love Letter AI 永远猜对 Guard — terminal-by-elimination 漏过 NoPeek 检测
+
+**分类**：游戏层（Love Letter）— 只在旧的 NoPeek 架构下成立，**ISMCTS 重构后不再可能**（root 采样不依赖 rng_nonce 触发）。保留作为"游戏规则中隐藏-信息-依赖动作要触发随机化"的历史教训
+**状态**：已修复（后被 ISMCTS 整体架构替代）
+**文件**：`games/loveletter/loveletter_rules.cpp`
+**严重程度**：严重 — AI 对隐藏信息游戏直接读取真实状态决策，相当于作弊
+
+### 问题描述
+
+用户实测发现 Love Letter AI 打 Guard 时命中率异常高（后经量化：无 Priest/Baron 先验的情况下命中率 76%，随机基线 14.3%）。既有两层 AI API 分离测试（`test_ai_api_separation` 和 `test_api_belief_matches_selfplay`）全部通过，说明 API 契约层面没有泄漏；feature encoder 直检也确认不经由特征通道泄漏对手手牌。
+
+### 根因
+
+问题在 **NoPeek traversal limiter 的激活条件**。框架用"rng_nonce 是否改变"判定 stochastic 转移（`default_stochastic_detector`），只有跨越 stochastic 边界时才 `randomize_unseen` + 重新应用动作。
+
+但 Love Letter 的 Guard 正确猜中→对手淘汰→`advance_turn` 开头 `check_end_game` 发现 2p 终局→直接 return，**不抽牌**→`draw_nonce` 不变→stochastic_detector 返回 false→NoPeek 不触发→MCTS 看到的 child 是用**真实手牌**算出来的终局 win 结果（Q=1.0）。
+
+对比猜错分支：对手不死→`advance_turn` 抽牌→nonce 变→NoPeek 正常触发→随机化后重算 Guard→有一定概率命中→Q ≈ 1/7。
+
+结果：MCTS 把"猜中对应的 guess"这条分支估得 Q=1.0，其他 guess 都是 ~0.14。AI 每次都精确选中真实手牌那一个 guess。本质上 MCTS 偷看了一次真实状态来做局部决策。
+
+同类问题存在于 Baron（比大小直接淘汰到终局）、Prince（牌堆空了 draw 不到会不抽，此时无 nonce 变化）、King（交换手牌无 draw）。Priest 不受影响——其效果是 `hand_exposed[target]=1`，并不依赖隐藏信息做分支。
+
+### 修复
+
+`loveletter_rules.cpp::do_action_fast` 在 switch 之后、`advance_turn` 之前，对 Guard/Baron/Prince/King 无条件 `++d.draw_nonce`。这样任何读取过隐藏手牌的动作都会产生 nonce 变化，NoPeek 正常触发并随机化对手手牌。
+
+修复前后实测（2p，80 盘，AI=player0，对手随机）：
+
+| 指标 | 修复前 | 修复后 | 基线 |
+|------|--------|--------|------|
+| Guard 无先验命中率 | 76.0% | 14.0% | 14.3% |
+| tracker 有先验时的命中率 | ~100% | ~100% | — |
+
+修复后命中率严格匹配 1/7 基线；有 Priest/Baron 先验时仍然 100% 命中（合法使用公开信息）。
+
+### 教训
+
+1. **nonce-based stochastic detector 的语义是"存在 RNG 消耗"，而我们真正需要的语义是"转移结果依赖观察者不知道的信息"**。这两者大多数时候等价（draw 是最常见的隐藏消耗），但在 terminal-by-elimination 或 deck-empty 的边界上不等价。此类游戏中所有"读隐藏手牌"的动作都需要显式 nonce 增量。
+2. **两层 API 分离测试不能抓这类 bug**。现有测试覆盖"API 契约是否携带隐藏字段"和"observation-only belief 是否等价于 selfplay belief"，但不覆盖 "MCTS 在 GameSession 路径下实际搜索的世界是否真的用了 belief 而不是 true state"。修复后应补一个"AI 决策不应显著优于无先验基线"的统计测试。
+3. **用户主观"AI 太强"的反馈在隐藏信息游戏里永远是硬信号**，要优先怀疑泄漏，不要先辩护"也许是合理推断"。本次排查先假设是合理的 Priest 先验推断（对 AI 有利的解释），险些漏掉 bug；直到跑量化检查才暴露。
+4. **新游戏接入 Checklist 里应加一条**：对隐藏信息读取型动作（Guard/Baron/King 类），确认 nonce 会在应用时变化。在 `docs/guide/NEW_GAME_TEST_GUIDE.md` 里加一个对应测试模板。
+5. 现有 Coup 暂停开发的理由（诈唬核心游戏 uniform-sampling ISMCTS 不适用）是更抽象的 bias 问题；本 bug 是具体实现问题。两者都属于 ISMCTS 采样逻辑的潜在坑，开发隐藏信息游戏时都要盯。
+
+---
+
 ## [BUG-028] public hash 混入不可观察随机源，导致 ISMCTS DAG 按隐藏信息分裂
 
 **分类**：游戏层（Azul / Splendor）— 开发新游戏时必须参考此案例审计 `hash_public_fields()`
@@ -1410,67 +1709,6 @@ BG-008 MVP-B 落地之后：`IBeliefTracker::reconcile_state` 虚函数删除；
 
 ---
 
-## [DEC-001] 旧 2p 标量价值头永久兼容（显式契约，不是 BUG）
-
-### 背景
-
-引入 N-dim value head 之前，所有 2p 游戏（tictactoe / quoridor 2p / splendor 2p / azul 2p / loveletter 2p / coup 2p）训练出的 `model_best.onnx` 都是 `[1, 1]` 标量输出 = perspective player 在 [-1, 1] 上的期望价值。这些模型已经在 web 对局、录像分析、智能提示、eval 流水线中被反复使用，重新训练成本不可忽视。
-
-### 契约
-
-`OnnxPolicyValueEvaluator::evaluate`（`engine/infer/onnx_policy_value_evaluator.cpp`）在 `value_len == 1 && num_players == 2` 时显式按 zero-sum 把标量 `v` 展开为 `(v_perspective, -v_opponent)` 并返回长度 2 的 values 向量。下游一切（`net_mcts.cpp` 的 leaf backup、`bindings/py_engine.cpp` 暴露的 `root_values` / `action_values`、`platform/game_service/pipeline.py` 的 winrate pill / drop-score）都是维度无关的，不需要也不应该有 scalar-aware 分支。
-
-3p+ 的 `value_len == 1` 必须抛错——zero-sum 在 N>2 没有唯一分解，silent broadcast 违反 "No silent degradation" 原则。
-
-### 回归保护
-
-`tests/framework/test_scalar_value_head_compat.py` 把以下行为钉死：
-
-- 标量 `[1, 1]` ONNX 在 `GameSession.get_ai_action` / selfplay / arena 三条路径都能跑，`root_values` 长度=2 且 zero-sum。
-- `pipeline._human_wr_from_stats` / `_human_wr_for_action` 在标量模型上返回 [0, 1] 之间的胜率，且两个玩家胜率互补。
-- 3p loveletter + 标量 head 必须抛 `value output length` 错误。
-
-### 教训
-
-旧二阶段模型（pre-N-dim）+ 新代码（N-dim 期望）是一种隐性 ABI。重构 value 解码路径时（任何对 `OnnxPolicyValueEvaluator::evaluate` value branch 的修改），必须先确认 scalar 2p 分支保留或显式迁移；一行删掉就会让所有 2p 旧模型悄无声息地失效——症状是 web 胜率/分析直接 throw `value output length 1 for 2 players` 之类的运行期错误，没有 evaluator 这一层兜底就根本走不通推理路径。
-
----
-
-## [BUG-029] tail-solve 采纳 ProvenWin 路径未填 `root_values`，专家模式终局窗口 45s 后才显示
-
-**分类**：框架层（search / web pipeline）
-**状态**：已修复
-**文件**：`engine/search/net_mcts.cpp`、`platform/static/general/pipeline.js`、`tests/framework/test_tail_solve_root_values.py`
-**严重程度**：中（用户可观察）— 体感像彻底卡死
-
-### 症状
-
-Azul 专家模式（`difficulty=expert`，启用分析路径）打到终局，最后一回合的结算/终局动画都不渲染、终局弹窗不出现，浏览器看起来直接“冻死”。等 45 秒后弹一个 timeout。
-体验版（`difficulty=casual`，无分析）能正常终局；情书 / Quoridor 等其他启用 tail-solve 的游戏没出现，因为它们的对局结构很少在“人类该走那一步”的预计算位置触发 ProvenWin 采纳。
-
-### Root cause
-
-`NetMcts::search_root` 中，当 `tail_solver` 返回 `kProvenWin && value >= 1.0` 时走的是“早返回”分支，把 `tail_solved=true` 等字段写好就返回 best_action。但这条路径**没有填 `stats->root_values` 也没有填 `stats->root_edge_values`**，二者保持空 vector。
-
-下游 `pipeline.py::_human_wr_from_stats` 对 `root_values[human_player]` 做下标访问，空 vector 直接 `IndexError`。
-`_pipeline_worker` 的 `except Exception` 捕获后把 `phase` 置为 `"error"`。前端 `pipeline.js` 的 poll 循环只识别 `done` / `idle` 退出，`error` 不退、继续轮询直到 45s 整体 timeout —— 看起来就是“卡住”。
-
-体验版用 `_pipeline_worker_ai_only`，根本不调 `_analyze_user_move`，所以打不到这条空 vector 解码 → 体验版正常终局。问题是“专家模式才有的分析路径 × tail-solve 在人类下一步的预计算位置触发 × `root_values` 空”这三者凑齐才会暴露。
-
-### 修复
-
-1. `engine/search/net_mcts.cpp` ProvenWin 早返回前：填 `root_values` 为 `(actor=+1, others 均分 -1)` 的零和向量；填 `root_edge_values`，被采纳 action 的位置写入同样向量、其余 `0`。语义上 ProvenWin 的胜率本就是 100% / 0%，这只是把它显式表达出来，下游解码路径全部可用。
-2. `platform/static/general/pipeline.js`：把 `phase === "error"` 当成终止条件直接退出 poll 循环并触发 `onError`，避免今后任何 worker 异常都让浏览器静默等满 45s。
-3. `tests/framework/test_tail_solve_root_values.py`：回归测试。从 Azul 2p 局推到 tail-solve 采纳，断言 `root_values` 长度等于 num_players、零和、actor 位置等于 +1，且 `action_values` 含选中 action 且向量与 `root_values` 一致。
-
-### 教训
-
-- “提前返回 + 部分填字段”的优化路径必须把所有下游字段都填到“跟正常路径一样合法”的状态，否则就是另一个 BUG-011 那种 silent contract violation。Stats struct 不是只给 logger 用的，平台层 / web 层都会拿来当导航数据。
-- Web pipeline 的 `phase=error` 必须有显式分支处理。任何能把 worker 推进 `except` 的 bug 都会被 45s timeout 覆盖成“假冒卡死”，让 root cause 极难被注意到。
-- 难度模式（casual / expert）走不同 worker 是个值得记住的差异：casual 不跑 analysis，所以分析路径独有的 bug 不会出现在 casual 复现里——遇到“专家模式才挂”的报告，先 diff `_pipeline_worker` vs `_pipeline_worker_ai_only`。
-
----
-
 ## [BUG-030] Love Letter encoder 把 tracker 知识泄漏到非 perspective 玩家视角
 
 **分类**：游戏层（Love Letter）
@@ -1502,128 +1740,7 @@ Encoder 注释写明 "只有 player == tracker.perspective 才能用 tracker 知
 
 ---
 
-## [BUG-031] Web 隔离 AI 会话没有继承 `tail_solve` 配置（web AI 实际未启用 tail-solve）
-
-**分类**：平台层（Web / 隔离 GameSession）
-**状态**：已修（2026-05-07）
-**文件**：`platform/game_service/sessions.py`、`platform/game_service/pipeline.py`、`platform/game_service/routes.py`
-**严重程度**：高 — silent degradation，用户和开发者都误判 AI 强度
-
-### 问题描述
-
-`web.json` 里的 `tail_solve` 配置（depth_limit / node_budget / time_limit_ms / margin_weight）只在创建主 `GameSession` 时被 `configure_tail_solve()` 调用。但 web AI 落子、precompute、hint fallback、analysis 这些路径都会**新建隔离 GameSession**（为了 hash scope 隔离 + 避免污染主 session 的 belief tracker）。新建的隔离会话默认 `ts_enabled_=false`，**`web.json` 的 tail_solve 配置永远不生效**。
-
-### 影响
-
-- 用户和开发者都误以为 web AI = expert（latest + tail-solve），**实际只是 latest**
-- 所有 "web 看起来强不强"、"expert 是不是真的比 latest 强一档"、"端局收官准不准" 的主观判断全都被这条静默偏置污染
-- Eval / arena 结果用 web 配置作 sanity check 时口径错位
-- 属于 BUG-011（ONNX 未编译 → MCTS 走 uniform 静默几周）那一族
-
-### 症状
-
-Web AI 落子 stats 中 `tail_solve_attempted=0`，但 web.json 里明明配了 tail_solve depth/budget。当时没暴露这个 stat 到响应所以肉眼看不出，打开后端日志能看到 ts 走的是 disabled 路径。
-
-### 修复
-
-1. 把 tail-solve 配置（depth, node_budget, time_limit_ms, margin_weight）存进 `sess` 对象
-2. 所有用于 AI move / precompute / analysis / hint fallback 的隔离 `GameSession` 创建后立刻 `configure_tail_solve()`。涉及 `sessions.py` / `pipeline.py` / `routes.py` 三处
-3. `bindings/py_engine.cpp::get_ai_action()` stats 暴露 `tail_solve_attempted / completed / elapsed_ms`，web 响应透传，"是否真的跑了 tail-solve" 肉眼可验证
-4. 加测试：`tests/web/...` 用 Quoridor 末段 8 步内必胜的局面创建 web session，断言 `r["stats"]["tail_solve_attempted"] >= 1`
-
-### 教训
-
-**用户配置和实际生效之间永远要有 stat 暴露**。这是框架级原则：任何 "配置 → 实际行为" 的中间环节都必须有一个可观测的 stat（通过响应 / 日志 / metric）让运维 / 开发者能一眼验证配置生效了。隔离 GameSession 的创建是看不见的"配置重置"节点，必须显式复制配置。原则写入 CLAUDE.md 或 GAME_DEVELOPMENT_GUIDE.md 的 "隔离 session" 章节。
-
----
-
-## BUG-032: Selfplay per-perspective trackers 未被初始化 → randomize_unseen 覆写当前玩家自己的手牌 (OB-011)
-
-### 背景
-
-- BG-008 Phase 2 stage 5 引入 per-perspective trackers（每 seat 一份 tracker，观测事件累积到 game over），替代"每 ply re-init 单例 tracker"的旧路径
-- selfplay_runner 里已经循环 `per_perspective_trackers[p]->init(p, init_obs)` 并在每一步给每个 tracker 喂 `observe_public_event` —— 看起来是完备的
-- MCTS 搜索 acting player 的决策时：`mcts_tracker = per_perspective_trackers[current_player]`，调 `randomize_unseen` 采样一个 belief 相容的隐藏世界
-- 但启用这条路径后 `test_selfplay_sample_integrity[loveletter]` 立刻炸 `DAG node legal-action mismatch`，错误里 `node_edges=[Handmaid, Princess]` 而 `current_legal=[Guard+target1, Prince+self/target1]`
-
-### 根因
-
-`bindings/py_engine.cpp::run_selfplay_episode_py` 的初始化顺序：
-
-```cpp
-runtime::PublicEventExtractor trace_extractor;         // 空 std::function
-runtime::InitialObservationExtractor trace_obs_extractor;  // 空
-if (trace_perspective >= 0) {  // 默认 -1，通常走不进
-  ...
-  trace_extractor = bundle.public_event_extractor;
-  trace_obs_extractor = bundle.initial_observation_extractor;
-}
-...
-run_selfplay_episode(..., trace_extractor, trace_obs_extractor);
-```
-
-`trace_extractor / trace_obs_extractor` 这两个名字误导——它们**不只是 trace 专用**。`run_selfplay_episode` 里把它们当成整个 episode 的 `public_event_extractor` 和 `initial_observation_extractor` 用：pp_trackers 的 `init()` 在游戏开始调用时，如果 `initial_observation_extractor` 为空，**直接跳过 init**（`if (per_perspective_trackers[p] && initial_observation_extractor)` 短路），tracker 的 `perspective_player_` 永久停留在默认 `-1`。
-
-然后 MCTS 调 `per_perspective_trackers[0]->randomize_unseen(sim, rng)`：LoveLetter 的 randomize 代码里 "跳过 perspective 自己的 hand" 用的是 `if (p == perspective_player_) continue`。`perspective_player_ == -1` 意味着**没有任何 p 等于它** —— 包括真正的 current player——所以 `d.hand[0]` 被从 unseen 池里重新采样成另一张牌，`d.drawn_card` 同样被 `d.current_player != perspective_player_` 判 true 而覆写。
-
-结果：real root expand 得到的 edges=[Handmaid, Princess]（基于真 hand），sim_state 在 randomize_unseen 后 hand=Guard drawn=Prince（被覆写），legal_actions 完全不一致，DAG 检查炸。
-
-### 症状关键词
-
-- `DAG node legal-action mismatch; selected action X is not legal in current state`
-- `depth=0 step_count=0`（在 root 就炸，因为 randomize_unseen 在 root 前第一次调用）
-- node_edges 和 current_legal 两组动作**对应完全不同的 (hand, drawn) 组合**
-- 只在启用 per_perspective trackers 的 routing 后出现；legacy 单 tracker 路径 `belief_tracker->init(player, obs)` 在 selfplay_runner 里每 ply 显式调所以看不到
-
-### 为什么 legacy 路径不炸
-
-Legacy `belief_tracker` 路径在 selfplay_runner 的 `else if (belief_tracker)` 分支里显式调 `belief_tracker->init(player, main_init_obs)` —— 这里也用到 `initial_observation_extractor`，但它 re-init 时即使 obs 为空 map，`init()` 内部实现（以 LoveLetter 为例）是 `it_h != end() ? cast : 0` —— own_hand_ 被置 0，perspective_player_ **正确**设为 player。所以 legacy 单 tracker 是安的。
-
-问题特有于"不在 selfplay_runner 自己 re-init、而是依赖 py_engine 之前把 extractor 传进来"的 pp_trackers 路径。
-
-### 修复
-
-`bindings/py_engine.cpp::run_selfplay_episode_py`：无条件从 bundle 填 extractor，不再让 `trace_perspective >= 0` 这个 tracing flag 门禁它：
-
-```cpp
-runtime::PublicEventExtractor trace_extractor = bundle.public_event_extractor;
-runtime::InitialObservationExtractor trace_obs_extractor =
-    bundle.initial_observation_extractor;
-std::unique_ptr<GameBundle> trace_bundle;
-IBeliefTracker* trace_bt = nullptr;
-if (trace_perspective >= 0) {
-  trace_bundle = ...;
-  trace_bt = trace_bundle->belief_tracker.get();
-  if (!trace_bt || !trace_extractor) throw ...;
-}
-```
-
-并在 `LoveLetterBeliefTracker::randomize_unseen` 入口加一道硬 assertion：
-
-```cpp
-if (perspective_player_ < 0 || perspective_player_ >= NPlayers) {
-  throw std::runtime_error(
-      "LoveLetterBeliefTracker::randomize_unseen called with uninitialized "
-      "perspective_player_=" + std::to_string(perspective_player_) +
-      " (init() must run before search)");
-}
-```
-
-这条 assertion 是**框架级契约**：任何 tracker 在被 search 调用前必须已 init。下次有人写新游戏的 belief_tracker 或重构 runner 时，如果 init 被漏掉，这里会炸而不是静默污染。
-
-### 教训
-
-1. **变量名带有"trace"字样但被用于通用路径，是最容易踩的坑**。`trace_extractor / trace_obs_extractor` 原本只给 trace 用，后来 BG-008 stage 5 复用它们承载 pp_trackers 的 extractor 需求，名字没改。下次同类扩展要么重命名（`public_event_extractor / initial_observation_extractor`），要么在 bundle 上单独引一对字段给 pp_trackers 用。
-
-2. **默认值 `-1` 的 sentinel + "跳过 perspective" 的语义是个静默泄漏陷阱**。LL 的 randomize 代码用 `if (p == perspective_player_) continue` 跳过自己——perspective_player_=-1 时这个条件对任何 p 都 false，所有 p 都被覆写。改成 assertion 前，这是一个**"不崩溃、不报错、只是悄悄把当前玩家的手牌换掉"**的 bug，在 MCTS 没 DAG 检查的话永远抓不到。属于 BUG-028 / BUG-030 族的"silent correctness 漏洞"——只要有 silent 路径能让不变式被绕过，就一定要补 assertion。
-
-3. **用 DAG 校验撞出逻辑 bug 是这套框架的强项，要珍惜**。`DAG node legal-action mismatch` 本来是为"hash scope 漏字段"设计的错误信号，这次它抓到的是"tracker 没 init"这种相邻问题——因为 tracker 错了会让 sim_state 和 real state 出现公共观测不一致，表现出来就是 hash 撞上了但 legal 对不齐。下次遇到 DAG mismatch，除了查 hash 字段覆盖，还要查"tracker 是不是也出了别的错让状态被污染"。
-
-4. **修复不只是打补丁，还要防守**。这次修 py_engine 的 extractor wiring 是主菜，但在 LL 的 randomize_unseen 入口加"perspective 必须 init 过"的 assertion 是主菜之外的保险——未来任何新的 runner / binding 如果漏 init，这里会崩，不会再"silently 降级再让 DAG 检查去撞"。Coup 的 belief tracker 同样应该加一道类似 assertion（参见 DC 2026-05-07 笔记，建个 SM 任务跟进）。
-
----
-
-## BUG-033: Azul 轮末结算飞砖落地后砖消失 + 多行同结算时 +score 偏高 (OB-012 / OB-008)
+## [BUG-033] Azul 轮末结算飞砖落地后砖消失 + 多行同结算时 +score 偏高 (OB-012 / OB-008)
 
 ### 背景
 
@@ -1660,37 +1777,7 @@ if (perspective_player_ < 0 || perspective_player_ >= NPlayers) {
 
 ---
 
-## BUG-034: 体验版（casual）AI 走子后没显示对手胜率——前端 difficulty gate 把已经算好的数字扔了 (OB-013)
-
-### 背景
-
-- Web 前端有"显示胜率"开关（默认开），AI 走完一步后 info panel 应该显示这一步对人类胜率的估值
-- 用户反馈"体验版（casual）AI 走完没胜率"
-- 第一反应是"casual 不跑 analysis pipeline，所以没胜率数据"——错
-
-### 根因
-
-数据其实一直到了前端：
-1. `_pipeline_worker_ai_only`（casual 路径）→ `_commit_ai_move` → `pipe["ai_stats"] = ai_stats`（pipeline.py:267）。AI 自己 MCTS 跑完产生的 `root_values` 已经塞进 pipeline status
-2. `/pipeline` endpoint 透出 `ai_stats`（routes.py:163）
-3. poller `pipeline.js` 从 `st.ai_stats.root_values[humanPlayer]` 算出 `humanWinrate` 传给 `onDone`
-4. **但** `app.js:445` 把赋值 `state.lastAiWinrate = result.humanWinrate` 关在 `if (state.difficulty === 'expert')` 里。casual 拿到 humanWinrate 立刻扔。
-
-`sidebar.getShowWinrate()` 用户开关是另一条独立路径（在 `setWinrate` 调用处守门）；这次的 difficulty gate 是冗余的、且直接掐死了 casual 的合理用例。
-
-### 修复
-
-`platform/static/general/app.js`：删 difficulty gate，casual / expert 都把 humanWinrate 赋给 state。注释说明：casual 跳过的是 analysis pipeline（drop-score、smart hint），不是 AI 自己的 MCTS——AI 自己的 root_values 一直都在。
-
-### 教训
-
-1. **debug 跨服务流时先 trace 端到端数据流，不要靠直觉猜哪一段没产数据**。本来想在 backend casual 路径加 root_values 上报，结果 backend 早就上报了，问题在 frontend 一行 difficulty gate。直觉走的是"casual = 没数据"，实际走的是"casual = 数据被前端最后一步丢了"。下次类似 bug：先用 devtools 看 `/pipeline` 响应里有没有数据，再决定改哪一端。
-
-2. **同一个用户开关不要在多个地方守门**。`getShowWinrate()` 在 `setWinrate` 调用处已经守了"用户不要看胜率"，`difficulty === 'expert'` 的 gate 是另一个角色（"casual 难度不该有胜率"），但这两个角色有重叠——如果用户在 casual 也想看，开关明明开着却看不见，UX 矛盾。原则：**用户开关的语义边界要单一**，每个开关只在唯一一处守门，避免"开关开了但被另一处守门掐掉"的隐性失效。
-
----
-
-## BUG-035: Azul 轮末地板扣分用错时间点的 floor_count——actor 在结算回合扔的砖没算进去
+## [BUG-035] Azul 轮末地板扣分用错时间点的 floor_count——actor 在结算回合扔的砖没算进去
 
 ### 背景
 
@@ -1735,3 +1822,4 @@ popup 循环改用 `floorCounts[pi]`。逻辑等价于"在 prev 上模拟 do_act
 3. **AI 价值真值与显示口径要对齐验证**。这次 bug 不影响游戏分数（C++ 引擎照算）但影响玩家对"我刚才那一动到底亏了多少"的认知。Azul 这种快节奏游戏，玩家对每动的得失有实时反馈预期，"显示和真实分数对不上"是教学信号衰减。后续在 `tests/web/...` 应该加一条"动画 popup 数字之和 = next.scores - prev.scores"的不变量校验（每帧），跨游戏适用。
 
 ---
+

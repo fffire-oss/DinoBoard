@@ -291,6 +291,16 @@ DAG 自然承担了"chance node 该有的分叉"的工作，不需要专门的�
 
 代价：PIMC（Perfect Information Monte Carlo）bias——每条 sim 轨迹实际上"先知"了整条世界线，结果可能略偏乐观。Long et al. 2010 分析过这种 bias 在不同游戏类型下的严重程度。对我们游戏集（LL / Splendor / Azul）实测无棋力损失。
 
+### 7.4 输入 state 的来源：truth vs message-driven session
+
+MCTS 不关心 root state 是怎么来的——它要的只是「一份合法 state + 一个 belief tracker」。但 root state 在不同部署路径下来源不同，开发者要心里有数：
+
+- **Selfplay**：root state 就是 truth state（runner 持有的那一份）。`current_player` 的 tracker 已经累积了该 seat 的观察序列，randomize_unseen 时用 truth 提供的"骨架"（public 部分本来就是公开的）+ tracker 的 belief 重新填 hidden
+- **Web / API（observation-only）**：root state 是 session 自己维护的那一份。**它的 public 字段每一步都从 `PublicEventTrace.public_snapshot` 重建**（不是从 `do_action_fast` 推算），hidden 字段每一步都被 `randomize_unseen` 重新采样成 tracker-consistent 的样本。session state 任何字段都不是 truth 的拷贝
+- **两条路径共享同一套 MCTS 代码**。`test_api_mcts_policy_invariance` 验证：相同观察序列下，selfplay 和 API 路径的 root visit 分布应当一致——若 AI 偷读了 truth 的 hidden 字段，分布就会发散
+
+这条性质让 MCTS 算法和"AI 不作弊"这件事正交：MCTS 拿到什么 state 就搜什么 state，session state 是由 message 重建出来的、跟 truth 在 hidden 维度上独立——所以 MCTS 不可能跨过 session 这层去看到不该看的东西。
+
 ---
 
 ## 8. Encoder 对齐 hash scope
@@ -303,16 +313,21 @@ Encoder 输入必须由 `public + current player's private` 完全决定。换�
 
 ### 8.2 当前实现
 
-Encoder 接口保留 `encode(state, perspective, legal, features, mask)`——签名不变，内部约定开发者：
+Encoder 接口已经按 hash scope 结构化拆分（`engine/core/feature_encoder.h`）：
 
-- 读 public 字段 OK
-- 读 `state.hand[perspective]` 等 perspective-own 字段 OK
-- 读 `tracker->known_hand(opp)` OK（tracker 合法知识）
-- **不读** `state.hand[opp]` 直接字段（即使 observer 不知道的那些）
+```cpp
+virtual void encode_public(state, perspective, features) = 0;
+virtual void encode_private(state, perspective, features) = 0;
+```
 
-Phase 6（计划中，未实现）会把 encoder 拆成 `encode_public + encode_private(p)` 结构化接口，和 hash API 完全并行。在那之前我们靠：
-- 约定 + code review
-- 结构化测试（`tests/framework/test_encoder_respects_hash_scope.py`）
+约束（接口注释里强调，编译期无法完全强制，靠测试守）：
+- `encode_public` 没有 player 参数，**MUST NOT** 读任何玩家的 private 字段
+- `encode_private(perspective)` **MUST NOT** 读其他玩家的 private 字段
+- 默认 `encode(...)` 把两者依次拼成 flat tensor，和 hash 拼接顺序对齐
+
+读 `tracker->known_hand(opp)` 算合法知识（observer 通过观察累积的确定知识），不算 opp private。
+
+结构化测试 `tests/framework/test_encoder_respects_hash_scope.py` 守护：opp private 变化、public + own private 不变时，encoder 输出 bit-equal。
 
 ### 8.3 为什么这点必须守
 
@@ -349,14 +364,17 @@ Phase 6（计划中，未实现）会把 encoder 拆成 `encode_public + encode_
 
 §9.2 + 以下：
 - `hash_private_fields(int player, Hasher&)` — hash player 自己的 hidden 字段（手牌、盲压牌等）
-- `IBeliefTracker::init(int perspective, const AnyMap& initial_obs)` — 根据初始观察构建 belief
-- `IBeliefTracker::observe_public_event(actor, action, pre_events, post_events)` — 从事件流更新 belief
-- `IBeliefTracker::randomize_unseen(state, rng)` — 根据 belief 为 state 填充对手 hidden 字段
-- `GameBundle::public_event_extractor` — 把 (state_before, action, state_after) diff 成事件序列
-- `GameBundle::public_event_applier` — 在 API 侧把事件应用到 state
-- `GameBundle::initial_observation_extractor` — 从 state 提取 perspective 可见的初始信息
-- `GameBundle::initial_observation_applier` — 用 initial_observation 覆盖 state 的 hidden 部分
+- `IBeliefTracker::init(int perspective, const AnyMap& initial_obs)` — 根据初始观察构建 belief（**注意接口签名里没有 `IGameState*`**，tracker 物理上拿不到 truth）
+- `IBeliefTracker::observe_public_event(actor, action, pre_events, post_events)` — 从事件流更新 belief（同样无 `IGameState*`）
+- `IBeliefTracker::randomize_unseen(state, rng)` — 根据 belief 给 state 填充未见字段。产出的世界 `hash_public_fields` 必须**只**取决于 tracker 的观察历史，不能依赖输入 state 的 hidden 内容或 RNG 特定值
+- `GameBundle::public_event_extractor` — 把 `(state_before, action, state_after)` diff 成事件序列；同时往 `PublicEventTrace.public_snapshot` 写入 `hash_public_fields` 涉及的全部公开字段
+- `GameBundle::public_event_applier` — 在 API 侧重放事件到 session state（仅 hidden 部分）
+- `GameBundle::public_state_applier` — 把 `public_snapshot` 反向覆盖到 session state 的公开字段。session 的 public state 因此**完全由 message 流重建**，不依赖 `do_action_fast` 在 sampled 隐藏数据上的输出 → 即使 sample 和 truth 不同，observer 看到的公开局面也跟 truth 一致
+- `GameBundle::initial_observation_extractor` — 从 truth state 提取 perspective 可见的初始信息
+- `GameBundle::initial_observation_applier` — 用 initial_observation 覆盖 session state 的 hidden 部分
 - Feature encoder 读 `tracker->known_*()` 而非直接读 opp hidden 字段
+
+**Round-trip 不变量**（`tests/framework/test_public_snapshot_round_trip.py` 守护）：每一步 truth → extract snapshot → 喂给 observer session → apply snapshot 后，observer 的 `state_hash_for_perspective(own)` 必须和 truth bit-equal。新增公开字段忘记更新 extractor 或 applier 都会立刻被这个测试抓住。
 
 ---
 
@@ -425,8 +443,8 @@ Phase 6（计划中，未实现）会把 encoder 拆成 `encode_public + encode_
 
 ## 13. 未来工作
 
-**Phase 6：Encoder 结构化接口**。把 `encode` 拆成 `encode_public(Hasher&)` + `encode_private(int p, Hasher&)`，和 hash API 完全并行。消除"靠约定不读 opp hidden"的脆弱点。
-
 **观察-perspective encoding（Method 3）**。encoder 直接喂"观察者视角"的特征（opp 手牌用 belief-marginal 而非采样值）。可完全消除 PIMC 的 strategy fusion bias，但要训练侧配合。
 
 **Root world cap**。1k+ sim 预算下目前无限制，靠 DAG 自然共享。将来如果加 4p 复杂游戏或降低 sim 预算，可加 `cap K` 限制 opp info set 多样性。
+
+**Nested ISMCTS / subgame resampling**。当前 root 采样把 own private + tracker 已知信息 pin 死，对手节点会"穿透"这部分（strategy fusion，详见 `GAME_FEATURES_OVERVIEW.md` §6）。根治方向是每跨一个 actor 重新 determinize，但会破坏 DAG 共享、搜索吞吐下降一个量级，目前没做。

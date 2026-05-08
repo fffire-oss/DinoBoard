@@ -28,12 +28,11 @@
     "learning_rate": 0.0005,
     "steps": 4000,
     "peek_steps": 0,
-    "warm_start_heuristic": true,
-    "warm_start_episodes": 2000,
-    "warm_start_epochs": 5,
-    "warm_start_temperature": 1.5,
-    "heuristic_guidance_plies": 5,
-    "heuristic_guidance_ratio": 0.2
+    "heuristic_guidance_hold_steps": 10,
+    "heuristic_guidance_steps": 200,
+    "heuristic_guidance_initial_ratio": 1.0,
+    "heuristic_guidance_temperature": 1.5,
+    "heuristic_temperature": 0.0
   },
   "network": {
     "type": "mlp",

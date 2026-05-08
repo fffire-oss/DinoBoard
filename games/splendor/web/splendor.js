@@ -740,7 +740,7 @@ function makeHiddenCardFlyer(tier) {
 // the user sees a gap where the just-reserved card should be. Paint the
 // slot into a persistent static representation so the intermediate state
 // survives until the caller re-renders the real DOM. See §3 "中间状态维护"
-// in docs/WEB_DESIGN_PRINCIPLES.md.
+// in docs/guide/WEB_DESIGN_PRINCIPLES.md.
 function paintReserveSlotFromCard(selector, sourceCardSelector) {
   const slot = document.querySelector(selector);
   if (!slot) return;

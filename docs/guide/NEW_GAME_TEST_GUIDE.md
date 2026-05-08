@@ -495,7 +495,7 @@ def test_hidden_info_deterministic():
     assert ep1["total_plies"] == ep2["total_plies"]
     assert ep1["winner"] == ep2["winner"]
 
-def test_dag_reuse_active():
+def test_dag_reuse_hits_present(self):
     """DAG 节点应被复用——高 sim 下信息集会被多次访问，dag_reuse_hits 应 > 0。
     调用 GameSession.apply_ai_action 获取 per-decision stats；不是每个 ep sample 都暴露。"""
     gs = dinoboard_engine.GameSession(GAME_ID, seed=42)
@@ -884,7 +884,7 @@ python -m pytest tests/ -x -q
 
 第一版做过这件事——`tests/test_*.py` 用 `CANONICAL_GAMES = [...]` 跑全部 6 个游戏。问题是：
 
-- 某些不变量（例如 `test_dag_reuse_active`）在不同游戏上的合理参数差很多（loveletter 几十次访问就能看到 reuse；splendor 要几百次），写成参数化反而需要 if/else 调阈值，难读、易错。
+- 某些不变量（例如 `test_dag_reuse_hits_present`）在不同游戏上的合理参数差很多（loveletter 几十次访问就能看到 reuse；splendor 要几百次），写成参数化反而需要 if/else 调阈值，难读、易错。
 - 框架层每次跑都要把 6 个游戏全跑一遍，CI 慢，调试反馈链长。
 - 单游戏的失败信号被淹没在 6 倍的测试中。
 

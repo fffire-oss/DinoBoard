@@ -123,7 +123,7 @@ AnyMap describe_loveletter(ActionId action) {
   return m;
 }
 
-// Love Letter heuristic (warmstart + benchmark baseline).
+// Love Letter heuristic (heuristic guidance + benchmark baseline).
 //
 // Scoring is per-action (no lookahead — Love Letter decisions are local).
 // Reads only public state + perspective's OWN hand/drawn (private fields

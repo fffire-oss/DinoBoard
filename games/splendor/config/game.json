@@ -31,7 +31,12 @@
     "tail_solve_start_ply": 60,
     "tail_solve_depth_limit": 6,
     "tail_solve_node_budget": 100000,
-    "peek_steps": 0
+    "peek_steps": 0,
+    "heuristic_guidance_hold_steps": 10,
+    "heuristic_guidance_steps": 20,
+    "heuristic_guidance_initial_ratio": 1.0,
+    "heuristic_guidance_temperature": 0.0,
+    "heuristic_temperature": 0.0
   },
   "network": {
     "type": "mlp",

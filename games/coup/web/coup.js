@@ -725,7 +725,7 @@ function describeTransition(prevState, newState, actionInfo, actionId) {
   // Every action gets a head-bubble popup so info-only actions (challenge,
   // allow, block declarations, reveal, return_card) still read visually
   // — without it AI turns flash past too fast to follow. See §3.6 of
-  // docs/WEB_DESIGN_PRINCIPLES.md.
+  // docs/guide/WEB_DESIGN_PRINCIPLES.md.
   const group = { type: 'group', children: [] };
   group.children.push({
     type: 'popup',

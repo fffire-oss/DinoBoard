@@ -329,8 +329,8 @@ py::dict run_selfplay_episode_py(
 
   // Allocate one fresh tracker per seat so each perspective's belief
   // accumulates monotonically across plies. Skipped when ISMCTS is off
-  // (truth-eye training — MCTS sees truth; useful for warming up the
-  // value head before switching to proper hidden-info play) or when the
+  // (peek mode — MCTS sees truth, used in early training steps gated by
+  // peek_steps before switching to proper hidden-info play) or when the
   // game has no belief_tracker (perfect-information games).
   std::vector<std::unique_ptr<GameBundle>> pp_bundles;
   std::vector<IBeliefTracker*> pp_trackers;

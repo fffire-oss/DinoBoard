@@ -29,7 +29,7 @@ DinoBoard walks it once and turns the result into **a reusable engine plus a cal
 
 ### ISMCTS: DAG search for hidden-information games
 
-A ground-up MCTS redesign for hidden-information games. **Root-sampling determinization + per-acting-player info-set keying + UCT2** — each simulation samples a full world from the belief, descent is fully deterministic afterward, and the same info set reached along different paths shares a DAG node. See [docs/MCTS_ALGORITHM.md](docs/MCTS_ALGORITHM.md).
+A ground-up MCTS redesign for hidden-information games. **Root-sampling determinization + per-acting-player info-set keying + UCT2** — each simulation samples a full world from the belief, descent is fully deterministic afterward, and the same info set reached along different paths shares a DAG node. See [docs/guide/MCTS_ALGORITHM.md](docs/guide/MCTS_ALGORITHM.md).
 
 ### Observation-only AI API: trained once, callable by anyone
 
@@ -79,7 +79,7 @@ Self-play, evaluation, web play, replay analysis — **all run on the same C++ M
 You no longer need to hand-write the game bundle. The typical flow:
 
 1. Tell Claude Code "add [game name]"
-2. The AI reads `docs/GAME_DEVELOPMENT_GUIDE.md` and `docs/KNOWN_ISSUES.md`, and mirrors Quoridor / Splendor / the other existing games
+2. The AI reads `docs/guide/GAME_DEVELOPMENT_GUIDE.md` and `docs/KNOWN_ISSUES.md`, and mirrors Quoridor / Splendor / the other existing games
 3. Drop a `tests/<new_game>/test_checklist.py` (copy from the closest existing game; flip `GAME = "..."`) — running `pytest tests/<new_game>/` then becomes the "is the game done?" signal
 4. The AI iterates on test failures until everything is green
 5. `python -m training.cli --game <id>` kicks off training
@@ -182,7 +182,7 @@ The build copies `onnxruntime.dll` next to the compiled extension so it loads at
 # TicTacToe — about 5 minutes
 python -m training.cli --game tictactoe --output runs/tictactoe_001
 
-# Quoridor — several hours (includes warm start + heuristic guidance)
+# Quoridor — several hours (with heuristic guidance schedule)
 python -m training.cli --game quoridor --output runs/quoridor_001 \
     --workers 4 --eval-every 25 --eval-games 40 --eval-benchmark heuristic
 ```
@@ -203,19 +203,19 @@ Features: 6 games, three difficulty tiers (Heuristic / Casual / Expert), seat se
 
 ## Core concepts
 
-- **GameBundle registration** — each game exposes a factory that returns state + rules + encoder + optional components. See the [game development guide](docs/GAME_DEVELOPMENT_GUIDE.md).
-- **ISMCTS** — root sampling + DAG + UCT2. A native design for hidden-info games. See [docs/MCTS_ALGORITHM.md](docs/MCTS_ALGORITHM.md).
-- **AI API** — observation-only REST interface that third-party apps consume directly, without embedding engine code. Doubles as an information-theoretic proof that the AI never cheats. See [game development guide § 17](docs/GAME_DEVELOPMENT_GUIDE.md).
-- **Training pipeline** — self-play → replay buffer → SGD → ONNX export → gating eval (≥60% win rate updates `best`). Includes warm start, heuristic guidance, auxiliary score, training action filter, MCTS schedule.
+- **GameBundle registration** — each game exposes a factory that returns state + rules + encoder + optional components. See the [game development guide](docs/guide/GAME_DEVELOPMENT_GUIDE.md).
+- **ISMCTS** — root sampling + DAG + UCT2. A native design for hidden-info games. See [docs/guide/MCTS_ALGORITHM.md](docs/guide/MCTS_ALGORITHM.md).
+- **AI API** — observation-only REST interface that third-party apps consume directly, without embedding engine code. Doubles as an information-theoretic proof that the AI never cheats. See [game development guide § 14](docs/guide/GAME_DEVELOPMENT_GUIDE.md#14-ai-api-分离验收--信息泄漏的唯一证明).
+- **Training pipeline** — self-play → replay buffer → SGD → ONNX export → gating eval (≥60% win rate updates `best`). Includes heuristic guidance schedule (hold → linear decay → zero), auxiliary score, training action filter, MCTS schedule.
 
 ---
 
 ## Docs
 
 - **[Features overview](docs/GAME_FEATURES_OVERVIEW.md)** — what the framework can do
-- **[Game development guide](docs/GAME_DEVELOPMENT_GUIDE.md)** — single source of truth for adding a new game
-- **[MCTS algorithm](docs/MCTS_ALGORITHM.md)** — the ISMCTS DAG-search derivation
-- **[New game test guide](docs/NEW_GAME_TEST_GUIDE.md)** — 11-step acceptance workflow + the two-layer test architecture
+- **[Game development guide](docs/guide/GAME_DEVELOPMENT_GUIDE.md)** — single source of truth for adding a new game
+- **[MCTS algorithm](docs/guide/MCTS_ALGORITHM.md)** — the ISMCTS DAG-search derivation
+- **[New game test guide](docs/guide/NEW_GAME_TEST_GUIDE.md)** — 11-step acceptance workflow + the two-layer test architecture
 - **[Known issues & trade-offs](docs/KNOWN_ISSUES.md)** — BUG-001 through BUG-022 postmortems plus design decisions
 
 ---
