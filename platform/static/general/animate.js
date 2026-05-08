@@ -284,8 +284,21 @@ async function stepFly(overlay, step, hidden) {
   // Size: caller-specified width/height wins (for when `from` is a
   // bigger container than the logical thing flying). Otherwise inherit
   // from source rect so the default case still works for Splendor etc.
-  const w = step.width != null ? step.width : fromRect.width;
-  const h = step.height != null ? step.height : fromRect.height;
+  // The flyer is appended to <body>, so it's not affected by ancestor
+  // CSS transforms. But callers' explicit width/height are unscaled CSS
+  // pixels (e.g. Azul's FLY_TILE_SIZE=40 to match .tile's 40px). When
+  // the board container has `transform: scale(0.6)` (default on phone
+  // viewports), the source element renders ~24px on screen but our
+  // flyer would draw at 40px and visibly balloon mid-flight. Scale
+  // explicit sizes by the source's effective transform so the sprite
+  // matches the rendered tile.
+  const srcElForScale = resolveEl(step.from);
+  let scale = 1;
+  if (srcElForScale && srcElForScale.offsetWidth > 0) {
+    scale = fromRect.width / srcElForScale.offsetWidth;
+  }
+  const w = step.width != null ? step.width * scale : fromRect.width;
+  const h = step.height != null ? step.height * scale : fromRect.height;
   // Center the flyer on the source/destination rects rather than
   // top-left-aligning. Matters when the flyer is smaller than the rect.
   const startLeft = fromRect.left + fromRect.width / 2 - w / 2;
