@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <random>
 #include <stdexcept>
 
 namespace board_ai::loveletter {
@@ -52,12 +51,16 @@ void LoveLetterState<NPlayers>::reset_with_seed(std::uint64_t seed) {
     }
   }
 
-  // One derive_rng stream covers the whole opening shuffle. After this point
-  // the deck is a fixed pre-shuffled stack and all draws are pop_back —
-  // deterministic and undo-safe (UndoRecord saves the deck vector).
+  // Fisher-Yates over the deck using a fresh derive_rng stream. Phase 2:
+  // std::shuffle is banned in *_state.cpp because it hides the per-iteration
+  // rng() consumption pattern; an explicit loop makes the randomness flow
+  // visible. Modulo bias on mt19937_64 % 16 is < 2^-60.
   {
     auto rng = this->derive_rng(0xb1ULL /* domain: loveletter_initial_shuffle */);
-    std::shuffle(d.deck.begin(), d.deck.end(), rng);
+    for (size_t i = d.deck.size(); i > 1; --i) {
+      const size_t j = static_cast<size_t>(rng() % i);
+      std::swap(d.deck[i - 1], d.deck[j]);
+    }
   }
 
   d.set_aside_card = pop_top(d.deck);
