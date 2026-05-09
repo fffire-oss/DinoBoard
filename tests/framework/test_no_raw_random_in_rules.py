@@ -45,6 +45,7 @@ BANNED_PATTERNS: list[tuple[str, str]] = [
      r"std::mt19937(?:_64)?\s*[\{\(](?!\s*\)\s*;)"),
     ("std::default_random_engine", r"std::default_random_engine\b"),
     ("std::shuffle (raw)", r"std::shuffle\b"),
+    ("splitmix64 (home-rolled rng)", r"\bsplitmix64\b"),
 ]
 
 # Per-Phase-2 migration removal target. Phase 1.1 lands with everything
@@ -53,7 +54,7 @@ BANNED_PATTERNS: list[tuple[str, str]] = [
 ALLOWLISTED_GAMES: set[str] = {
     # Phase 2 step 1: tictactoe + quoridor removed (no rng usage).
     # Phase 2 step 2: azul migrated to derive_rng (per-tile draw).
-    "splendor",
+    # Phase 2 step 3: splendor migrated (eager COW + derive_rng).
     "loveletter",
     "coup",
 }
