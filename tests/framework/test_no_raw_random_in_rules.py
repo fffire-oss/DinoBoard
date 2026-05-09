@@ -55,7 +55,7 @@ ALLOWLISTED_GAMES: set[str] = {
     # Phase 2 step 1: tictactoe + quoridor removed (no rng usage).
     # Phase 2 step 2: azul migrated to derive_rng (per-tile draw).
     # Phase 2 step 3: splendor migrated (eager COW + derive_rng).
-    "loveletter",
+    # Phase 2 step 4: loveletter migrated (Fisher-Yates via derive_rng).
     "coup",
 }
 
