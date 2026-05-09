@@ -6,6 +6,7 @@
 #include <stdexcept>
 
 #include "splendor_rules.h"
+#include "../../engine/core/viz_runtime.h"
 
 namespace board_ai::splendor {
 
@@ -278,6 +279,81 @@ template <int NPlayers>
 SplendorState<NPlayers>::SplendorState() { reset_with_seed(0xC0FFEEu); }
 
 template <int NPlayers>
+const viz::VisibilitySchema& SplendorState<NPlayers>::schema() {
+  static const viz::VisibilitySchema s = []() {
+    viz::VisibilitySchema schema;
+    schema.n_players = Cfg::kPlayers;
+
+    // ---- public scalars ----
+    viz::declare_field(schema, "current_player",
+                       viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "first_player",
+                       viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "plies", viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "final_round_remaining",
+                       viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "stage", viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "pending_returns",
+                       viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "pending_nobles_size",
+                       viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "winner", viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "terminal", viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "shared_victory",
+                       viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "nobles_size",
+                       viz::all_public({}, Cfg::kPlayers));
+
+    // ---- public 1D ----
+    viz::declare_field(
+        schema, "pending_noble_slots",
+        viz::all_public({Cfg::kNobleCount}, Cfg::kPlayers));
+    viz::declare_field(schema, "scores",
+                       viz::all_public({Cfg::kPlayers}, Cfg::kPlayers));
+    viz::declare_field(schema, "bank",
+                       viz::all_public({kTokenTypes}, Cfg::kPlayers));
+    viz::declare_field(schema, "player_points",
+                       viz::all_public({Cfg::kPlayers}, Cfg::kPlayers));
+    viz::declare_field(schema, "player_cards_count",
+                       viz::all_public({Cfg::kPlayers}, Cfg::kPlayers));
+    viz::declare_field(schema, "player_nobles_count",
+                       viz::all_public({Cfg::kPlayers}, Cfg::kPlayers));
+    viz::declare_field(schema, "reserved_size",
+                       viz::all_public({Cfg::kPlayers}, Cfg::kPlayers));
+    viz::declare_field(schema, "tableau_size",
+                       viz::all_public({3}, Cfg::kPlayers));
+    viz::declare_field(schema, "nobles",
+                       viz::all_public({Cfg::kNobleCount}, Cfg::kPlayers));
+
+    // ---- public 2D ----
+    viz::declare_field(
+        schema, "player_gems",
+        viz::all_public({Cfg::kPlayers, kTokenTypes}, Cfg::kPlayers));
+    viz::declare_field(
+        schema, "player_bonuses",
+        viz::all_public({Cfg::kPlayers, kColorCount}, Cfg::kPlayers));
+    viz::declare_field(schema, "tableau",
+                       viz::all_public({3, 4}, Cfg::kPlayers));
+    // reserved_visible[p][i]: public face-up flag per reserve slot.
+    viz::declare_field(schema, "reserved_visible",
+                       viz::all_public({Cfg::kPlayers, 3}, Cfg::kPlayers));
+
+    // ---- private (per-owner) ----
+    // reserved[p][i]: card id of player p's reserve slot i. Base
+    // owner-only; rules call viz::reveal_slot(reserved, {p, i}) when a
+    // reserve becomes face-up. Phase 3 consumers continue to gate on
+    // reserved_visible[p][i] (the canonical public flag) until viz is
+    // wired through encoder/hash. Reveal-wiring is a follow-on PR.
+    viz::declare_field(
+        schema, "reserved",
+        viz::owner_only_first_axis({Cfg::kPlayers, 3}, Cfg::kPlayers));
+
+    return schema;
+  }();
+  return s;
+}
+
+template <int NPlayers>
 void SplendorState<NPlayers>::reset_with_seed(std::uint64_t seed) {
   IGameState::reset_with_seed_base(seed);
   // Phase 2: Persistent tree is seeded by feeding the live IGameState
@@ -286,6 +362,7 @@ void SplendorState<NPlayers>::reset_with_seed(std::uint64_t seed) {
   // flows through the framework draw_nonce_ counter.
   persistent = SplendorPersistentState<NPlayers>::root_from_state(*this);
   undo_stack.clear();
+  viz::init_viz(*this, schema());
 }
 
 template <int NPlayers>

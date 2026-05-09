@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "../../engine/core/game_interfaces.h"
+#include "../../engine/core/visibility_schema.h"
 
 namespace board_ai::splendor {
 
@@ -131,6 +132,22 @@ struct SplendorState final : public CloneableState<SplendorState<NPlayers>> {
   std::vector<SplendorPersistentState<NPlayers>> undo_stack{};
 
   SplendorState();
+
+  // Phase 3 — visibility schema. Splendor partitions:
+  //   - all_public: bank, tableau, tableau_size, nobles, scores, bonuses,
+  //     points, card/noble counts, reserved_size, reserved_visible (the
+  //     "is this reserve face-up?" public flag), stage / pending_*, etc.
+  //   - owner_only_first_axis on reserved[N][3]: base = blind. Rules'
+  //     do_action_fast calls viz::reveal_slot when a reserve becomes
+  //     face-up (Reserve-from-tableau path). reset_to_base on the slot
+  //     when it's bought/discarded. Reveal-wiring is a follow-on PR;
+  //     this PR only locks the base declaration.
+  //
+  // Decks (variable-length per-tier vectors): NOT declared as schema slots.
+  // Public size, hidden contents — already handled by hash_public_fields
+  // (size only) and randomize_unseen (resamples contents from belief).
+  static const viz::VisibilitySchema& schema();
+
   void reset_with_seed(std::uint64_t seed) override;
 
   StateHash64 state_hash(bool include_hidden_rng) const override;
