@@ -1,18 +1,21 @@
 """AI inference API service.
 
-This service exposes the AI as a session-based API. It is designed so that a
-digital board game server can outsource AI decisions to us by sending ONLY
-observations (action IDs + public events) and receiving ONLY action IDs back.
+Session-based API: a third-party game server outsources AI decisions to us by
+sending ONLY observations (action IDs and, for hidden-info games, the
+public-event trace + public_snapshot) and receives ONLY action IDs back.
 
-The API contract never accepts or returns a game state object. Any code
-reviewer can verify the separation-of-concerns principle (CLAUDE.md: "AI
-pipeline must work solely from observation history") by auditing the four
-endpoints: no state crosses the boundary.
+The API contract never accepts or returns a game state object. The separation
+is structural, not procedural — see CLAUDE.md "AI Pipeline Independence from
+Game State" for why the AI physically cannot read truth: the belief tracker
+takes no state pointer, public state is rebuilt from the message stream, and
+session hidden state is re-sampled every ply from the tracker's information
+set.
 
-Limitations of the MVP:
-- Fully deterministic games (TicTacToe, Quoridor) work as-is.
-- Stochastic games (Splendor, Love Letter, Coup, Azul) currently require
-  the API and ground truth to share a seed for internal hidden state to
-  align. A future v2 will replace this with a per-game public-event
-  protocol so the API can maintain its own belief independently.
+Hidden-info games (Splendor, Love Letter, Coup, Azul) require the caller to
+supply `pre_events`, `post_events`, and `public_snapshot` on every observe
+call so the AI's belief tracker stays consistent with truth — action_id alone
+is insufficient. Deterministic games (TicTacToe, Quoridor) only need
+`action_id`. The session itself is created with an `initial_observation` for
+hidden-info games so the AI knows facts visible at game start (e.g. own
+starting hand).
 """

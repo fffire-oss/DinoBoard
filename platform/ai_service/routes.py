@@ -6,6 +6,12 @@ Endpoints:
   POST /ai/sessions/{id}/decide  — ask the AI for its next action
   DELETE /ai/sessions/{id}       — close a session
   GET /ai/sessions/{id}          — status (actions observed, turn, terminal)
+
+Hidden-info games (splendor / azul / loveletter / coup) require the caller
+to pass `pre_events`, `post_events`, and `public_snapshot` on every observe
+call so the AI's belief tracker stays consistent with truth — the action_id
+alone is not enough information for the AI to update hidden state.
+Deterministic games (tictactoe / quoridor) only need `action_id`.
 """
 from __future__ import annotations
 
@@ -21,11 +27,19 @@ router = APIRouter(prefix="/ai/sessions", tags=["ai"])
 
 class CreateSessionRequest(BaseModel):
     game_id: str = Field(..., description="e.g. 'quoridor', 'splendor'")
-    seed: int = Field(..., description="RNG seed for internal belief/state construction. "
-                                       "For stochastic games in MVP, must match ground truth.")
+    seed: int = Field(..., description="RNG seed for internal belief sampling. "
+                                       "Independent from ground truth — the AI's "
+                                       "hidden state is re-sampled each ply from "
+                                       "the tracker's information set.")
     my_seat: int = Field(..., description="Which player the AI is playing as (0-indexed)")
     simulations: int = Field(800, description="MCTS simulations per decision")
     temperature: float = Field(0.0, description="Action selection temperature. 0 = greedy.")
+    initial_observation: Optional[dict] = Field(
+        None,
+        description="Hidden-info games only: perspective-specific facts known at "
+                    "game start (e.g. own starting hand). Required for hidden-info "
+                    "games; ignored for deterministic games.",
+    )
 
 
 class CreateSessionResponse(BaseModel):
@@ -37,10 +51,31 @@ class CreateSessionResponse(BaseModel):
     is_terminal: bool
 
 
+class PublicEvent(BaseModel):
+    kind: str = Field(..., description="Game-specific event identifier "
+                                       "(e.g. 'reveal_card', 'token_supply_delta').")
+    payload: dict = Field(default_factory=dict)
+
+
 class ObserveRequest(BaseModel):
     action_id: int = Field(..., description="The action that was just played by the "
                                             "current player (NOT the AI's own moves — "
                                             "those come from /decide).")
+    pre_events: list[PublicEvent] = Field(
+        default_factory=list,
+        description="Public events emitted BEFORE the action resolved. "
+                    "Required for hidden-info games; ignored for deterministic games.",
+    )
+    post_events: list[PublicEvent] = Field(
+        default_factory=list,
+        description="Public events emitted AFTER the action resolved. "
+                    "Required for hidden-info games; ignored for deterministic games.",
+    )
+    public_snapshot: dict = Field(
+        default_factory=dict,
+        description="Truth-side dump of the game's public fields. Required for "
+                    "hidden-info games; ignored for deterministic games.",
+    )
 
 
 class ObserveResponse(BaseModel):
@@ -78,6 +113,7 @@ def create_session(req: CreateSessionRequest):
             my_seat=req.my_seat,
             simulations=req.simulations,
             temperature=req.temperature,
+            initial_observation=req.initial_observation,
         )
     except (ValueError, FileNotFoundError) as e:
         raise HTTPException(400, str(e))
@@ -101,7 +137,12 @@ def observe(session_id: str, req: ObserveRequest):
         raise HTTPException(404, str(e))
 
     try:
-        sess.observe(req.action_id)
+        sess.observe(
+            req.action_id,
+            pre_events=[e.model_dump() for e in req.pre_events],
+            post_events=[e.model_dump() for e in req.post_events],
+            public_snapshot=req.public_snapshot,
+        )
     except ValueError as e:
         raise HTTPException(400, str(e))
     except RuntimeError as e:

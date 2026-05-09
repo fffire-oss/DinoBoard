@@ -400,34 +400,21 @@ z 值是训练 value head 的目标标签：+1 表示赢、-1 表示输、0 表�
 
 ## [BUG-005] FilteredRulesWrapper 的 const_cast
 
-**状态**：已知问题（安全的 workaround）
-**文件**：`engine/runtime/selfplay_runner.h`
-**严重程度**：低 — 代码不优雅但运行正确
+**状态**：已修复（2026-05-08）
+**文件**：`engine/core/game_registry.h`、`engine/runtime/selfplay_runner.h`、`games/quoridor/quoridor_register.cpp`
+**严重程度**：低 — 历史 workaround，已清理
 
 ### 问题描述
 
-`IGameRules::legal_actions` 接口签名接收 `const IGameState&`，但 `TrainingActionFilter` 需要可变的 `IGameState&`（因为 filter 内部要 do_action + undo_action 来评估墙的质量）。
-
-`FilteredRulesWrapper` 通过 `const_cast` 解决：
+历史上 `IGameRules::legal_actions` 接口签名是 `const IGameState&`，但 `TrainingActionFilter` 类型是 `IGameState&`（早期 quoridor filter 设计想直接 do_action + undo_action）。`FilteredRulesWrapper::legal_actions` 用 `const_cast` 把 const 强转掉：
 
 ```cpp
-std::vector<ActionId> legal_actions(const IGameState& state) const override {
-    auto legal = inner_.legal_actions(state);
-    if (filter_) {
-        auto filtered = filter_(const_cast<IGameState&>(state), inner_, legal);
-        if (!filtered.empty()) return filtered;
-    }
-    return legal;
-}
+auto filtered = filter_(const_cast<IGameState&>(state), inner_, legal);
 ```
 
-### 为什么安全
+### 修复
 
-Filter 内部执行的 `do_action_fast` + `undo_action` 是 **net-no-op**：状态在 filter 执行前后完全一致。逻辑上的 const 性被保持了，只是 C++ 类型系统无法表达这一点。
-
-### 理想修复
-
-将 `IGameRules::legal_actions` 改为接收非 const 的 `IGameState&`。但这会影响所有游戏实现和调用点，工作量大且风险高，暂不修改。
+把 `TrainingActionFilter` 第一参数改为 `const IGameState&`，filter 内部需要模拟动作时用 `state.clone_state()` 做隔离副本（quoridor 现行实现已经是这种模式）。`FilteredRulesWrapper::legal_actions` 直接 `filter_(state, inner_, legal)`，去 const_cast。
 
 ---
 

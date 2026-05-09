@@ -603,7 +603,7 @@ board_ai::GameRegistrar reg_4p("splendor_4p", factory<4>);
 
 ## 8. 构建集成
 
-### 8.1 CMakeLists.txt
+### 8.1 games/<name>/CMakeLists.txt
 
 在 `games/<game>/` 下创建：
 
@@ -618,25 +618,23 @@ target_include_directories(game_<name> PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(game_<name> PUBLIC dinoboard_core)
 ```
 
-然后在**顶层 `CMakeLists.txt`** 添加：
+### 8.2 games/manifest.json
 
-```cmake
-add_subdirectory(games/<name>)
+在 `games/manifest.json` 的 `games` 数组里追加一项——这是 setup.py 和顶层 CMakeLists.txt 共享的唯一来源，新游戏只需要在这里登记一次：
+
+```json
+{
+  "id": "<name>",
+  "sources": [
+    "<name>_state.cpp",
+    "<name>_rules.cpp",
+    "<name>_net_adapter.cpp",
+    "<name>_register.cpp"
+  ]
+}
 ```
 
-### 8.2 setup.py
-
-在 `setup.py` 的 `sources` 列表中添加 4 个文件：
-
-```python
-sources = [
-    # ... 已有文件 ...
-    "games/<name>/<name>_state.cpp",
-    "games/<name>/<name>_rules.cpp",
-    "games/<name>/<name>_net_adapter.cpp",
-    "games/<name>/<name>_register.cpp",
-]
-```
+不要再去手改 `setup.py` 的 sources 列表，也不要在顶层 `CMakeLists.txt` 添加 `add_subdirectory`——两边都会自动从 manifest 读取。
 
 ### 8.3 构建验证
 
@@ -1304,9 +1302,8 @@ m["box_counts"] = std::any(box_counts);
 - [ ] 实现 `<name>_net_adapter.h/.cpp`（继承 `IFeatureEncoder`，实现 3 个必须方法）
 - [ ] 创建 `<name>_register.cpp`（GameRegistrar + 工厂函数）
 - [ ] 创建 `config/game.json`（game_id、action_space、feature_dim 必须精确）
-- [ ] 创建 `CMakeLists.txt`
-- [ ] 在顶层 `CMakeLists.txt` 添加 `add_subdirectory(games/<name>)`
-- [ ] 在 `setup.py` 的 sources 列表中添加 4 个 .cpp 文件
+- [ ] 创建 `games/<name>/CMakeLists.txt`
+- [ ] 在 `games/manifest.json` 追加一项 `{ "id": "<name>", "sources": [...] }`
 - [ ] 构建通过：`pip install -e .`
 - [ ] 验证注册：`python -c "import dinoboard_engine; print(dinoboard_engine.available_games())"`
 

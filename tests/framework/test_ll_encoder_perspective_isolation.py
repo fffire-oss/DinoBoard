@@ -38,17 +38,19 @@ _SLOT_DIMS = _HAND_DIMS + _DRAWN_DIMS
 
 
 def _find_priest_scenario():
-    """Find a seed where seat 0's first action is Priest on seat 1.
-    Verified at write time: seed=0 works (seat 0 has Princess+Priest)."""
-    seed = 0
-    gs = engine.GameSession("loveletter_3p", seed=seed, model_path="", use_filter=False)
-    assert gs.current_player == 0, f"expected seat 0 to act first at seed {seed}"
-    legal = gs.get_legal_actions()
-    # kPriestOffset=28; Priest on seat 1 is action 29.
-    assert 29 in legal, f"expected Priest-on-seat-1 (action 29) legal at seed {seed}, got {legal}"
-    st = gs.get_state_dict()
-    seat1_hand = st["players"][1]["hand"]
-    return seed, 29, seat1_hand
+    """Search seeds for one where seat 0's first action can be Priest on seat 1.
+    kPriestOffset=28; Priest on seat 1 is action 29."""
+    for seed in range(2000):
+        gs = engine.GameSession("loveletter_3p", seed=seed, model_path="", use_filter=False)
+        if gs.current_player != 0:
+            continue
+        legal = gs.get_legal_actions()
+        if 29 not in legal:
+            continue
+        st = gs.get_state_dict()
+        seat1_hand = st["players"][1]["hand"]
+        return seed, 29, seat1_hand
+    raise AssertionError("no seed in [0, 2000) gives Priest-on-seat-1 from seat 0")
 
 
 def test_ob002_encoder_does_not_leak_priest_knowledge_to_third_party():

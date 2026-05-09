@@ -1,27 +1,22 @@
 """Validate that the AI API is truly observation-only.
 
-These tests drive the AI through the HTTP layer (FastAPI TestClient) using ONLY
-action IDs. An independent ground-truth `engine.GameSession` runs locally in
-the test and never shares objects with the AI session. If the AI can complete
-games this way, the separation-of-concerns principle holds at the interface
-layer: no game state ever crosses the API boundary.
+These tests drive the AI through the HTTP layer (FastAPI TestClient) and
+the only data the AI ever sees is the observation stream defined by the
+public-event protocol (action_id + pre_events + post_events + public_snapshot
+for hidden-info games; action_id alone for deterministic games). An
+independent ground-truth `engine.GameSession` runs locally in the test and
+never shares objects with the AI session. If the AI can complete games this
+way the separation-of-concerns principle holds at the interface layer: no
+game state ever crosses the API boundary.
 
 What this validates:
 - The API contract: no game-state fields cross either direction (enforced by
   `test_api_responses_never_include_state_fields` scanning for known keys).
 - End-to-end playability: for every registered canonical game, a full game
   can be driven through the HTTP API.
-- Strong separation for deterministic games: the AI session uses a seed
-  different from ground truth. Both agree on public initial state, AI plays
-  legally without ever reading ground truth.
-
-Shared-seed limitation for stochastic games:
-The AI session and ground truth share a seed so their internal hidden state
-(deck/bag composition) aligns. This is analogous to a real partner handshake
-where both parties agree on "how the cards were shuffled" as the initial
-public setup. The separation is still real — the AI API code never reads
-ground truth's state object; the AI has its own state seeded from the same
-setup. Partners can't leak state through the API contract.
+- The AI session uses a seed independent from ground truth even for
+  hidden-info games — belief consistency comes from the event stream, not
+  from a shared seed.
 """
 from __future__ import annotations
 
@@ -89,25 +84,39 @@ def _play_full_game(
     """Drive a complete game with opponent(s) = random legal, AI seat = API.
 
     Ground truth is a local GameSession. AI session is behind the HTTP API.
-    The only data passed to the AI is action IDs; the only data returned is
-    action IDs + metadata (info dict for rendering, stats for analytics).
-    Nothing state-like crosses either direction.
+    For deterministic games the only payload that crosses is action_id; for
+    hidden-info games the API additionally receives the truth-side public-event
+    trace (pre/post events + public_snapshot) — never any private state.
+
+    Both deterministic and hidden-info paths are exercised through the same
+    helper: the public-event protocol is what the API contract requires.
     """
     if seed_ai is None:
         seed_ai = seed_ground_truth
 
-    # Ground truth simulator — the AI never touches this object.
-    gt = engine.GameSession(game_id, seed_ground_truth)
     meta = engine.game_metadata(game_id)
+    has_events = bool(meta["has_public_event_applier"])
 
-    # Create AI session via API.
-    resp = client.post("/ai/sessions", json={
+    # Ground truth simulator — the AI never touches this object.
+    gt = engine.GameSession(game_id, seed_ground_truth, "", False)
+
+    # Hidden-info games need an initial observation handshake so the AI's
+    # belief tracker starts from a position consistent with truth's
+    # perspective-private facts (e.g. own starting hand in Love Letter).
+    initial_observation = None
+    if has_events:
+        initial_observation = gt.extract_initial_observation(ai_seat)
+
+    create_payload: dict = {
         "game_id": game_id,
         "seed": seed_ai,
         "my_seat": ai_seat,
         "simulations": 40,
         "temperature": 0.0,
-    })
+    }
+    if initial_observation:
+        create_payload["initial_observation"] = initial_observation
+    resp = client.post("/ai/sessions", json=create_payload)
     assert resp.status_code == 200, resp.text
     session_id = resp.json()["session_id"]
 
@@ -132,16 +141,31 @@ def _play_full_game(
                 action_id = body["action_id"]
                 assert action_id in legal, (
                     f"AI returned illegal action {action_id}; legal={legal}")
-                gt.apply_action(action_id)
+                # Drive ground truth with the same action; for hidden-info
+                # games we discard the trace because the AI session has
+                # already advanced its own state via decide().
+                if has_events:
+                    gt.apply_action_with_trace(action_id, ai_seat)
+                else:
+                    gt.apply_action(action_id)
                 action_log.append((current, action_id))
             else:
                 action_id = _random_legal(rng, legal)
-                gt.apply_action(action_id)
+                if has_events:
+                    trace = gt.apply_action_with_trace(action_id, ai_seat)
+                    obs_payload = {
+                        "action_id": action_id,
+                        "pre_events": trace["pre_events"],
+                        "post_events": trace["post_events"],
+                        "public_snapshot": trace["public_snapshot"],
+                    }
+                else:
+                    gt.apply_action(action_id)
+                    obs_payload = {"action_id": action_id}
                 action_log.append((current, action_id))
-                # Tell the AI what just happened — observation only.
                 resp = client.post(
                     f"/ai/sessions/{session_id}/observe",
-                    json={"action_id": action_id},
+                    json=obs_payload,
                 )
                 assert resp.status_code == 200, resp.text
 

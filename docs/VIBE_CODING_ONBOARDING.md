@@ -58,8 +58,8 @@ games/<g>/
 **Tests cannot be skipped past.**
 - `pytest.skip` / `pytest.xfail` to make a red test green is cheating. Either fix or delete.
 
-**Adding a new game: every `.cpp` MUST be in `setup.py` sources.**
-- Missing this is the most common silent failure: build passes, `import` passes, but `available_games()` doesn't see the new game (its `GameRegistrar` static was never linked in).
+**Adding a new game: every `.cpp` MUST be listed in `games/manifest.json`.**
+- The manifest is the single source of truth — `setup.py` and the top-level `CMakeLists.txt` both read it. Forgetting to register a game's `.cpp` is the most common silent failure: build passes, `import` passes, but `available_games()` doesn't see the new game (its `GameRegistrar` static was never linked in).
 
 ---
 
@@ -120,6 +120,8 @@ Hidden-info games additionally need green: `test_tracker_consistent_with_truth`,
 
 ## 6. Baseline check before touching anything
 
+**Prerequisite**: ONNX Runtime must be installed (`brew install onnxruntime` on macOS; tarball under `third_party/onnxruntime-linux-*` on Linux). The build refuses to proceed without it — there is no uniform-policy fallback.
+
 ```bash
 python3 setup.py build_ext --inplace 2>&1 | tail -20
 pytest tests/ -q 2>&1 | tail -5
@@ -159,7 +161,7 @@ Then **paraphrase the core mechanics back to the user in 3–5 sentences** (play
 - Pure deterministic → Quoridor
 - Smallest closed loop → TicTacToe
 
-Write empty stubs for all six files. `legal_actions` returns `[0]`; `do_action` is a no-op. Add every `.cpp` to `setup.py` sources. Run `python3 setup.py build_ext --inplace` and verify `dinoboard_engine.available_games()` shows the new game. **Only fill in real logic after this passes.** Do not write 2000 lines before the first compile.
+Write empty stubs for all six files. `legal_actions` returns `[0]`; `do_action` is a no-op. Add an entry for the game in `games/manifest.json` (id + sources list). Run `python3 setup.py build_ext --inplace` and verify `dinoboard_engine.available_games()` shows the new game. **Only fill in real logic after this passes.** Do not write 2000 lines before the first compile.
 
 **Step 3 — Fill in implementation, write tests.** Copy `tests/<closest>/test_checklist.py`, change `GAME = "..."`, add empty `tests/<X>/__init__.py`. Iterate small: implement a slice → `pytest tests/<X>/` → next slice.
 
@@ -214,7 +216,7 @@ Add or change a feature → update the relevant doc. Fix a bug → add a `docs/K
 - **Reimplementing C++ in Python**, even "just for testing." No.
 - **Reading config with `.get(k, default)`** — masks missing-field bugs.
 - **Skipping a failing assertion via `pytest.skip`.** That's not fixing the test.
-- **Forgetting `.cpp` in `setup.py` sources.** Most insidious failure — no build error, no import error, but the game is invisible.
+- **Forgetting to register a new game in `games/manifest.json`.** Most insidious failure — no build error, no import error, but the game is invisible.
 - **Guessing rules from the game name.** One wrong rule and the whole training run is wasted.
 - **Writing hundreds of lines before the first compile.** Scaffold, build, register, then fill.
 - **Deleting the legacy 2p scalar value-head branch.** Breaks every shipped 2p ONNX.

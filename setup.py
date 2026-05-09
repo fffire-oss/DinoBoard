@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import sys
@@ -59,6 +60,23 @@ def get_pybind_include():
         return ""
 
 
+def _load_game_sources() -> list[str]:
+    """Read games/manifest.json and return the per-game C++ source paths.
+
+    Single source of truth for "what gets compiled into the engine"; the
+    same manifest is consumed by CMakeLists.txt for the cmake build.
+    """
+    manifest_path = ROOT / "games" / "manifest.json"
+    with open(manifest_path, encoding="utf-8") as f:
+        manifest = json.load(f)
+    out = []
+    for game in manifest["games"]:
+        gid = game["id"]
+        for src in game["sources"]:
+            out.append(f"games/{gid}/{src}")
+    return out
+
+
 sources = [
     "bindings/py_engine.cpp",
     "engine/core/action_constraint.cpp",
@@ -68,31 +86,7 @@ sources = [
     "engine/runtime/selfplay_runner.cpp",
     "engine/runtime/arena_runner.cpp",
     "engine/runtime/heuristic_runner.cpp",
-    "games/tictactoe/tictactoe_state.cpp",
-    "games/tictactoe/tictactoe_rules.cpp",
-    "games/tictactoe/tictactoe_net_adapter.cpp",
-    "games/tictactoe/tictactoe_register.cpp",
-    "games/splendor/splendor_state.cpp",
-    "games/splendor/splendor_rules.cpp",
-    "games/splendor/splendor_net_adapter.cpp",
-    "games/splendor/splendor_register.cpp",
-    "games/azul/azul_state.cpp",
-    "games/azul/azul_rules.cpp",
-    "games/azul/azul_net_adapter.cpp",
-    "games/azul/azul_register.cpp",
-    "games/quoridor/quoridor_state.cpp",
-    "games/quoridor/quoridor_rules.cpp",
-    "games/quoridor/quoridor_net_adapter.cpp",
-    "games/quoridor/quoridor_register.cpp",
-    "games/loveletter/loveletter_state.cpp",
-    "games/loveletter/loveletter_rules.cpp",
-    "games/loveletter/loveletter_net_adapter.cpp",
-    "games/loveletter/loveletter_register.cpp",
-    "games/coup/coup_state.cpp",
-    "games/coup/coup_rules.cpp",
-    "games/coup/coup_net_adapter.cpp",
-    "games/coup/coup_register.cpp",
-]
+] + _load_game_sources()
 
 include_dirs = [
     str(ROOT),
@@ -105,6 +99,13 @@ onnx_root = os.environ.get("BOARD_AI_ONNXRUNTIME_ROOT", "")
 with_onnx = os.environ.get("BOARD_AI_WITH_ONNX", "")
 library_dirs = []
 libraries = []
+
+if with_onnx == "0":
+    raise RuntimeError(
+        "BOARD_AI_WITH_ONNX=0 is no longer supported. DinoBoard requires ONNX Runtime "
+        "for selfplay/eval/web AI; there is no uniform-policy fallback. "
+        "Unset BOARD_AI_WITH_ONNX and install ONNX Runtime."
+    )
 
 if with_onnx == "":
     # Auto-detect ONNX Runtime in priority order:
@@ -137,22 +138,27 @@ if with_onnx == "":
             with_onnx = "1"
             break
     if with_onnx != "1":
-        with_onnx = "0"
+        raise RuntimeError(
+            "ONNX Runtime not found. DinoBoard requires ONNX for selfplay/eval/web AI;\n"
+            "there is no uniform-policy fallback — see CLAUDE.md \"No Fallbacks, No Silent Degradation\".\n"
+            "Install one of:\n"
+            "  - macOS:    brew install onnxruntime\n"
+            "  - Linux:    drop the official tarball under third_party/onnxruntime-linux-* (auto-detected)\n"
+            "  - Windows:  drop the official zip under third_party/onnxruntime-win-* (auto-detected)\n"
+            "  - Custom:   export BOARD_AI_ONNXRUNTIME_ROOT=/path/to/onnxruntime"
+        )
 
 with_onnx = with_onnx == "1"
 
-define_macros.append(("BOARD_AI_WITH_ONNX", "1" if with_onnx else "0"))
-if with_onnx:
-    if not onnx_root:
-        raise RuntimeError("BOARD_AI_WITH_ONNX=1 requires BOARD_AI_ONNXRUNTIME_ROOT")
-    include_dirs.append(str(Path(onnx_root) / "include"))
-    onnx_inner = Path(onnx_root) / "include" / "onnxruntime"
-    if onnx_inner.is_dir():
-        include_dirs.append(str(onnx_inner))
-    library_dirs.append(str(Path(onnx_root) / "lib"))
-    libraries.append("onnxruntime")
-else:
-    print("WARNING: Building without ONNX runtime. MCTS will use uniform policy (no neural network guidance).")
+define_macros.append(("BOARD_AI_WITH_ONNX", "1"))
+if not onnx_root:
+    raise RuntimeError("BOARD_AI_WITH_ONNX=1 requires BOARD_AI_ONNXRUNTIME_ROOT")
+include_dirs.append(str(Path(onnx_root) / "include"))
+onnx_inner = Path(onnx_root) / "include" / "onnxruntime"
+if onnx_inner.is_dir():
+    include_dirs.append(str(onnx_inner))
+library_dirs.append(str(Path(onnx_root) / "lib"))
+libraries.append("onnxruntime")
 
 # rpath so the compiled extension finds the bundled libonnxruntime.so at
 # runtime without requiring LD_LIBRARY_PATH to be set by the caller.

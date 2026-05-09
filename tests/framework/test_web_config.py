@@ -2,16 +2,12 @@
 
 Verifies that:
 1. load_web_configs() correctly reads web.json files
-2. Fallback to game.json legacy fields works
-3. Difficulty overrides apply correctly
-4. Tail solve config propagates to GameSession
-5. Action filter config propagates correctly
+2. Difficulty overrides apply correctly
+3. Tail solve config propagates to GameSession
+4. Action filter config propagates correctly
 """
-import json
 import sys
-import tempfile
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -243,71 +239,3 @@ class TestSessionCreation:
         assert sess["use_model"] is False
 
 
-# ---------------------------------------------------------------------------
-# Backward compatibility: fallback to game.json legacy fields
-# ---------------------------------------------------------------------------
-
-class TestWebConfigFallback:
-
-    def test_fallback_reads_legacy_web_field(self, tmp_path):
-        """If web.json doesn't exist, load_web_configs falls back to game.json web field."""
-        games_dir = tmp_path / "games" / "fakegame" / "config"
-        games_dir.mkdir(parents=True)
-        game_json = {
-            "game_id": "fakegame",
-            "web": {
-                "analysis_simulations": 3000,
-                "difficulty_overrides": {"casual": {"temperature": 0.5}},
-            },
-        }
-        (games_dir / "game.json").write_text(json.dumps(game_json))
-
-        from game_service.sessions import load_web_configs
-        with patch("game_service.sessions.PROJECT_ROOT", tmp_path):
-            configs = load_web_configs()
-        assert "fakegame" in configs
-        assert configs["fakegame"]["analysis_simulations"] == 3000
-        assert configs["fakegame"]["difficulty_overrides"]["casual"]["temperature"] == 0.5
-
-    def test_fallback_reads_legacy_action_filter(self, tmp_path):
-        """Legacy ai_use_action_filter in game.json should be picked up."""
-        games_dir = tmp_path / "games" / "fakegame2" / "config"
-        games_dir.mkdir(parents=True)
-        game_json = {
-            "game_id": "fakegame2",
-            "ai_use_action_filter": True,
-        }
-        (games_dir / "game.json").write_text(json.dumps(game_json))
-
-        from game_service.sessions import load_web_configs
-        with patch("game_service.sessions.PROJECT_ROOT", tmp_path):
-            configs = load_web_configs()
-        assert configs["fakegame2"]["ai_use_action_filter"] is True
-
-    def test_web_json_takes_priority_over_legacy(self, tmp_path):
-        """If both web.json and game.json web field exist, web.json wins."""
-        games_dir = tmp_path / "games" / "fakegame3" / "config"
-        games_dir.mkdir(parents=True)
-        game_json = {
-            "game_id": "fakegame3",
-            "web": {"analysis_simulations": 9999},
-        }
-        web_json = {"analysis_simulations": 1234}
-        (games_dir / "game.json").write_text(json.dumps(game_json))
-        (games_dir / "web.json").write_text(json.dumps(web_json))
-
-        from game_service.sessions import load_web_configs
-        with patch("game_service.sessions.PROJECT_ROOT", tmp_path):
-            configs = load_web_configs()
-        assert configs["fakegame3"]["analysis_simulations"] == 1234
-
-    def test_no_config_returns_empty(self, tmp_path):
-        """Game with no web.json and no legacy fields should not appear."""
-        games_dir = tmp_path / "games" / "minimal" / "config"
-        games_dir.mkdir(parents=True)
-        (games_dir / "game.json").write_text(json.dumps({"game_id": "minimal"}))
-
-        from game_service.sessions import load_web_configs
-        with patch("game_service.sessions.PROJECT_ROOT", tmp_path):
-            configs = load_web_configs()
-        assert "minimal" not in configs

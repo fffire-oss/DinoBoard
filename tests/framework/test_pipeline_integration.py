@@ -249,8 +249,7 @@ def test_simulation_rampup_formula():
 
 
 # ---------------------------------------------------------------------------
-# Heuristic episode data collection (used by run_eval_vs_heuristic; the old
-# warmstart path that consumed these is gone — see WARMSTART_INTO_HEURISTIC_GUIDANCE).
+# Heuristic episode data collection (used by run_eval_vs_heuristic).
 # ---------------------------------------------------------------------------
 
 def test_heuristic_episode_samples():
@@ -412,34 +411,6 @@ def test_heuristic_guidance_hold_period(tmp_path):
     assert not (tmp_path / "models" / "model_warm.onnx").exists(), \
         "model_warm.onnx should not be produced after warmstart removal"
     assert (tmp_path / "checkpoint.pt").exists()
-
-
-def test_legacy_warm_start_keys_rejected(tmp_path):
-    """Legacy warm_start_* keys must raise ValueError with migration guidance."""
-    cfg = find_game_config("tictactoe")
-    cfg["training"] = {
-        **cfg.get("training", {}),
-        "warm_start_heuristic": True,
-        "warm_start_episodes": 10,
-        "simulations": 10,
-        "max_game_plies": 9,
-        "steps": 1,
-        "episodes_per_step": 2,
-    }
-    with pytest.raises(ValueError, match="warm_start_"):
-        run_training_loop(
-            game_id="tictactoe",
-            game_config=cfg,
-            output_dir=tmp_path,
-            steps=1,
-            episodes_per_step=2,
-            eval_every=0,
-            eval_games=0,
-            max_workers=1,
-            batch_size=32,
-            learning_rate=0.001,
-            seed=42,
-        )
 
 
 def test_full_training_loop_with_eval(tmp_path):

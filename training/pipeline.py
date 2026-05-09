@@ -334,22 +334,6 @@ def run_training_loop(
     initial_onnx = models_dir / "model_init.onnx"
     export_onnx(net, initial_onnx, feature_dim)
 
-    # Warmstart was removed in favour of a three-segment heuristic_guidance
-    # schedule (hold → linear decay → zero). See
-    # docs/plans/WARMSTART_INTO_HEURISTIC_GUIDANCE.md.
-    legacy_warm_keys = [k for k in train_cfg if k.startswith("warm_start_")]
-    if legacy_warm_keys:
-        raise ValueError(
-            "Legacy warm_start_* keys are no longer supported. Migrate to the "
-            "three-segment heuristic_guidance schedule:\n"
-            "  warm_start_episodes / warm_start_epochs → heuristic_guidance_hold_steps "
-            "+ heuristic_guidance_steps (decay end)\n"
-            "  warm_start_heuristic → set heuristic_guidance_initial_ratio = 1.0\n"
-            "  warm_start_temperature → heuristic_guidance_temperature "
-            "(eval-time temperature stays in heuristic_temperature)\n"
-            f"Found legacy keys in game.json training: {sorted(legacy_warm_keys)}"
-        )
-
     current_model_path = str(initial_onnx)
     best_model_path = current_model_path
 

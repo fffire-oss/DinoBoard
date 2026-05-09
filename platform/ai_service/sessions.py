@@ -1,6 +1,7 @@
 """AI-only session: observation-in, action-out. No state crosses the API boundary."""
 from __future__ import annotations
 
+import sys
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -10,30 +11,13 @@ from typing import Optional
 import dinoboard_engine as engine
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(_PROJECT_ROOT / "platform"))
 
-
-def _base_game_id(game_id: str) -> str:
-    import re
-    return re.sub(r"_\d+p$", "", game_id)
-
-
-def _find_model_path(game_id: str) -> str:
-    """Resolve the deployed model for a game.
-
-    Convention: games/<base>/model/<variant>.onnx. All variants of a game
-    share one model/ directory. The base 2p id is expanded to '<game>_2p'.
-    Same resolver as `platform/game_service/sessions.py::find_model_path`.
-    """
-    base = _base_game_id(game_id)
-    model_dir = _PROJECT_ROOT / "games" / base / "model"
-    variant_name = game_id if game_id != base else f"{base}_2p"
-    candidate = model_dir / f"{variant_name}.onnx"
-    if candidate.exists():
-        return str(candidate)
-    alt = model_dir / f"{game_id}.onnx"
-    if alt.exists():
-        return str(alt)
-    return ""
+from model_paths import (  # noqa: E402
+    base_game_id as _base_game_id,
+    find_model_path as _find_model_path,
+)
+from session_factory import SessionConfig, SessionFactory  # noqa: E402
 
 
 @dataclass
@@ -55,20 +39,36 @@ class AISession:
     my_seat: int
     simulations: int
     temperature: float
+    has_public_event_applier: bool
 
     _gs: engine.GameSession = field(repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _action_count: int = 0
     _closed: bool = False
 
-    def observe(self, action_id: int) -> None:
+    def observe(
+        self,
+        action_id: int,
+        pre_events: Optional[list[dict]] = None,
+        post_events: Optional[list[dict]] = None,
+        public_snapshot: Optional[dict] = None,
+    ) -> None:
         """Record that a player played action_id.
 
         Caller must send observations in turn order. The AI's own moves are
         applied via decide() and MUST NOT be re-sent via observe(). This
         mirrors how an external game server would notify the AI of OTHER
         players' moves between its own decisions.
+
+        For hidden-info games (those with a registered public_event_applier),
+        the caller MUST pass `pre_events`, `post_events`, and `public_snapshot`
+        — without them the AI's belief tracker cannot stay consistent with
+        truth and a ValueError is raised. For deterministic games these
+        arguments must be omitted/empty.
         """
+        pre_events = pre_events or []
+        post_events = post_events or []
+        public_snapshot = public_snapshot or {}
         with self._lock:
             if self._closed:
                 raise RuntimeError(f"AISession {self.session_id} is closed")
@@ -76,16 +76,34 @@ class AISession:
                 raise RuntimeError(
                     f"AISession {self.session_id}: game is already terminal, "
                     f"cannot observe more actions")
-            legal = self._gs.get_legal_actions()
-            if action_id not in legal:
-                raise ValueError(
-                    f"AISession {self.session_id}: observed action {action_id} "
-                    f"is not legal from current position. Legal: {legal}. "
-                    f"The ground truth and AI may have diverged — for stochastic "
-                    f"games, ensure the AI session is seeded consistently with "
-                    f"ground truth (MVP limitation; future v2 will use a "
-                    f"public-event protocol instead).")
-            self._gs.apply_action(action_id)
+
+            if self.has_public_event_applier:
+                if not pre_events and not post_events and not public_snapshot:
+                    raise ValueError(
+                        f"AISession {self.session_id}: game {self.game_id!r} is a "
+                        f"hidden-info game; observe() requires pre_events / "
+                        f"post_events / public_snapshot. Caller passed action_id "
+                        f"alone — the AI cannot update belief state from that.")
+                self._gs.apply_observation(
+                    action_id,
+                    pre_events,
+                    post_events,
+                    public_snapshot,
+                )
+            else:
+                if pre_events or post_events or public_snapshot:
+                    raise ValueError(
+                        f"AISession {self.session_id}: game {self.game_id!r} is a "
+                        f"deterministic game with no public_event_applier; "
+                        f"observe() must be called with action_id only "
+                        f"(no events / snapshot).")
+                legal = self._gs.get_legal_actions()
+                if action_id not in legal:
+                    raise ValueError(
+                        f"AISession {self.session_id}: observed action {action_id} "
+                        f"is not legal from current position. Legal: {legal}.")
+                self._gs.apply_action(action_id)
+
             self._action_count += 1
 
     def decide(self) -> dict:
@@ -165,6 +183,7 @@ class SessionStore:
         simulations: int = 800,
         temperature: float = 0.0,
         model_path_override: Optional[str] = None,
+        initial_observation: Optional[dict] = None,
     ) -> AISession:
         if game_id not in engine.available_games():
             raise ValueError(
@@ -172,9 +191,20 @@ class SessionStore:
 
         meta = engine.game_metadata(game_id)
         num_players = meta["num_players"]
+        has_public_event_applier = bool(meta["has_public_event_applier"])
+        has_initial_observation_applier = bool(meta["has_initial_observation_applier"])
         if my_seat < 0 or my_seat >= num_players:
             raise ValueError(
                 f"my_seat={my_seat} out of range for game with {num_players} players")
+
+        if has_public_event_applier and not has_initial_observation_applier:
+            raise RuntimeError(
+                f"game {game_id!r} registered public_event_applier without "
+                f"initial_observation_applier — REST AI flow needs both.")
+        if not has_public_event_applier and initial_observation:
+            raise ValueError(
+                f"game {game_id!r} is deterministic; initial_observation must "
+                f"not be provided.")
 
         if model_path_override is not None:
             model_path = model_path_override
@@ -187,7 +217,15 @@ class SessionStore:
                 f"no trained model found for {game_id}. "
                 f"Expected at games/{base}/model/{variant}.onnx.")
 
-        gs = engine.GameSession(game_id, seed, model_path, False)
+        gs = SessionFactory.create(SessionConfig(
+            game_id=game_id,
+            seed=seed,
+            model_path=model_path,
+            use_action_filter=False,
+        ))
+
+        if has_public_event_applier and initial_observation is not None:
+            gs.apply_initial_observation(my_seat, initial_observation)
 
         session_id = uuid.uuid4().hex[:12]
         sess = AISession(
@@ -197,6 +235,7 @@ class SessionStore:
             my_seat=my_seat,
             simulations=simulations,
             temperature=temperature,
+            has_public_event_applier=has_public_event_applier,
             _gs=gs,
         )
         with self._lock:

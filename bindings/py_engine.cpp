@@ -1035,6 +1035,88 @@ class GameSessionWrapper {
     ++ply_count_;
   }
 
+  // Test/integration helper: apply an action on the truth state and ALSO
+  // return the public-event trace (pre/post events + public_snapshot) for
+  // a given perspective. This is what selfplay's trace machinery records
+  // per-ply, exposed in a step-driven form so tests can drive a ground-truth
+  // session and forward the resulting trace to a separate API/AI session.
+  //
+  // The trace dict shape matches `observation_trace[i]` from
+  // run_selfplay_episode: {"pre_events": [...], "post_events": [...],
+  // "public_snapshot": {...}}. For deterministic games (no extractor)
+  // returns empty lists / dict.
+  py::dict apply_action_with_trace(ActionId action, int perspective) {
+    std::vector<std::pair<std::string, AnyMap>> pre_list, post_list;
+    AnyMap snap_map;
+    bool have_extractor = false;
+    {
+      py::gil_scoped_release release;
+      const int actor = bundle_->state->current_player();
+      std::unique_ptr<IGameState> state_before = bundle_->state->clone_state();
+      bundle_->rules->do_action_fast(*bundle_->state, action);
+      if (bundle_->public_event_extractor) {
+        have_extractor = true;
+        PublicEventTrace trace = bundle_->public_event_extractor(
+            *state_before, action, *bundle_->state, perspective);
+        for (auto& ev : trace.pre_events)
+          pre_list.emplace_back(std::move(ev.first), std::move(ev.second));
+        for (auto& ev : trace.post_events)
+          post_list.emplace_back(std::move(ev.first), std::move(ev.second));
+        snap_map = std::move(trace.public_snapshot);
+      }
+      if (bt_) {
+        tracker_observe(*bt_, *bundle_, *state_before, action, *bundle_->state,
+                        actor);
+      }
+      if (!external_obs_mode_) {
+        const int n = static_cast<int>(ai_views_.size());
+        for (int p = 0; p < n; ++p) {
+          advance_ai_view_(p, *state_before, action);
+        }
+      }
+      ++ply_count_;
+    }
+    py::dict out;
+    py::list pre;
+    for (const auto& [kind, payload] : pre_list) {
+      py::dict e;
+      e["kind"] = kind;
+      py::dict p;
+      for (const auto& [pk, pv] : payload) p[py::cast(pk)] = any_to_py(pv);
+      e["payload"] = p;
+      pre.append(e);
+    }
+    out["pre_events"] = pre;
+    py::list post;
+    for (const auto& [kind, payload] : post_list) {
+      py::dict e;
+      e["kind"] = kind;
+      py::dict p;
+      for (const auto& [pk, pv] : payload) p[py::cast(pk)] = any_to_py(pv);
+      e["payload"] = p;
+      post.append(e);
+    }
+    out["post_events"] = post;
+    py::dict snap;
+    if (have_extractor) {
+      for (const auto& [k, v] : snap_map) snap[py::cast(k)] = any_to_py(v);
+    }
+    out["public_snapshot"] = snap;
+    return out;
+  }
+
+  // Test/integration helper: extract the initial observation for a given
+  // perspective from the truth state, the way the partner-side server would
+  // before sending it to the AI. Returns empty dict for games without an
+  // initial_observation_extractor.
+  py::dict extract_initial_observation(int perspective) {
+    py::dict out;
+    if (!bundle_->initial_observation_extractor) return out;
+    AnyMap obs = bundle_->initial_observation_extractor(*bundle_->state, perspective);
+    for (const auto& [k, v] : obs) out[py::cast(k)] = any_to_py(v);
+    return out;
+  }
+
   // Public-event protocol (used by the AI API). Applies an event to the
   // internal game state. `phase` is "pre" or "post" relative to an action;
   // the caller is responsible for ordering pre events BEFORE apply_action
@@ -1475,11 +1557,19 @@ PYBIND11_MODULE(dinoboard_engine, m) {
     const int num_players = bundle.state->num_players();
     const int action_space = bundle.encoder->action_space();
     const int feature_dim = bundle.encoder->feature_dim();
+    const bool has_public_event_applier = static_cast<bool>(bundle.public_event_applier);
+    const bool has_initial_observation_applier = static_cast<bool>(bundle.initial_observation_applier);
     py::gil_scoped_acquire acquire;
     py::dict out;
     out["num_players"] = num_players;
     out["action_space"] = action_space;
     out["feature_dim"] = feature_dim;
+    // Capability flags: hidden-info games register a public_event_applier
+    // (and usually an initial_observation_applier); fully-public games
+    // (tictactoe, quoridor) don't. The REST AI API uses these to dispatch
+    // between the action_id-only path and the full apply_observation path.
+    out["has_public_event_applier"] = has_public_event_applier;
+    out["has_initial_observation_applier"] = has_initial_observation_applier;
     return out;
   }, py::arg("game_id"));
 
@@ -1510,6 +1600,11 @@ PYBIND11_MODULE(dinoboard_engine, m) {
       .def("get_legal_actions", &GameSessionWrapper::get_legal_actions)
       .def("get_all_legal_actions", &GameSessionWrapper::get_all_legal_actions)
       .def("apply_action", &GameSessionWrapper::apply_action)
+      .def("apply_action_with_trace", &GameSessionWrapper::apply_action_with_trace,
+           py::arg("action"), py::arg("perspective"))
+      .def("extract_initial_observation",
+           &GameSessionWrapper::extract_initial_observation,
+           py::arg("perspective"))
       .def("apply_observation", &GameSessionWrapper::apply_observation,
            py::arg("action"),
            py::arg("pre_events") = py::list(),

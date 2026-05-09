@@ -16,6 +16,7 @@ from .sessions import (
     precompute_clear,
 )
 from .replay import build_analysis_dict, make_replay_frame
+from session_factory import SessionFactory
 
 import os
 
@@ -70,27 +71,8 @@ def shutdown_executors() -> None:
 # ─── Precompute ───
 
 
-def _apply_tail_solve_config(gs, sess: dict) -> None:
-    """Honor web.json tail_solve on every isolated session.
-
-    Without this, web AI moves / precompute / analysis fall back to plain
-    MCTS even when web.json declares tail_solve — silent strength loss
-    (BUG / OB-004). Must be called immediately after each isolated
-    GameSession is constructed, before apply_action / get_ai_action.
-    """
-    if sess.get("tail_solve_enabled", False):
-        gs.configure_tail_solve(
-            True,
-            sess["tail_solve_depth_limit"],
-            sess["tail_solve_node_budget"],
-        )
-
-
 def _precompute_worker(sess: dict, ply_index: int, expected_hash: str) -> None:
     try:
-        actual_id = sess["actual_id"]
-        seed = sess["seed"]
-        model_path = sess["model_path"] if sess["use_model"] else ""
         action_history = list(sess["action_history"])
         if sess["precompute"]["history_hash"] != expected_hash:
             return
@@ -104,10 +86,8 @@ def _precompute_worker(sess: dict, ply_index: int, expected_hash: str) -> None:
         #     defaults to q=0 → silent 50% win-rate readout. With coverage
         #     every legal edge is visited at least once and gets a real q.
         # Live AI play continues to use sess["ai_use_filter"] / no coverage.
-        gs = engine.GameSession(actual_id, seed, model_path, False)
-        _apply_tail_solve_config(gs, sess)
-        for aid in action_history:
-            gs.apply_action(aid)
+        gs = SessionFactory.from_session_dict(
+            sess, use_action_filter=False, history=action_history)
         if gs.is_terminal:
             return
 
@@ -152,13 +132,11 @@ def _cancelled(sess: dict) -> bool:
 
 def _build_isolated_gs(sess: dict) -> engine.GameSession:
     """Isolated GameSession for AI search (honors the per-game action filter)."""
-    model_path = sess["model_path"] if sess["use_model"] else ""
-    gs = engine.GameSession(sess["actual_id"], sess["seed"], model_path,
-                            sess["ai_use_filter"])
-    _apply_tail_solve_config(gs, sess)
-    for aid in sess["action_history"]:
-        gs.apply_action(aid)
-    return gs
+    return SessionFactory.from_session_dict(
+        sess,
+        use_action_filter=sess["ai_use_filter"],
+        history=sess["action_history"],
+    )
 
 
 def _get_ai_move(gs: engine.GameSession, sess: dict) -> dict:
@@ -217,12 +195,8 @@ def _analyze_user_move(sess: dict) -> dict | None:
     # Fallback: inline MCTS if precompute missed. Mirrors the precompute
     # config — unfiltered + cover_root_edges so action_values is dense.
     if search_result is None:
-        model_path = sess["model_path"] if sess["use_model"] else ""
-        gs_pre = engine.GameSession(sess["actual_id"], sess["seed"], model_path,
-                                    False)
-        _apply_tail_solve_config(gs_pre, sess)
-        for aid in pre_move_history:
-            gs_pre.apply_action(aid)
+        gs_pre = SessionFactory.from_session_dict(
+            sess, use_action_filter=False, history=pre_move_history)
         if gs_pre.is_terminal:
             return None
         analysis_sims = sess.get("analysis_simulations", DEFAULT_ANALYSIS_SIMULATIONS)

@@ -315,7 +315,7 @@ Web 平台相关的 AI 参数独立于训练配置，放在 `web.json` 中管理
 - 使用 training_action_filter 的游戏（Quoridor）：设置 `ai_use_action_filter: true`
 - 注册了 tail_solver 的完全信息游戏（Quoridor）：设置 `tail_solve.enabled: true`，AI 在终局阶段会尝试精确求解
 
-**向后兼容**：如果 `web.json` 不存在，平台会回退读取 `game.json` 中的 `web` 字段和 `ai_use_action_filter`。新游戏应使用 `web.json`。
+没有 `web.json` 的游戏（如 tictactoe）平台会用空 dict，落回每项的默认值；不再支持把 web 字段写在 `game.json` 里。
 
 ### 分析 pipeline 的特殊行为（与 AI 实战路径的区别）
 

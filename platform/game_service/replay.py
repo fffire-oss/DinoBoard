@@ -68,9 +68,14 @@ def build_frames_from_actions(
     action_history: list[int],
 ) -> list[dict]:
     """Replay action_history through a GameSession, producing frames."""
-    import dinoboard_engine
+    from session_factory import SessionConfig, SessionFactory
 
-    gs = dinoboard_engine.GameSession(game_id, seed)
+    gs = SessionFactory.create(SessionConfig(
+        game_id=game_id,
+        seed=seed,
+        model_path="",
+        use_action_filter=False,
+    ))
     frames = [{
         "ply_index": 0,
         "actor": "start",

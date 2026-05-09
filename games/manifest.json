@@ -1,0 +1,59 @@
+{
+  "_doc": "Single source of truth for the games registered into the C++ engine. Adding a game = appending an entry here. setup.py and CMakeLists.txt both consume this file. Each entry's `sources` is relative to games/<id>/ and is consumed verbatim.",
+  "games": [
+    {
+      "id": "tictactoe",
+      "sources": [
+        "tictactoe_state.cpp",
+        "tictactoe_rules.cpp",
+        "tictactoe_net_adapter.cpp",
+        "tictactoe_register.cpp"
+      ]
+    },
+    {
+      "id": "splendor",
+      "sources": [
+        "splendor_state.cpp",
+        "splendor_rules.cpp",
+        "splendor_net_adapter.cpp",
+        "splendor_register.cpp"
+      ]
+    },
+    {
+      "id": "azul",
+      "sources": [
+        "azul_state.cpp",
+        "azul_rules.cpp",
+        "azul_net_adapter.cpp",
+        "azul_register.cpp"
+      ]
+    },
+    {
+      "id": "quoridor",
+      "sources": [
+        "quoridor_state.cpp",
+        "quoridor_rules.cpp",
+        "quoridor_net_adapter.cpp",
+        "quoridor_register.cpp"
+      ]
+    },
+    {
+      "id": "loveletter",
+      "sources": [
+        "loveletter_state.cpp",
+        "loveletter_rules.cpp",
+        "loveletter_net_adapter.cpp",
+        "loveletter_register.cpp"
+      ]
+    },
+    {
+      "id": "coup",
+      "sources": [
+        "coup_state.cpp",
+        "coup_rules.cpp",
+        "coup_net_adapter.cpp",
+        "coup_register.cpp"
+      ]
+    }
+  ]
+}
