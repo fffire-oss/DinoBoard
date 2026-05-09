@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "../../engine/core/game_registry.h"
+#include "../../engine/core/snapshot_io.h"
 #include "loveletter_state.h"
 #include "loveletter_rules.h"
 #include "loveletter_net_adapter.h"
@@ -480,6 +481,139 @@ void apply_initial_observation(IGameState& state, int perspective, const AnyMap&
   }
 }
 
+// Per-field emitter/applier table for the public_snapshot. Schema's
+// declaration order in loveletter_state.cpp drives `viz::emit_snapshot`
+// / `viz::apply_snapshot`; entries here translate one schema all_public
+// field to AnyMap key. Every all_public field must have an entry in
+// BOTH maps; emit/apply throw if not. Variable-length / size-only keys
+// (deck_size, discard_piles, face_up_removed) are NOT schema fields —
+// they're handled directly alongside this call.
+template <int NPlayers>
+const board_ai::viz::SnapshotIO& loveletter_snapshot_io() {
+  using LLState = LoveLetterState<NPlayers>;
+  static const board_ai::viz::SnapshotIO io = []() {
+    using namespace board_ai;
+    viz::SnapshotIO t;
+
+    auto put_int = [](AnyMap& m, const char* key, int v) { m[key] = std::any(v); };
+    auto put_bool = [](AnyMap& m, const char* key, bool v) { m[key] = std::any(v); };
+    auto put_vec = [](AnyMap& m, const char* key, std::vector<int> v) {
+      m[key] = std::any(std::move(v));
+    };
+
+    // ---- emitters ----
+    t.emitters["current_player"] = [put_int](const IGameState& s, AnyMap& m) {
+      const auto& d = checked_cast<LLState>(s).data;
+      put_int(m, "current_player", static_cast<int>(d.current_player));
+    };
+    t.emitters["first_player"] = [put_int](const IGameState& s, AnyMap& m) {
+      const auto& d = checked_cast<LLState>(s).data;
+      put_int(m, "first_player", static_cast<int>(d.first_player));
+    };
+    t.emitters["winner"] = [put_int](const IGameState& s, AnyMap& m) {
+      const auto& d = checked_cast<LLState>(s).data;
+      put_int(m, "winner", static_cast<int>(d.winner));
+    };
+    t.emitters["terminal"] = [put_bool](const IGameState& s, AnyMap& m) {
+      const auto& d = checked_cast<LLState>(s).data;
+      put_bool(m, "terminal", static_cast<bool>(d.terminal));
+    };
+    t.emitters["ply"] = [put_int](const IGameState& s, AnyMap& m) {
+      const auto& d = checked_cast<LLState>(s).data;
+      put_int(m, "ply", static_cast<int>(d.ply));
+    };
+    t.emitters["alive"] = [put_vec](const IGameState& s, AnyMap& m) {
+      const auto& d = checked_cast<LLState>(s).data;
+      std::vector<int> v(NPlayers);
+      for (int p = 0; p < NPlayers; ++p) v[p] = d.alive[p] ? 1 : 0;
+      put_vec(m, "alive", std::move(v));
+    };
+    t.emitters["protected_flags"] = [put_vec](const IGameState& s, AnyMap& m) {
+      const auto& d = checked_cast<LLState>(s).data;
+      std::vector<int> v(NPlayers);
+      for (int p = 0; p < NPlayers; ++p) v[p] = d.protected_flags[p] ? 1 : 0;
+      put_vec(m, "protected_flags", std::move(v));
+    };
+    t.emitters["hand_exposed"] = [put_vec](const IGameState& s, AnyMap& m) {
+      const auto& d = checked_cast<LLState>(s).data;
+      std::vector<int> v(NPlayers);
+      for (int p = 0; p < NPlayers; ++p) v[p] = static_cast<int>(d.hand_exposed[p]);
+      put_vec(m, "hand_exposed", std::move(v));
+    };
+
+    // ---- appliers ----
+    auto get_int = [](const AnyMap& m, const char* key) -> int {
+      auto it = m.find(key);
+      return (it != m.end()) ? std::any_cast<int>(it->second) : 0;
+    };
+    auto get_bool = [](const AnyMap& m, const char* key) -> bool {
+      auto it = m.find(key);
+      return (it != m.end()) ? std::any_cast<bool>(it->second) : false;
+    };
+    auto get_iv = [](const AnyMap& m, const char* key) -> std::vector<int> {
+      auto it = m.find(key);
+      if (it == m.end()) return {};
+      if (it->second.type() == typeid(std::vector<int>)) {
+        return std::any_cast<std::vector<int>>(it->second);
+      }
+      if (it->second.type() == typeid(std::vector<std::any>)) {
+        const auto& av = std::any_cast<const std::vector<std::any>&>(it->second);
+        std::vector<int> out;
+        out.reserve(av.size());
+        for (const auto& x : av) {
+          if (x.type() == typeid(int)) out.push_back(std::any_cast<int>(x));
+        }
+        return out;
+      }
+      return {};
+    };
+
+    t.appliers["current_player"] = [get_int](IGameState& s, const AnyMap& m) {
+      checked_cast<LLState>(s).data.current_player =
+          static_cast<std::int8_t>(get_int(m, "current_player"));
+    };
+    t.appliers["first_player"] = [get_int](IGameState& s, const AnyMap& m) {
+      checked_cast<LLState>(s).data.first_player =
+          static_cast<std::int8_t>(get_int(m, "first_player"));
+    };
+    t.appliers["winner"] = [get_int](IGameState& s, const AnyMap& m) {
+      checked_cast<LLState>(s).data.winner =
+          static_cast<std::int8_t>(get_int(m, "winner"));
+    };
+    t.appliers["terminal"] = [get_bool](IGameState& s, const AnyMap& m) {
+      checked_cast<LLState>(s).data.terminal = get_bool(m, "terminal");
+    };
+    t.appliers["ply"] = [get_int](IGameState& s, const AnyMap& m) {
+      checked_cast<LLState>(s).data.ply =
+          static_cast<std::int16_t>(get_int(m, "ply"));
+    };
+    t.appliers["alive"] = [get_iv](IGameState& s, const AnyMap& m) {
+      auto v = get_iv(m, "alive");
+      auto& d = checked_cast<LLState>(s).data;
+      for (int p = 0; p < NPlayers && p < static_cast<int>(v.size()); ++p) {
+        d.alive[p] = v[p] != 0;
+      }
+    };
+    t.appliers["protected_flags"] = [get_iv](IGameState& s, const AnyMap& m) {
+      auto v = get_iv(m, "protected_flags");
+      auto& d = checked_cast<LLState>(s).data;
+      for (int p = 0; p < NPlayers && p < static_cast<int>(v.size()); ++p) {
+        d.protected_flags[p] = v[p] != 0;
+      }
+    };
+    t.appliers["hand_exposed"] = [get_iv](IGameState& s, const AnyMap& m) {
+      auto v = get_iv(m, "hand_exposed");
+      auto& d = checked_cast<LLState>(s).data;
+      for (int p = 0; p < NPlayers && p < static_cast<int>(v.size()); ++p) {
+        d.hand_exposed[p] = static_cast<std::int8_t>(v[p]);
+      }
+    };
+
+    return t;
+  }();
+  return io;
+}
+
 template <int NPlayers>
 PublicEventTrace extract_events(
     const IGameState& before,
@@ -576,24 +710,16 @@ PublicEventTrace extract_events(
   //   idempotence across re-apply)
   {
     AnyMap snap;
-    snap["current_player"] = std::any(static_cast<int>(da.current_player));
-    snap["first_player"] = std::any(static_cast<int>(da.first_player));
-    snap["ply"] = std::any(static_cast<int>(da.ply));
-    snap["winner"] = std::any(static_cast<int>(da.winner));
-    snap["terminal"] = std::any(static_cast<bool>(da.terminal));
-    snap["deck_size"] = std::any(static_cast<int>(da.deck.size()));
+    // Schema-driven public fields. See loveletter_snapshot_io above.
+    board_ai::viz::emit_snapshot(after, LoveLetterState<NPlayers>::schema(),
+                                 loveletter_snapshot_io<NPlayers>(), snap);
 
-    std::vector<int> alive_v(NPlayers);
-    std::vector<int> protected_v(NPlayers);
-    std::vector<int> hand_exposed_v(NPlayers);
-    for (int p = 0; p < NPlayers; ++p) {
-      alive_v[p] = da.alive[p] ? 1 : 0;
-      protected_v[p] = da.protected_flags[p] ? 1 : 0;
-      hand_exposed_v[p] = static_cast<int>(da.hand_exposed[p]);
-    }
-    snap["alive"] = std::any(alive_v);
-    snap["protected_flags"] = std::any(protected_v);
-    snap["hand_exposed"] = std::any(hand_exposed_v);
+    // Snapshot-only keys (not schema fields):
+    //  - deck_size: public count of the hidden deck
+    //  - discard_piles: per-player all-public stacks (variable-length)
+    //  - face_up_removed: 2p-only public vector (deterministic at game
+    //    start; included for applier idempotence across re-apply)
+    snap["deck_size"] = std::any(static_cast<int>(da.deck.size()));
 
     std::vector<std::vector<int>> discards_all(NPlayers);
     for (int p = 0; p < NPlayers; ++p) {
@@ -620,19 +746,19 @@ PublicEventTrace extract_events(
 // Inverse of the public_snapshot population above.
 // Writes back every public field onto `state`. Called at the end of
 // apply_observation, which overwrites session state_'s public fields
-// from the truth snapshot.
+// from the truth snapshot. Schema-driven via `viz::apply_snapshot`;
+// per-field appliers live in `loveletter_snapshot_io`.
 template <int NPlayers>
 void apply_public_state(IGameState& state, const AnyMap& snap) {
   auto& s = board_ai::checked_cast<LoveLetterState<NPlayers>>(state);
   auto& d = s.data;
 
+  board_ai::viz::apply_snapshot(state, LoveLetterState<NPlayers>::schema(),
+                                loveletter_snapshot_io<NPlayers>(), snap);
+
   auto get_int = [&](const char* key) -> int {
     auto it = snap.find(key);
     return (it != snap.end()) ? std::any_cast<int>(it->second) : 0;
-  };
-  auto get_bool = [&](const char* key) -> bool {
-    auto it = snap.find(key);
-    return (it != snap.end()) ? std::any_cast<bool>(it->second) : false;
   };
   // Robust int-vector accessor: handles vector<int> + empty-vector<any>
   // fallback (py_to_any defaults empty lists to vector<any>).
@@ -654,23 +780,7 @@ void apply_public_state(IGameState& state, const AnyMap& snap) {
     return {};
   };
 
-  d.current_player = static_cast<std::int8_t>(get_int("current_player"));
-  d.first_player = static_cast<std::int8_t>(get_int("first_player"));
-  d.ply = static_cast<std::int16_t>(get_int("ply"));
-  d.winner = static_cast<std::int8_t>(get_int("winner"));
-  d.terminal = get_bool("terminal");
-
-  auto alive_v = get_iv("alive");
-  auto protected_v = get_iv("protected_flags");
-  auto hand_exposed_v = get_iv("hand_exposed");
-  for (int p = 0; p < NPlayers; ++p) {
-    if (p < static_cast<int>(alive_v.size())) d.alive[p] = alive_v[p] != 0;
-    if (p < static_cast<int>(protected_v.size())) d.protected_flags[p] = protected_v[p] != 0;
-    if (p < static_cast<int>(hand_exposed_v.size())) {
-      d.hand_exposed[p] = static_cast<std::int8_t>(hand_exposed_v[p]);
-    }
-  }
-
+  // Snapshot-only keys (handled directly):
   // discard_piles: list-of-lists. Comes in as either
   // vector<vector<int>> (C++-side populated) or vector<any> where each
   // inner any wraps vector<int> (Python-side round-trip through
