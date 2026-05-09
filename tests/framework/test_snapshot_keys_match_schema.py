@@ -86,8 +86,21 @@ def _read(p: Path) -> str:
 
 
 def _extract_snapshot_keys(register_text: str) -> set[str]:
-    """Find every `snap["name"]` write in the register file."""
-    return set(re.findall(r'snap\[\s*"([^"]+)"\s*\]\s*=', register_text))
+    """Find every snapshot-key write in the register file. Matches both the
+    direct style `snap["name"] = ...` (used by games with hand-written
+    extractors: loveletter, coup, splendor) and the SnapshotIO style where
+    per-field emitter lambdas write into a generic `m` AnyMap via
+    `m["name"] = ...` or via `put_int(m, "name", v)` / `put_bool(m, "name",
+    v)` / `put_vec(m, "name", v)` helpers (used by azul after Phase 4 step
+    B). The lint cares about *what keys end up in the snapshot*, not about
+    the syntactic shape of the write."""
+    keys: set[str] = set()
+    keys.update(re.findall(r'snap\[\s*"([^"]+)"\s*\]\s*=', register_text))
+    keys.update(re.findall(
+        r'\bput_(?:int|bool|vec)\s*\(\s*m\s*,\s*"([^"]+)"',
+        register_text,
+    ))
+    return keys
 
 
 def _extract_all_public_fields(state_text: str) -> set[str]:
