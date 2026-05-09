@@ -30,19 +30,20 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 GAMES_DIR = PROJECT_ROOT / "games"
 
 # Banned patterns. `mt19937{...}` / `mt19937(...)` is the typical raw
-# constructor. `random_device` is never legitimate inside rules. The
-# distributions below are flagged because they're the visible smoke from
-# rolling your own RNG plumbing — once derive_rng is the entry point,
-# distributions get applied to the mt19937_64 it returns, but they don't
-# appear in *_rules.cpp / *_state.cpp anymore (random draws are pop_back
-# off a pre-shuffled deck or a `derive_rng()`-driven shuffle/index).
+# constructor smoke for "rolled own RNG plumbing". `random_device` is
+# never legitimate inside rules. `std::shuffle` is banned because Phase 2
+# treats deck/bag storage as multiset — randomness lives in per-draw
+# index pick, not in a one-shot vector permutation.
+#
+# Distributions (`std::uniform_int_distribution` etc.) are NOT banned —
+# they are the natural way to consume a derive_rng()-returned mt19937_64.
+# A draw_one_tile that does `pick(rng)` against a freshly-derived rng is
+# correct golden-standard code.
 BANNED_PATTERNS: list[tuple[str, str]] = [
     ("std::random_device", r"std::random_device\b"),
     ("std::mt19937 constructor",
      r"std::mt19937(?:_64)?\s*[\{\(](?!\s*\)\s*;)"),
     ("std::default_random_engine", r"std::default_random_engine\b"),
-    ("std::uniform_int_distribution", r"std::uniform_int_distribution\b"),
-    ("std::uniform_real_distribution", r"std::uniform_real_distribution\b"),
     ("std::shuffle (raw)", r"std::shuffle\b"),
 ]
 
@@ -51,7 +52,7 @@ BANNED_PATTERNS: list[tuple[str, str]] = [
 # initial reset shuffle). Each entry is removed by its game's Phase 2 PR.
 ALLOWLISTED_GAMES: set[str] = {
     # Phase 2 step 1: tictactoe + quoridor removed (no rng usage).
-    "azul",
+    # Phase 2 step 2: azul migrated to derive_rng (per-tile draw).
     "splendor",
     "loveletter",
     "coup",

@@ -83,9 +83,12 @@ int AzulState<NPlayers>::draw_one_tile() {
   // Pick a uniformly-random index from the remaining bag. Each call
   // derives a fresh rng (domain = "azul_draw"), so draw_nonce_
   // increments per draw and consecutive draws are independent.
+  // Modulo on a 64-bit mt19937_64 output: bag.size() <= 100, so the
+  // bias is bounded by 100/2^64 ≈ 5e-18 — well below any observable
+  // statistical effect. Avoids std::uniform_int_distribution which
+  // golden-standard §2.3 lint discourages in rules / state code.
   auto rng = this->derive_rng(0xa4ULL /* domain: azul_draw */);
-  std::uniform_int_distribution<std::size_t> pick(0, bag.size() - 1);
-  const std::size_t idx = pick(rng);
+  const std::size_t idx = static_cast<std::size_t>(rng() % bag.size());
   const int t = bag[idx];
   // Swap-and-pop: O(1) removal that doesn't preserve ordering, but
   // we don't care about ordering — the bag is treated as a multiset.
