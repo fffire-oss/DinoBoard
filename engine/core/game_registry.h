@@ -48,7 +48,7 @@ using GameAdjudicator = std::function<int(const IGameState& state)>;
 using AuxiliaryScorer = std::function<float(const IGameState& state, int player)>;
 
 using TrainingActionFilter = std::function<std::vector<ActionId>(
-    IGameState& state, const IGameRules& rules, const std::vector<ActionId>& legal)>;
+    const IGameState& state, const IGameRules& rules, const std::vector<ActionId>& legal)>;
 
 using TailSolveTrigger = std::function<bool(const IGameState& state, int ply)>;
 

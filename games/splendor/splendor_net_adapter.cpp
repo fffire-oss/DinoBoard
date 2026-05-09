@@ -310,6 +310,10 @@ void SplendorBeliefTracker<NPlayers>::randomize_unseen(IGameState& state, std::m
     }
   }
 
+  // Stir both the framework rng_salt (for downstream derive_rng calls) and the
+  // persistent-tree internal draw_nonce (which seeds COW apply_action_copy
+  // randomness on this branch).
+  s->reseed_rng(rng);
   data.draw_nonce ^= static_cast<std::uint64_t>(rng());
 
   auto node = std::make_shared<SplendorPersistentNode<NPlayers>>();

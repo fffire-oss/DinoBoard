@@ -357,7 +357,8 @@ UndoToken AzulRules<NPlayers>::do_action_fast(IGameState& state, ActionId action
   rec.prev_shared_victory = s->shared_victory;
   rec.prev_scores = s->scores;
   rec.prev_center = s->center;
-  rec.prev_rng_salt = s->rng_salt;
+  rec.prev_rng_salt = s->rng_salt();
+  rec.prev_draw_nonce = s->draw_nonce();
   rec.prev_player = s->players[s->current_player_];
   const int source = decode_source(action);
   if (source >= 0 && source < Cfg::kFactories) {
@@ -380,7 +381,8 @@ UndoToken AzulRules<NPlayers>::do_action_fast(IGameState& state, ActionId action
     rec.full_before.bag.assign(s->bag.begin(), s->bag.end());
     rec.full_before.box_lid.assign(s->box_lid.begin(), s->box_lid.end());
     rec.full_before.players = s->players;
-    rec.full_before.rng_salt = s->rng_salt;
+    rec.full_before.rng_salt = s->rng_salt();
+    rec.full_before.draw_nonce = s->draw_nonce();
   }
   s->undo_stack.push_back(rec);
 
@@ -422,7 +424,7 @@ void AzulRules<NPlayers>::undo_action(IGameState& state, const UndoToken& token)
     s->bag.assign(rec.full_before.bag.begin(), rec.full_before.bag.end());
     s->box_lid.assign(rec.full_before.box_lid.begin(), rec.full_before.box_lid.end());
     s->players = rec.full_before.players;
-    s->rng_salt = rec.full_before.rng_salt;
+    s->restore_rng_state(rec.full_before.rng_salt, rec.full_before.draw_nonce);
     s->end_step();
     return;
   }
@@ -436,7 +438,7 @@ void AzulRules<NPlayers>::undo_action(IGameState& state, const UndoToken& token)
   s->scores = rec.prev_scores;
   s->center = rec.prev_center;
   s->players[s->current_player_] = rec.prev_player;
-  s->rng_salt = rec.prev_rng_salt;
+  s->restore_rng_state(rec.prev_rng_salt, rec.prev_draw_nonce);
   if (rec.has_factory_source && rec.source_factory_idx >= 0 && rec.source_factory_idx < Cfg::kFactories) {
     s->factories[rec.source_factory_idx] = rec.prev_factory_source;
   }

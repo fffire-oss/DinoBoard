@@ -358,7 +358,7 @@ void CoupBeliefTracker<NPlayers>::randomize_unseen(
     }
     d.court_deck.clear();
     while (idx < unseen.size()) d.court_deck.push_back(unseen[idx++]);
-    d.draw_nonce ^= static_cast<std::uint64_t>(rng());
+    s->reseed_rng(rng);
     return;
   }
 
@@ -454,7 +454,7 @@ void CoupBeliefTracker<NPlayers>::randomize_unseen(
   }
   for (CharId c : deck) d.court_deck.push_back(c);
 
-  d.draw_nonce ^= static_cast<std::uint64_t>(rng());
+  s->reseed_rng(rng);
 }
 
 template class CoupFeatureEncoder<2>;

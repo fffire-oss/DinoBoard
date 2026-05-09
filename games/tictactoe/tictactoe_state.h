@@ -30,7 +30,6 @@ struct TicTacToeState final : public CloneableState<TicTacToeState> {
   std::array<int, kPlayers> scores{0, 0};
   std::array<std::int8_t, kBoardSize> board{};
   std::vector<UndoRecord> undo_stack{};
-  std::uint64_t rng_salt = 0;
 
   TicTacToeState();
 

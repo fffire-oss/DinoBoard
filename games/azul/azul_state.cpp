@@ -12,7 +12,7 @@ AzulState<NPlayers>::AzulState() {
 
 template <int NPlayers>
 void AzulState<NPlayers>::reset_with_seed(std::uint64_t seed) {
-  this->step_count_ = 0;
+  IGameState::reset_with_seed_base(seed);
   current_player_ = 0;
   game_first_player_ = 0;
   first_player_next_round = 0;
@@ -31,16 +31,18 @@ void AzulState<NPlayers>::reset_with_seed(std::uint64_t seed) {
   persistent_tree_cache.tree.clear();
   persistent_tree_cache.chance_buckets.clear();
   persistent_tree_cache.sig_to_node.clear();
-  rng_salt = sanitize_seed(seed);
   bag.reserve(100);
   for (int c = 0; c < kColors; ++c) {
     for (int i = 0; i < 20; ++i) {
       bag.push_back(static_cast<std::int8_t>(c));
     }
   }
-  for (int i = static_cast<int>(bag.size()) - 1; i > 0; --i) {
-    const int j = static_cast<int>(next_rand_u32() % static_cast<std::uint32_t>(i + 1));
-    std::swap(bag[static_cast<size_t>(i)], bag[static_cast<size_t>(j)]);
+  // Initial bag shuffle: one mt19937_64 stream from derive_rng for the
+  // whole shuffle; framework guarantees subsequent derive_rng calls are
+  // independent via incrementing draw_nonce_.
+  {
+    auto rng = this->derive_rng(0xa2ULL /* domain: azul_initial_bag */);
+    std::shuffle(bag.begin(), bag.end(), rng);
   }
   refill_factories_from_rng();
 }
@@ -63,27 +65,14 @@ bool AzulState<NPlayers>::all_sources_empty() const {
 }
 
 template <int NPlayers>
-std::uint32_t AzulState<NPlayers>::next_rand_u32() {
-  std::uint64_t x = rng_salt;
-  x ^= x >> 12U;
-  x ^= x << 25U;
-  x ^= x >> 27U;
-  rng_salt = x;
-  return static_cast<std::uint32_t>((x * 2685821657736338717ULL) >> 32U);
-}
-
-template <int NPlayers>
-int AzulState<NPlayers>::draw_one_tile() {
+int AzulState<NPlayers>::draw_one_tile(std::mt19937_64& rng) {
   if (bag.empty()) {
     if (box_lid.empty()) {
       return -1;
     }
     bag.assign(box_lid.begin(), box_lid.end());
     box_lid.clear();
-    for (int i = static_cast<int>(bag.size()) - 1; i > 0; --i) {
-      const int j = static_cast<int>(next_rand_u32() % static_cast<std::uint32_t>(i + 1));
-      std::swap(bag[static_cast<size_t>(i)], bag[static_cast<size_t>(j)]);
-    }
+    std::shuffle(bag.begin(), bag.end(), rng);
   }
   const int t = bag.back();
   bag.pop_back();
@@ -94,9 +83,13 @@ template <int NPlayers>
 void AzulState<NPlayers>::refill_factories_from_rng() {
   factories = {};
   center = {};
+  // One derive_rng stream covers the entire factory refill (and any
+  // box→bag reshuffle that triggers mid-refill). The single mt19937_64
+  // state lives only on the stack — it's not stored in game state.
+  auto rng = this->derive_rng(0xa3ULL /* domain: azul_refill_factories */);
   for (int f = 0; f < Cfg::kFactories; ++f) {
     for (int i = 0; i < 4; ++i) {
-      const int color = draw_one_tile();
+      const int color = draw_one_tile(rng);
       if (color < 0 || color >= kColors) {
         continue;
       }
@@ -165,7 +158,8 @@ StateHash64 AzulState<NPlayers>::state_hash(bool include_hidden_rng) const {
     hash_combine(h,static_cast<std::size_t>(p.score));
   }
   if (include_hidden_rng) {
-    hash_combine(h,static_cast<std::size_t>(rng_salt));
+    hash_combine(h,static_cast<std::size_t>(this->rng_salt_));
+    hash_combine(h,static_cast<std::size_t>(this->draw_nonce_));
   }
   return static_cast<StateHash64>(h);
 }

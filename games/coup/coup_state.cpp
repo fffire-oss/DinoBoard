@@ -1,23 +1,16 @@
 #include "coup_state.h"
 
 #include <functional>
+#include <random>
 
 namespace board_ai::coup {
 
 namespace {
 
-std::uint64_t sanitize_seed(std::uint64_t seed) {
-  if (seed == 0) seed = 0xDEADBEEF;
-  seed ^= seed >> 33;
-  seed *= 0xff51afd7ed558ccdULL;
-  seed ^= seed >> 33;
-  return seed;
-}
-
-CharId draw_from_deck(std::vector<CharId>& deck, std::uint64_t& nonce) {
+CharId draw_from_deck_local(std::vector<CharId>& deck, std::mt19937_64& rng) {
   if (deck.empty()) return -1;
-  const std::uint64_t r = splitmix64(nonce);
-  const size_t idx = static_cast<size_t>(r % static_cast<std::uint64_t>(deck.size()));
+  std::uniform_int_distribution<size_t> dist(0, deck.size() - 1);
+  const size_t idx = dist(rng);
   const CharId card = deck[idx];
   if (idx + 1 < deck.size()) {
     deck[idx] = deck.back();
@@ -33,11 +26,9 @@ CoupState<NPlayers>::CoupState() = default;
 
 template <int NPlayers>
 void CoupState<NPlayers>::reset_with_seed(std::uint64_t seed) {
-  this->step_count_ = 0;
+  IGameState::reset_with_seed_base(seed);
   data = CoupData<NPlayers>{};
   undo_stack.clear();
-  rng_salt = sanitize_seed(seed);
-  data.draw_nonce = rng_salt;
 
   data.court_deck.clear();
   data.court_deck.reserve(kTotalCards);
@@ -47,9 +38,15 @@ void CoupState<NPlayers>::reset_with_seed(std::uint64_t seed) {
     }
   }
 
+  // One derive_rng stream covers the opening 2-cards-per-player deal.
+  {
+    auto rng = this->derive_rng(0xc1ULL /* domain: coup_initial_deal */);
+    for (int p = 0; p < NPlayers; ++p) {
+      data.influence[p][0] = draw_from_deck_local(data.court_deck, rng);
+      data.influence[p][1] = draw_from_deck_local(data.court_deck, rng);
+    }
+  }
   for (int p = 0; p < NPlayers; ++p) {
-    data.influence[p][0] = draw_from_deck(data.court_deck, data.draw_nonce);
-    data.influence[p][1] = draw_from_deck(data.court_deck, data.draw_nonce);
     data.revealed[p] = {false, false};
     data.coins[p] = kStartingCoins;
     data.alive[p] = true;
@@ -113,8 +110,8 @@ StateHash64 CoupState<NPlayers>::state_hash(bool include_hidden_rng) const {
     for (auto c : data.court_deck) {
       combine(static_cast<std::size_t>(c + 1));
     }
-    combine(static_cast<std::size_t>(data.draw_nonce));
-    combine(static_cast<std::size_t>(rng_salt));
+    combine(static_cast<std::size_t>(this->rng_salt_));
+    combine(static_cast<std::size_t>(this->draw_nonce_));
     for (int i = 0; i < 2; ++i) {
       combine(static_cast<std::size_t>(data.exchange_drawn[i] + 1));
     }

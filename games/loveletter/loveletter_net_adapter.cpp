@@ -1,6 +1,11 @@
 #include "loveletter_net_adapter.h"
 
 #include <algorithm>
+#include <any>
+#include <utility>
+#include <vector>
+
+#include "../../engine/core/game_interfaces.h"
 
 namespace board_ai::loveletter {
 
@@ -326,9 +331,20 @@ void LoveLetterBeliefTracker<NPlayers>::observe_public_event(
     }
   }
 
+  // When actor self-targets (forced fallback when everyone else is
+  // Handmaid-protected), perspective gains no opp-hand knowledge from
+  // Priest/Baron/King — those branches assume target != actor when they
+  // write known_hand_[target]/[actor]. Without per-case skips, Baron's
+  // `i_am_target` branch would write `actor_pre_hand` into known_hand_[actor],
+  // leaking own_hand into a tracker slot reserved for opp facts. Prince
+  // self-target is different: target redraws regardless, so the clear of
+  // known_hand_[target] must run even when target==actor.
+  const bool self_target = (target == actor);
+
   // Card-specific knowledge updates.
   switch (card) {
     case kPriest:
+      if (self_target) break;
       // Actor sees target's hand. Perspective learns it only if perspective
       // is the actor.
       if (i_am_actor && target >= 0 && target < Cfg::kPlayers) {
@@ -340,6 +356,7 @@ void LoveLetterBeliefTracker<NPlayers>::observe_public_event(
       break;
 
     case kBaron:
+      if (self_target) break;
       // Both players compare; survivor known to the loser (loser is dead
       // anyway). In effect: if perspective is actor/target, learn the
       // other's card.
@@ -363,6 +380,7 @@ void LoveLetterBeliefTracker<NPlayers>::observe_public_event(
       break;
 
     case kKing:
+      if (self_target) break;
       // After swap: actor now holds what target had; target holds what
       // actor had. Tracker records what perspective can deduce.
       if (target >= 0 && target < Cfg::kPlayers) {
@@ -559,7 +577,10 @@ void LoveLetterBeliefTracker<NPlayers>::randomize_unseen(
     d.deck.push_back(unseen[idx++]);
   }
 
-  d.draw_nonce ^= static_cast<std::uint64_t>(rng());
+  // Reseed framework RNG so subsequent derive_rng() calls on this state see
+  // a fresh stream. The deck order itself is already determinized above by
+  // shuffling `unseen` into `d.deck`.
+  s->reseed_rng(rng);
 }
 
 template <int NPlayers>

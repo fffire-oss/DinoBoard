@@ -137,7 +137,7 @@ void AzulBeliefTracker<NPlayers>::randomize_unseen(IGameState& state, std::mt199
   if (!s) return;
 
   std::shuffle(s->bag.begin(), s->bag.end(), rng);
-  s->rng_salt ^= static_cast<std::uint64_t>(rng());
+  s->reseed_rng(rng);
 }
 
 template class AzulFeatureEncoder<2>;

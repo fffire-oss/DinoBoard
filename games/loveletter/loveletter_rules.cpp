@@ -186,14 +186,9 @@ void check_end_game(LoveLetterData<NPlayers>& d) {
   }
 }
 
-std::int8_t draw_from_deck_local(std::vector<std::int8_t>& deck, std::uint64_t& nonce) {
+std::int8_t draw_from_deck_local(std::vector<std::int8_t>& deck) {
   if (deck.empty()) return 0;
-  const std::uint64_t r = splitmix64(nonce);
-  const size_t idx = static_cast<size_t>(r % static_cast<std::uint64_t>(deck.size()));
-  const std::int8_t card = deck[idx];
-  if (idx + 1 < deck.size()) {
-    deck[idx] = deck.back();
-  }
+  const std::int8_t card = deck.back();
   deck.pop_back();
   return card;
 }
@@ -222,7 +217,7 @@ void advance_turn(LoveLetterData<NPlayers>& d) {
     return;
   }
 
-  d.drawn_card = draw_from_deck_local(d.deck, d.draw_nonce);
+  d.drawn_card = draw_from_deck_local(d.deck);
 }
 
 }  // namespace
@@ -341,7 +336,7 @@ UndoToken LoveLetterRules<NPlayers>::do_action_fast(IGameState& state, ActionId 
             eliminate_player(d, target);
           } else {
             if (!d.deck.empty()) {
-              d.hand[target] = draw_from_deck_local(d.deck, d.draw_nonce);
+              d.hand[target] = draw_from_deck_local(d.deck);
             } else {
               d.hand[target] = d.set_aside_card;
               d.set_aside_card = 0;

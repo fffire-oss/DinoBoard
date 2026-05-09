@@ -79,15 +79,12 @@ struct LoveLetterData {
   std::int8_t set_aside_card = 0;
   std::array<std::vector<std::int8_t>, Cfg::kPlayers> discard_piles;
   std::vector<std::int8_t> face_up_removed;
-
-  std::uint64_t draw_nonce = 0;
 };
 
 template <int NPlayers>
 struct LoveLetterState final : public CloneableState<LoveLetterState<NPlayers>> {
   using Cfg = LoveLetterConfig<NPlayers>;
   LoveLetterData<NPlayers> data;
-  std::uint64_t rng_salt = 0;
   std::vector<LoveLetterData<NPlayers>> undo_stack;
 
   LoveLetterState();

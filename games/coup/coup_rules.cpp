@@ -1,15 +1,16 @@
 #include "coup_rules.h"
 
 #include <algorithm>
+#include <random>
 
 namespace board_ai::coup {
 
 namespace {
 
-CharId draw_from_deck(std::vector<CharId>& deck, std::uint64_t& nonce) {
+CharId draw_from_deck(std::vector<CharId>& deck, std::mt19937_64& rng) {
   if (deck.empty()) return -1;
-  const std::uint64_t r = splitmix64(nonce);
-  const size_t idx = static_cast<size_t>(r % static_cast<std::uint64_t>(deck.size()));
+  std::uniform_int_distribution<size_t> dist(0, deck.size() - 1);
+  const size_t idx = dist(rng);
   const CharId card = deck[idx];
   if (idx + 1 < deck.size()) {
     deck[idx] = deck.back();
@@ -162,7 +163,7 @@ int alive_excluding_count(const CoupData<NPlayers>& d, int exclude) {
 }
 
 template <int NPlayers>
-void resolve_action_effects(CoupData<NPlayers>& d) {
+void resolve_action_effects(CoupData<NPlayers>& d, std::mt19937_64& rng) {
   const ActionId action = d.declared_action;
   const int actor = d.active_player;
   const int target = d.action_target;
@@ -188,8 +189,8 @@ void resolve_action_effects(CoupData<NPlayers>& d) {
       advance_turn(d);
     }
   } else if (action == kExchangeAction) {
-    d.exchange_drawn[0] = draw_from_deck(d.court_deck, d.draw_nonce);
-    d.exchange_drawn[1] = draw_from_deck(d.court_deck, d.draw_nonce);
+    d.exchange_drawn[0] = draw_from_deck(d.court_deck, rng);
+    d.exchange_drawn[1] = draw_from_deck(d.court_deck, rng);
     d.exchange_held_count = influence_count(d, actor) + 2;
     d.stage = CoupStage::kExchangeReturn1;
     d.current_player = actor;
@@ -199,7 +200,7 @@ void resolve_action_effects(CoupData<NPlayers>& d) {
 }
 
 template <int NPlayers>
-void enter_counter_or_resolve(CoupData<NPlayers>& d) {
+void enter_counter_or_resolve(CoupData<NPlayers>& d, std::mt19937_64& rng) {
   const ActionId action = d.declared_action;
 
   if (action == kForeignAidAction) {
@@ -209,7 +210,7 @@ void enter_counter_or_resolve(CoupData<NPlayers>& d) {
     if (first >= 0) {
       d.current_player = first;
     } else {
-      resolve_action_effects(d);
+      resolve_action_effects(d, rng);
     }
   } else if (is_blockable_after_challenge(action)) {
     if (d.action_target >= 0 && d.action_target < NPlayers && d.alive[d.action_target] &&
@@ -217,10 +218,10 @@ void enter_counter_or_resolve(CoupData<NPlayers>& d) {
       d.stage = CoupStage::kCounterAction;
       d.current_player = d.action_target;
     } else {
-      resolve_action_effects(d);
+      resolve_action_effects(d, rng);
     }
   } else {
-    resolve_action_effects(d);
+    resolve_action_effects(d, rng);
   }
 }
 
@@ -366,6 +367,7 @@ UndoToken CoupRules<NPlayers>::do_action_fast(IGameState& state, ActionId action
   s.undo_stack.push_back(d);
   s.begin_step();
   d.ply++;
+  auto rng = s.derive_rng(0xc2ULL /* domain: coup_action_draws */);
 
   switch (d.stage) {
     case CoupStage::kDeclareAction: {
@@ -375,7 +377,7 @@ UndoToken CoupRules<NPlayers>::do_action_fast(IGameState& state, ActionId action
         d.coins[d.active_player] += 1;
         advance_turn(d);
       } else if (action == kForeignAidAction) {
-        enter_counter_or_resolve(d);
+        enter_counter_or_resolve(d, rng);
       } else if (action >= kCoupOffset && action < kCoupOffset + kCoupCount) {
         int target = action - kCoupOffset;
         d.action_target = target;
@@ -399,7 +401,7 @@ UndoToken CoupRules<NPlayers>::do_action_fast(IGameState& state, ActionId action
         if (first >= 0) {
           d.current_player = first;
         } else {
-          enter_counter_or_resolve(d);
+          enter_counter_or_resolve(d, rng);
         }
       }
       break;
@@ -417,7 +419,7 @@ UndoToken CoupRules<NPlayers>::do_action_fast(IGameState& state, ActionId action
         if (next >= 0) {
           d.current_player = next;
         } else {
-          enter_counter_or_resolve(d);
+          enter_counter_or_resolve(d, rng);
         }
       }
       break;
@@ -428,7 +430,7 @@ UndoToken CoupRules<NPlayers>::do_action_fast(IGameState& state, ActionId action
       CharId card = d.influence[d.active_player][slot];
       if (card == d.claimed_character) {
         d.court_deck.push_back(card);
-        d.influence[d.active_player][slot] = draw_from_deck(d.court_deck, d.draw_nonce);
+        d.influence[d.active_player][slot] = draw_from_deck(d.court_deck, rng);
         d.action_challenge_succeeded = false;
         d.challenge_loser = d.challenger;
         if (influence_count(d, d.challenger) > 0) {
@@ -436,7 +438,7 @@ UndoToken CoupRules<NPlayers>::do_action_fast(IGameState& state, ActionId action
           d.current_player = d.challenger;
         } else {
           check_game_end(d);
-          if (!d.terminal) enter_counter_or_resolve(d);
+          if (!d.terminal) enter_counter_or_resolve(d, rng);
         }
       } else {
         lose_influence_at_slot(d, d.active_player, slot);
@@ -451,7 +453,7 @@ UndoToken CoupRules<NPlayers>::do_action_fast(IGameState& state, ActionId action
       int slot = (action == kLoseSlot0) ? 0 : 1;
       lose_influence_at_slot(d, d.challenge_loser, slot);
       if (check_game_end(d)) break;
-      enter_counter_or_resolve(d);
+      enter_counter_or_resolve(d, rng);
       break;
     }
 
@@ -463,10 +465,10 @@ UndoToken CoupRules<NPlayers>::do_action_fast(IGameState& state, ActionId action
           if (next >= 0) {
             d.current_player = next;
           } else {
-            resolve_action_effects(d);
+            resolve_action_effects(d, rng);
           }
         } else {
-          resolve_action_effects(d);
+          resolve_action_effects(d, rng);
         }
       } else {
         d.blocker = d.current_player;
@@ -506,7 +508,7 @@ UndoToken CoupRules<NPlayers>::do_action_fast(IGameState& state, ActionId action
       CharId card = d.influence[d.blocker][slot];
       if (card == d.block_character) {
         d.court_deck.push_back(card);
-        d.influence[d.blocker][slot] = draw_from_deck(d.court_deck, d.draw_nonce);
+        d.influence[d.blocker][slot] = draw_from_deck(d.court_deck, rng);
         d.counter_challenge_succeeded = false;
         d.challenge_loser = d.challenger;
         if (influence_count(d, d.challenger) > 0) {
@@ -519,7 +521,7 @@ UndoToken CoupRules<NPlayers>::do_action_fast(IGameState& state, ActionId action
         lose_influence_at_slot(d, d.blocker, slot);
         d.counter_challenge_succeeded = true;
         if (check_game_end(d)) break;
-        resolve_action_effects(d);
+        resolve_action_effects(d, rng);
       }
       break;
     }

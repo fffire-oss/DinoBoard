@@ -144,7 +144,7 @@ board_ai::GameRegistrar reg("quoridor", [](std::uint64_t seed) {
     if (d1 < d0) return 1;
     return -1;
   };
-  b.training_action_filter = [](board_ai::IGameState& state,
+  b.training_action_filter = [](const board_ai::IGameState& state,
       const board_ai::IGameRules& rules,
       const std::vector<board_ai::ActionId>& legal) -> std::vector<board_ai::ActionId> {
     const auto& qs = board_ai::checked_cast<QuoridorState>(state);

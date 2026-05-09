@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <random>
 #include <unordered_map>
 #include <vector>
 
@@ -50,6 +51,7 @@ struct AzulSnapshot {
   std::vector<std::int8_t> box_lid{};
   std::array<PlayerState, Cfg::kPlayers> players{};
   std::uint64_t rng_salt = 0;
+  std::uint64_t draw_nonce = 0;
 };
 
 template <int NPlayers>
@@ -71,6 +73,7 @@ struct UndoRecord {
   std::array<std::uint8_t, kColors> prev_factory_source{};
   PlayerState prev_player{};
   std::uint64_t prev_rng_salt = 0;
+  std::uint64_t prev_draw_nonce = 0;
 };
 
 struct PersistentTreeCache {
@@ -113,13 +116,11 @@ class AzulState final : public CloneableState<AzulState<NPlayers>> {
 
   std::vector<UndoRecord<NPlayers>> undo_stack{};
   PersistentTreeCache persistent_tree_cache{};
-  std::uint64_t rng_salt = 0;
 
   void reset_with_seed(std::uint64_t seed) override;
   bool all_sources_empty() const;
   void refill_factories_from_rng();
-  int draw_one_tile();
-  std::uint32_t next_rand_u32();
+  int draw_one_tile(std::mt19937_64& rng);
   StateHash64 state_signature() const { return state_hash(false); }
   bool is_tree_cache_consistent() const;
 };

@@ -129,7 +129,6 @@ template <int NPlayers>
 struct SplendorState final : public CloneableState<SplendorState<NPlayers>> {
   using Cfg = SplendorConfig<NPlayers>;
   SplendorPersistentState<NPlayers> persistent{};
-  std::uint64_t rng_salt = 0;
   std::vector<SplendorPersistentState<NPlayers>> undo_stack{};
 
   SplendorState();

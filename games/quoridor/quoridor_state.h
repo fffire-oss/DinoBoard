@@ -105,7 +105,6 @@ struct QuoridorState final : public CloneableState<QuoridorState> {
   std::array<std::uint8_t, kWallSlots> h_walls{};
   std::array<std::uint8_t, kWallSlots> v_walls{};
   std::vector<UndoRecord> undo_stack{};
-  std::uint64_t rng_salt = 0;
 
   QuoridorState();
 

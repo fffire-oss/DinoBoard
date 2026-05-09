@@ -2,20 +2,16 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <random>
 #include <stdexcept>
 
 namespace board_ai::loveletter {
 
 namespace {
 
-std::int8_t draw_from_deck(std::vector<std::int8_t>& deck, std::uint64_t& nonce) {
+std::int8_t pop_top(std::vector<std::int8_t>& deck) {
   if (deck.empty()) return 0;
-  const std::uint64_t r = splitmix64(nonce);
-  const size_t idx = static_cast<size_t>(r % static_cast<std::uint64_t>(deck.size()));
-  const std::int8_t card = deck[idx];
-  if (idx + 1 < deck.size()) {
-    deck[idx] = deck.back();
-  }
+  const std::int8_t card = deck.back();
   deck.pop_back();
   return card;
 }
@@ -29,10 +25,8 @@ LoveLetterState<NPlayers>::LoveLetterState() {
 
 template <int NPlayers>
 void LoveLetterState<NPlayers>::reset_with_seed(std::uint64_t seed) {
-  this->step_count_ = 0;
-  rng_salt = sanitize_seed(seed);
+  IGameState::reset_with_seed_base(seed);
   auto& d = data;
-  d.draw_nonce = sanitize_seed(seed);
   d.current_player = 0;
   d.first_player = 0;
   d.winner = -1;
@@ -42,6 +36,7 @@ void LoveLetterState<NPlayers>::reset_with_seed(std::uint64_t seed) {
   d.drawn_card = 0;
   d.alive.fill(1);
   d.protected_flags.fill(0);
+  d.hand_exposed.fill(0);
   d.set_aside_card = 0;
   d.face_up_removed.clear();
   for (int p = 0; p < Cfg::kPlayers; ++p) {
@@ -57,19 +52,27 @@ void LoveLetterState<NPlayers>::reset_with_seed(std::uint64_t seed) {
     }
   }
 
-  d.set_aside_card = draw_from_deck(d.deck, d.draw_nonce);
+  // One derive_rng stream covers the whole opening shuffle. After this point
+  // the deck is a fixed pre-shuffled stack and all draws are pop_back —
+  // deterministic and undo-safe (UndoRecord saves the deck vector).
+  {
+    auto rng = this->derive_rng(0xb1ULL /* domain: loveletter_initial_shuffle */);
+    std::shuffle(d.deck.begin(), d.deck.end(), rng);
+  }
+
+  d.set_aside_card = pop_top(d.deck);
 
   if constexpr (NPlayers == 2) {
     for (int i = 0; i < 3; ++i) {
-      d.face_up_removed.push_back(draw_from_deck(d.deck, d.draw_nonce));
+      d.face_up_removed.push_back(pop_top(d.deck));
     }
   }
 
   for (int p = 0; p < Cfg::kPlayers; ++p) {
-    d.hand[static_cast<size_t>(p)] = draw_from_deck(d.deck, d.draw_nonce);
+    d.hand[static_cast<size_t>(p)] = pop_top(d.deck);
   }
 
-  d.drawn_card = draw_from_deck(d.deck, d.draw_nonce);
+  d.drawn_card = pop_top(d.deck);
 }
 
 template <int NPlayers>
@@ -106,8 +109,8 @@ StateHash64 LoveLetterState<NPlayers>::state_hash(bool include_hidden_rng) const
     for (auto c : d.deck) {
       hash_combine(h, static_cast<std::size_t>(c + 43));
     }
-    hash_combine(h, static_cast<std::size_t>(d.draw_nonce));
-    hash_combine(h, static_cast<std::size_t>(rng_salt));
+    hash_combine(h, static_cast<std::size_t>(this->rng_salt_));
+    hash_combine(h, static_cast<std::size_t>(this->draw_nonce_));
   }
 
   for (auto c : d.face_up_removed) {

@@ -110,7 +110,7 @@ class FilteredRulesWrapper final : public IGameRules {
   std::vector<ActionId> legal_actions(const IGameState& state) const override {
     auto legal = inner_.legal_actions(state);
     if (filter_) {
-      auto filtered = filter_(const_cast<IGameState&>(state), inner_, legal);
+      auto filtered = filter_(state, inner_, legal);
       if (!filtered.empty()) return filtered;
     }
     return legal;

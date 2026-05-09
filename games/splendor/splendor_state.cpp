@@ -258,15 +258,19 @@ SplendorState<NPlayers>::SplendorState() { reset_with_seed(0xC0FFEEu); }
 
 template <int NPlayers>
 void SplendorState<NPlayers>::reset_with_seed(std::uint64_t seed) {
-  this->step_count_ = 0;
-  rng_salt = sanitize_seed(seed);
-  persistent = SplendorPersistentState<NPlayers>::root_from_seed(rng_salt);
+  IGameState::reset_with_seed_base(seed);
+  // Persistent tree is seeded from the framework rng_salt so the starting
+  // tableau / nobles draw is deterministic given seed. The persistent data
+  // owns its own internal `draw_nonce` for COW determinism (independent of
+  // the framework draw_nonce_, which counts derive_rng() calls on this state
+  // object).
+  persistent = SplendorPersistentState<NPlayers>::root_from_seed(this->rng_salt_);
   undo_stack.clear();
 }
 
 template <int NPlayers>
 StateHash64 SplendorState<NPlayers>::state_hash(bool include_hidden_rng) const {
-  return persistent.state_hash(include_hidden_rng, rng_salt);
+  return persistent.state_hash(include_hidden_rng, this->rng_salt_);
 }
 
 template <int NPlayers>
