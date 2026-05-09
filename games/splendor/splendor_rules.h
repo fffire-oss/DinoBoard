@@ -22,7 +22,12 @@ class SplendorRules final : public IGameRules {
 
   static bool is_terminal_data(const SplendorData<NPlayers>& data);
   static std::vector<ActionId> legal_actions_data(const SplendorData<NPlayers>& d);
-  static SplendorData<NPlayers> apply_action_copy(const SplendorData<NPlayers>& src, ActionId action);
+  // Phase 2: takes IGameState& so randomness can flow through
+  // state.derive_rng() instead of a SplendorData-internal nonce. The
+  // state argument is also the only path to the framework draw_nonce_
+  // counter that disambiguates per-call rng streams.
+  static SplendorData<NPlayers> apply_action_copy(
+      const SplendorData<NPlayers>& src, ActionId action, IGameState& state);
 };
 
 extern template class SplendorRules<2>;

@@ -310,11 +310,12 @@ void SplendorBeliefTracker<NPlayers>::randomize_unseen(IGameState& state, std::m
     }
   }
 
-  // Stir both the framework rng_salt (for downstream derive_rng calls) and the
-  // persistent-tree internal draw_nonce (which seeds COW apply_action_copy
-  // randomness on this branch).
+  // Phase 2: COW no longer carries a per-data nonce. All randomness for
+  // future apply_action_copy calls comes from state.derive_rng(), which
+  // is keyed off framework rng_salt_ + draw_nonce_ — both refreshed by
+  // reseed_rng(rng) below. So perturbing the rng_salt is sufficient to
+  // give this sampled branch its own deterministic draw stream.
   s->reseed_rng(rng);
-  data.draw_nonce ^= static_cast<std::uint64_t>(rng());
 
   auto node = std::make_shared<SplendorPersistentNode<NPlayers>>();
   node->action_from_parent = -1;

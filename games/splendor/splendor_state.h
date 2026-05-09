@@ -75,7 +75,6 @@ struct SplendorData {
   int pending_returns = 0;
   std::array<std::int8_t, Cfg::kNobleCount> pending_noble_slots{};
   std::int8_t pending_nobles_size = 0;
-  std::uint64_t draw_nonce = 0;
   std::int16_t forced_draw_override = -1;
   int winner = -1;
   bool terminal = false;
@@ -114,11 +113,11 @@ class SplendorPersistentState {
   SplendorPersistentState() = default;
   explicit SplendorPersistentState(std::shared_ptr<const SplendorPersistentNode<NPlayers>> node);
 
-  static SplendorPersistentState root_from_seed(std::uint64_t seed);
+  static SplendorPersistentState root_from_state(IGameState& state);
 
   bool valid() const { return static_cast<bool>(node_); }
   const SplendorData<NPlayers>& data() const;
-  SplendorPersistentState advance(ActionId action) const;
+  SplendorPersistentState advance(ActionId action, IGameState& state) const;
   StateHash64 state_hash(bool include_hidden_rng, std::uint64_t rng_salt) const;
 
  private:
