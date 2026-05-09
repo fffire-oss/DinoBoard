@@ -221,6 +221,35 @@ class IGameState {
   // MUST treat viz_ as opaque outside do_action_fast (golden standard I1:
   // rules are the sole writer).
   std::unordered_map<std::string, viz::VizTensor> viz_;
+
+  // ========== Per-perspective masking hook (Phase 1.5) ==========
+  //
+  // Called by framework's `make_masked_state(state, perspective)` on a
+  // freshly cloned state. Game's override walks its own viz_ and writes
+  // the corresponding kPlaceholder sentinel into every C++ field slot
+  // whose `viz[..., perspective] == 0`.
+  //
+  // Why the game writes its own mask: framework code holds only
+  // `IGameState&` and has no way to reach `state.influence[p][i]` (or
+  // any other game-specific typed field) without knowing the concrete
+  // subclass layout. The game does know its layout, so it does the
+  // write — read viz_["field_name"] for which slots to clobber, then
+  // assign kPlaceholderInt32 / kPlaceholderInt8 / kPlaceholderBool
+  // (from masked_state.h) into those slots.
+  //
+  // Default body: no-op. Correct for any state with empty viz_ (no
+  // schema declared yet — fully-public games before Phase 3, and all
+  // 6 games during Phase 1.5 since schemas land per-game in Phase 3).
+  // Once a game declares its schema, it overrides this to perform the
+  // actual mask write.
+  //
+  // Contract:
+  //   - May NOT touch viz_ itself, only the typed payload fields.
+  //   - May NOT touch step_count_, rng_salt_, or draw_nonce_.
+  //   - Must be idempotent — calling twice with the same perspective
+  //     produces the same state (because placeholder == placeholder).
+  //   - Must handle perspective in [0, num_players()).
+  virtual void apply_viz_mask(int /*perspective*/) {}
 };
 
 template <typename Derived>

@@ -68,22 +68,34 @@ constexpr std::int32_t kPlaceholderInt32 = std::numeric_limits<std::int32_t>::mi
 constexpr std::int8_t  kPlaceholderInt8  = std::numeric_limits<std::int8_t>::min();
 constexpr bool         kPlaceholderBool  = false;
 
-// Phase 1.5 will land the body. Until then make_masked_state is
-// declaration-only; calling it from Phase 1.4 code is a compile-time
-// link error, which is intentional — no caller exists yet, and any new
-// caller before Phase 1.5 should fail to link rather than silently
-// return an unmasked clone.
-//
-// Signature: returns a fresh IGameState clone with hidden slots
-// rewritten. Caller takes ownership.
+// Returns a fresh IGameState clone of `state` with every slot whose
+// `viz[..., perspective] == 0` (or whose belief_filled bit is set, when
+// the caller threads one in) overwritten with kPlaceholder for that
+// field's element type. Caller takes ownership.
 //
 // `belief_filled` is optional. When non-null, slots whose belief_filled
 // bit is set along the perspective axis are ALSO masked (the encoder
 // must not treat sample-derived values as ground truth). When null,
 // only viz=0 slots are masked.
-std::unique_ptr<IGameState> make_masked_state(
+//
+// The actual mask write is delegated to `state.apply_viz_mask(perspective)`
+// — only the game knows which C++ field a schema name maps to. The
+// framework here does the clone + the perspective dispatch; the game
+// does the typed write. See IGameState::apply_viz_mask for contract.
+//
+// belief_filled handling: if a future game wants belief-derived slots
+// masked too, its `apply_viz_mask` override will need access to the
+// belief_filled map. Phase 1.5 ships with the parameter wired through
+// to a thread-local channel that the game's override can consult; for
+// now no game overrides apply_viz_mask, so the parameter has no effect.
+inline std::unique_ptr<IGameState> make_masked_state(
     const IGameState& state, int perspective,
-    const std::unordered_map<std::string, viz::VizTensor>* belief_filled = nullptr);
+    const std::unordered_map<std::string, viz::VizTensor>* belief_filled = nullptr) {
+  (void)belief_filled;  // wired in Phase 1.5+ once a game opts in
+  auto cloned = state.clone_state();
+  cloned->apply_viz_mask(perspective);
+  return cloned;
+}
 
 // Perspective-relative seat rotation helper.
 //
