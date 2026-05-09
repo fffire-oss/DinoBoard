@@ -120,7 +120,7 @@ class AzulState final : public CloneableState<AzulState<NPlayers>> {
   void reset_with_seed(std::uint64_t seed) override;
   bool all_sources_empty() const;
   void refill_factories_from_rng();
-  int draw_one_tile(std::mt19937_64& rng);
+  int draw_one_tile();
   StateHash64 state_signature() const { return state_hash(false); }
   bool is_tree_cache_consistent() const;
 };

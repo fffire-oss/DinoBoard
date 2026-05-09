@@ -37,13 +37,14 @@ void AzulState<NPlayers>::reset_with_seed(std::uint64_t seed) {
       bag.push_back(static_cast<std::int8_t>(c));
     }
   }
-  // Initial bag shuffle: one mt19937_64 stream from derive_rng for the
-  // whole shuffle; framework guarantees subsequent derive_rng calls are
-  // independent via incrementing draw_nonce_.
-  {
-    auto rng = this->derive_rng(0xa2ULL /* domain: azul_initial_bag */);
-    std::shuffle(bag.begin(), bag.end(), rng);
-  }
+  // Phase 2: NO initial shuffle. The bag stores tiles in canonical
+  // color order; randomness lives in draw_one_tile, which on every
+  // call derives a fresh rng and picks a random INDEX from the
+  // remaining bag. Equivalent to "uniformly draw from remaining
+  // multiset" but never materializes future draw order into state.
+  // Hash sees the bag as a multiset (already done in
+  // hash_public_fields) so canonical vs. shuffled order produce the
+  // same public hash for the same draw history.
   refill_factories_from_rng();
 }
 
@@ -65,16 +66,30 @@ bool AzulState<NPlayers>::all_sources_empty() const {
 }
 
 template <int NPlayers>
-int AzulState<NPlayers>::draw_one_tile(std::mt19937_64& rng) {
+int AzulState<NPlayers>::draw_one_tile() {
   if (bag.empty()) {
     if (box_lid.empty()) {
       return -1;
     }
+    // Box → bag refill: NO shuffle here either. Box was filled in the
+    // order tiles came out of factories during the round (rules
+    // pushes onto box_lid in canonical color order during factory
+    // clear / floor discard). Either order is fine since the next
+    // draw picks a random INDEX from the bag — the bag's storage
+    // order is irrelevant to draw uniformity.
     bag.assign(box_lid.begin(), box_lid.end());
     box_lid.clear();
-    std::shuffle(bag.begin(), bag.end(), rng);
   }
-  const int t = bag.back();
+  // Pick a uniformly-random index from the remaining bag. Each call
+  // derives a fresh rng (domain = "azul_draw"), so draw_nonce_
+  // increments per draw and consecutive draws are independent.
+  auto rng = this->derive_rng(0xa4ULL /* domain: azul_draw */);
+  std::uniform_int_distribution<std::size_t> pick(0, bag.size() - 1);
+  const std::size_t idx = pick(rng);
+  const int t = bag[idx];
+  // Swap-and-pop: O(1) removal that doesn't preserve ordering, but
+  // we don't care about ordering — the bag is treated as a multiset.
+  bag[idx] = bag.back();
   bag.pop_back();
   return t;
 }
@@ -83,13 +98,13 @@ template <int NPlayers>
 void AzulState<NPlayers>::refill_factories_from_rng() {
   factories = {};
   center = {};
-  // One derive_rng stream covers the entire factory refill (and any
-  // box→bag reshuffle that triggers mid-refill). The single mt19937_64
-  // state lives only on the stack — it's not stored in game state.
-  auto rng = this->derive_rng(0xa3ULL /* domain: azul_refill_factories */);
+  // Each draw_one_tile call derives its own rng. No shared stream
+  // here — Phase 2 design treats every draw as an independent
+  // randomness event keyed off (rng_salt, draw_nonce). draw_nonce
+  // bumps once per tile.
   for (int f = 0; f < Cfg::kFactories; ++f) {
     for (int i = 0; i < 4; ++i) {
-      const int color = draw_one_tile(rng);
+      const int color = draw_one_tile();
       if (color < 0 || color >= kColors) {
         continue;
       }
@@ -133,14 +148,24 @@ StateHash64 AzulState<NPlayers>::state_hash(bool include_hidden_rng) const {
   for (std::uint8_t c : center) {
     hash_combine(h,static_cast<std::size_t>(c));
   }
-  hash_combine(h,static_cast<std::size_t>(bag.size()));
+  // Hash bag/box_lid as multisets (counts per color). Internal vector
+  // order is irrelevant — Phase 2 treats the bag as an unordered
+  // multiset, and hashing the order would split the DAG along an
+  // axis no player observes (BUG-028 family).
+  std::array<int, kColors> bag_counts_legacy{};
   for (std::int8_t t : bag) {
-    hash_combine(h,static_cast<std::size_t>(t + 1));
+    if (t >= 0 && t < kColors) {
+      ++bag_counts_legacy[static_cast<std::size_t>(t)];
+    }
   }
-  hash_combine(h,static_cast<std::size_t>(box_lid.size()));
+  for (int count : bag_counts_legacy) hash_combine(h, static_cast<std::size_t>(count));
+  std::array<int, kColors> box_counts_legacy{};
   for (std::int8_t t : box_lid) {
-    hash_combine(h,static_cast<std::size_t>(t + 1));
+    if (t >= 0 && t < kColors) {
+      ++box_counts_legacy[static_cast<std::size_t>(t)];
+    }
   }
+  for (int count : box_counts_legacy) hash_combine(h, static_cast<std::size_t>(count));
   for (const auto& p : players) {
     for (std::uint8_t len : p.line_len) {
       hash_combine(h,static_cast<std::size_t>(len));
