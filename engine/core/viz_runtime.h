@@ -118,22 +118,17 @@ inline void reset_to_base(IGameState& state, const std::string& name,
   }
 }
 
-// for_each_visible_slot — declaration only. Walker body lands in Phase
-// 1.5 (engine/core/viz_walker.h) once hash + encoder + snapshot extractor
-// share a single traversal. The signature is locked here so Phase 1.5's
-// implementation is a drop-in.
+// for_each_visible_slot — signature defined here (so other framework
+// headers that need the type can include only viz_runtime.h), body
+// lives in viz_walker.h. Hash + encoder + snapshot extractor share
+// the single traversal there.
 //
-// Semantics: for each non-internal field in `schema`, for each data-axis
-// slot whose viz[..., perspective]==1, invoke `fn(field_name, idx,
-// viewer_count)`. Phase 1.5 will refine the callback signature to also
-// pass field-typed slot value via the registry's member-pointer table.
+// Semantics: for each non-internal field in `schema`, for each data-
+// axis slot whose viz[idx..., perspective]==1, invoke `fn(field_name,
+// idx, viz_tensor_ref)` in declaration / row-major order.
 using SlotVisitor = std::function<void(
     const std::string& /*name*/, const std::vector<int>& /*idx*/,
     const VizTensor& /*viz*/)>;
-
-void for_each_visible_slot(const IGameState& state,
-                           const VisibilitySchema& schema, int perspective,
-                           const SlotVisitor& fn);
 
 }  // namespace viz
 }  // namespace board_ai

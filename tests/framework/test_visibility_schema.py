@@ -72,18 +72,15 @@ def test_schema_header_has_no_overlay_residue() -> None:
 
 
 def test_runtime_header_has_phase_1_2_helpers() -> None:
-    """viz_runtime.h carries the rules-side mutation primitives + walker
-    declaration. Bodies for reveal_* land in this PR; walker body in 1.5."""
+    """viz_runtime.h carries the rules-side mutation primitives + the
+    SlotVisitor type alias. The `for_each_visible_slot` body itself
+    lives in viz_walker.h (Phase 1.5); runtime only re-exports the
+    callback type so encoder / snapshot headers can include the
+    smaller header."""
     text = _read(RUNTIME_HEADER)
     for sym in ("init_viz", "reveal_slot", "reveal_slot_to",
-                "reset_to_base", "for_each_visible_slot"):
+                "reset_to_base", "SlotVisitor"):
         assert sym in text, f"viz_runtime.h missing {sym}"
-    # init_viz / reveal_slot / reveal_slot_to / reset_to_base have inline
-    # bodies (Phase 1.2). for_each_visible_slot is declaration-only.
-    assert re.search(r"void\s+for_each_visible_slot\([^)]*\);", text), (
-        "for_each_visible_slot must be declaration-only in Phase 1.2 "
-        "(body lands in Phase 1.5)"
-    )
 
 
 def test_igamestate_carries_viz_member() -> None:
