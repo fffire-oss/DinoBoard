@@ -1,6 +1,30 @@
 #include "tictactoe_state.h"
 
+#include "../../engine/core/viz_runtime.h"
+
 namespace board_ai::tictactoe {
+
+const viz::VisibilitySchema& TicTacToeState::schema() {
+  // Built once on first use, then returned by reference. Same object for
+  // all tictactoe states across the process — schema is per-game-template,
+  // not per-state.
+  static const viz::VisibilitySchema s = []() {
+    viz::VisibilitySchema schema;
+    schema.n_players = kPlayers;
+    // Scalars use shape {} (rank 0); 1D arrays use shape {len}.
+    viz::declare_field(schema, "current_player",
+                       viz::all_public({}, kPlayers));
+    viz::declare_field(schema, "winner", viz::all_public({}, kPlayers));
+    viz::declare_field(schema, "terminal", viz::all_public({}, kPlayers));
+    viz::declare_field(schema, "move_count", viz::all_public({}, kPlayers));
+    viz::declare_field(schema, "scores",
+                       viz::all_public({kPlayers}, kPlayers));
+    viz::declare_field(schema, "board",
+                       viz::all_public({kBoardSize}, kPlayers));
+    return schema;
+  }();
+  return s;
+}
 
 TicTacToeState::TicTacToeState() {
   reset_with_seed(0xC0FFEEu);
@@ -15,6 +39,7 @@ void TicTacToeState::reset_with_seed(std::uint64_t seed) {
   scores = {0, 0};
   board.fill(static_cast<std::int8_t>(kEmptyCell));
   undo_stack.clear();
+  viz::init_viz(*this, schema());
 }
 
 StateHash64 TicTacToeState::state_hash(bool include_hidden_rng) const {

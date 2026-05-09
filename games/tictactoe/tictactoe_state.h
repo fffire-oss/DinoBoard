@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "../../engine/core/game_interfaces.h"
+#include "../../engine/core/visibility_schema.h"
 
 namespace board_ai::tictactoe {
 
@@ -32,6 +33,13 @@ struct TicTacToeState final : public CloneableState<TicTacToeState> {
   std::vector<UndoRecord> undo_stack{};
 
   TicTacToeState();
+
+  // Phase 3 — visibility schema. Tictactoe is fully public, so every
+  // field declares all_public viz. Keeps shape contracts in one place
+  // for future framework consumers (snapshot extractor, hash walker,
+  // encoder masker). Internal RNG/step_count is framework-managed and
+  // out of scope.
+  static const viz::VisibilitySchema& schema();
 
   StateHash64 state_hash(bool include_hidden_rng) const override;
   void hash_public_fields(Hasher& h) const override;
