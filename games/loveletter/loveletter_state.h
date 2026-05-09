@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "../../engine/core/game_interfaces.h"
+#include "../../engine/core/visibility_schema.h"
 
 namespace board_ai::loveletter {
 
@@ -88,6 +89,42 @@ struct LoveLetterState final : public CloneableState<LoveLetterState<NPlayers>> 
   std::vector<LoveLetterData<NPlayers>> undo_stack;
 
   LoveLetterState();
+
+  // Phase 3 — visibility schema. LoveLetter is the most subtle game we
+  // ship; the schema captures the full visibility layout but does NOT
+  // by itself wire dynamic reveals — those will land in a follow-on PR
+  // that mutates state.viz_ from inside do_action_fast (Priest peek,
+  // Baron compare, end-of-round flips). Partition:
+  //
+  //   - all_public scalars: current_player, first_player, winner,
+  //     terminal, ply.
+  //   - all_public 1D: alive[N], protected_flags[N], hand_exposed[N]
+  //     (the public "this seat's hand is now revealed to everyone"
+  //     flag — Baron-loss / showdown / Princess-played flips this).
+  //   - owner_only_first_axis: hand[N]. Each player sees only their
+  //     own hand card. When hand_exposed[p] flips public, downstream
+  //     consumers gate on the public flag rather than mutating viz —
+  //     same pattern as Coup's revealed[] gate on influence[].
+  //   - all_hidden: drawn_card (rules will reveal_slot_to(current_player)
+  //     on draw, reset_to_base on play; the field is briefly held only
+  //     by the active player). set_aside_card is permanently hidden
+  //     (never revealed to anyone — it's the card removed from the
+  //     bottom of the deck at game start).
+  //
+  // Variable-length vectors NOT declared as schema slots:
+  //   - deck: hidden contents, public size — randomize_unseen handles.
+  //   - discard_piles[N]: all-public stack, variable length — already
+  //     hashed in hash_public_fields slot-by-slot.
+  //   - face_up_removed: 2p-only, all-public, variable length —
+  //     already hashed in hash_public_fields.
+  //
+  // Higher-order belief reasoning (e.g. tracking "what does opp infer
+  // from my last Guard guess?") is an MCTS-tracker concern, not a
+  // schema concern: the schema only models direct first-order
+  // visibility ("who sees what right now"). The tracker can still
+  // condition on the public action history independent of viz.
+  static const viz::VisibilitySchema& schema();
+
   void reset_with_seed(std::uint64_t seed) override;
 
   StateHash64 state_hash(bool include_hidden_rng) const override;

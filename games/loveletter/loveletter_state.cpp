@@ -4,7 +4,70 @@
 #include <cstdint>
 #include <stdexcept>
 
+#include "../../engine/core/viz_runtime.h"
+
 namespace board_ai::loveletter {
+
+template <int NPlayers>
+const viz::VisibilitySchema& LoveLetterState<NPlayers>::schema() {
+  static const viz::VisibilitySchema s = []() {
+    viz::VisibilitySchema schema;
+    schema.n_players = Cfg::kPlayers;
+
+    // ---- public scalars ----
+    viz::declare_field(schema, "current_player",
+                       viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "first_player",
+                       viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "winner", viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "terminal", viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "ply", viz::all_public({}, Cfg::kPlayers));
+
+    // ---- public per-player 1D ----
+    viz::declare_field(schema, "alive",
+                       viz::all_public({Cfg::kPlayers}, Cfg::kPlayers));
+    viz::declare_field(schema, "protected_flags",
+                       viz::all_public({Cfg::kPlayers}, Cfg::kPlayers));
+    // hand_exposed[p] = the canonical public flag "seat p's hand is
+    // now public knowledge" (Baron-loss, showdown, Princess-played).
+    viz::declare_field(schema, "hand_exposed",
+                       viz::all_public({Cfg::kPlayers}, Cfg::kPlayers));
+
+    // ---- private (owner-only) ----
+    // hand[p]: each seat sees only their own hand card. When
+    // hand_exposed[p] flips, consumers gate on that public flag
+    // rather than mutating hand's viz — same convention as Coup's
+    // revealed[] / influence[]. Baron-compare temporarily reveals
+    // both compared hands to BOTH involved players; rules will use
+    // viz::reveal_slot_to(hand, {p}, viewer) for that targeted peek
+    // (follow-on PR; this commit only locks the base).
+    viz::declare_field(
+        schema, "hand",
+        viz::owner_only_first_axis({Cfg::kPlayers}, Cfg::kPlayers));
+
+    // ---- hidden ----
+    // drawn_card: scalar holding the card just drawn at top of turn.
+    // Held only by current_player. Base hidden; rules will
+    // reveal_slot_to(current_player) on draw and reset_to_base on
+    // play. Note: drawn_card is also implicitly cleared on Prince
+    // discard (drawn-card-as-target), so reset_to_base must be paired
+    // with the hand-write that consumes it.
+    viz::declare_field(schema, "drawn_card",
+                       viz::all_hidden({}, Cfg::kPlayers));
+    // set_aside_card: removed from the bottom of the deck at game
+    // start, NEVER revealed to anyone. Permanently hidden.
+    viz::declare_field(schema, "set_aside_card",
+                       viz::all_hidden({}, Cfg::kPlayers));
+
+    // Variable-length vectors NOT in schema:
+    //   - deck: hidden contents, public size, randomize_unseen handles.
+    //   - discard_piles[N]: all-public stacks, hashed slot-by-slot.
+    //   - face_up_removed: 2p-only, all-public, hashed slot-by-slot.
+
+    return schema;
+  }();
+  return s;
+}
 
 namespace {
 
@@ -76,6 +139,8 @@ void LoveLetterState<NPlayers>::reset_with_seed(std::uint64_t seed) {
   }
 
   d.drawn_card = pop_top(d.deck);
+
+  viz::init_viz(*this, schema());
 }
 
 template <int NPlayers>
