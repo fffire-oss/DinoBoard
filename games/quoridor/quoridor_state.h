@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "../../engine/core/game_interfaces.h"
+#include "../../engine/core/visibility_schema.h"
 
 namespace board_ai::quoridor {
 
@@ -107,6 +108,11 @@ struct QuoridorState final : public CloneableState<QuoridorState> {
   std::vector<UndoRecord> undo_stack{};
 
   QuoridorState();
+
+  // Phase 3 — visibility schema. Quoridor is fully public: pawn positions,
+  // wall placements, walls remaining, scores — every viewer can see all
+  // of it. Same all_public-only declaration pattern as tictactoe.
+  static const viz::VisibilitySchema& schema();
 
   StateHash64 state_hash(bool include_hidden_rng) const override;
   void hash_public_fields(Hasher& h) const override;

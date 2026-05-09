@@ -1,6 +1,37 @@
 #include "quoridor_state.h"
 
+#include "../../engine/core/viz_runtime.h"
+
 namespace board_ai::quoridor {
+
+const viz::VisibilitySchema& QuoridorState::schema() {
+  // Built once on first use. Quoridor is fully public — pawn positions,
+  // wall placements and remaining-wall counts are all visible to every
+  // viewer. Same all_public-only template as tictactoe.
+  static const viz::VisibilitySchema s = []() {
+    viz::VisibilitySchema schema;
+    schema.n_players = kPlayers;
+    viz::declare_field(schema, "current_player",
+                       viz::all_public({}, kPlayers));
+    viz::declare_field(schema, "winner", viz::all_public({}, kPlayers));
+    viz::declare_field(schema, "terminal", viz::all_public({}, kPlayers));
+    viz::declare_field(schema, "move_count", viz::all_public({}, kPlayers));
+    viz::declare_field(schema, "scores",
+                       viz::all_public({kPlayers}, kPlayers));
+    viz::declare_field(schema, "pawn_row",
+                       viz::all_public({kPlayers}, kPlayers));
+    viz::declare_field(schema, "pawn_col",
+                       viz::all_public({kPlayers}, kPlayers));
+    viz::declare_field(schema, "walls_remaining",
+                       viz::all_public({kPlayers}, kPlayers));
+    viz::declare_field(schema, "h_walls",
+                       viz::all_public({kWallSlots}, kPlayers));
+    viz::declare_field(schema, "v_walls",
+                       viz::all_public({kWallSlots}, kPlayers));
+    return schema;
+  }();
+  return s;
+}
 
 QuoridorState::QuoridorState() {
   reset_with_seed(0xC0FFEE1234ULL);
@@ -19,6 +50,7 @@ void QuoridorState::reset_with_seed(std::uint64_t seed) {
   h_walls.fill(0);
   v_walls.fill(0);
   undo_stack.clear();
+  viz::init_viz(*this, schema());
 }
 
 StateHash64 QuoridorState::state_hash(bool include_hidden_rng) const {
