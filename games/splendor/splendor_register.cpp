@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "../../engine/core/game_registry.h"
+#include "../../engine/core/snapshot_io.h"
 #include "../../engine/search/tail_solver.h"
 #include "splendor_state.h"
 #include "splendor_rules.h"
@@ -344,6 +345,381 @@ void apply_initial_observation(IGameState& state, int /*perspective*/, const Any
   });
 }
 
+// Per-field emitter/applier table for the public_snapshot. Schema's
+// declaration order in splendor_state.cpp drives `viz::emit_snapshot`
+// / `viz::apply_snapshot`; entries here translate one schema all_public
+// field to AnyMap key. Every all_public field except `first_player`
+// (fixed at game start, in skip set) must have an entry in BOTH maps;
+// emit/apply throw if not. Snapshot-only keys (deck_sizes,
+// pending_noble_slots, reserved_faceup_ids_flat) are NOT schema fields.
+//
+// Note on COW: each applier opens its own `mutate_persistent` block,
+// so applying the full schema does ~one shared_ptr reseat per field.
+// This is cheap (single per-ply call site, not on the MCTS hot path)
+// and keeps the per-field structure uniform with the other three
+// hidden-info games. See docs/devlog/2026-05-09.md for the trade-off.
+template <int NPlayers>
+const board_ai::viz::SnapshotIO& splendor_snapshot_io() {
+  using SState = SplendorState<NPlayers>;
+  using SData = SplendorData<NPlayers>;
+  static const board_ai::viz::SnapshotIO io = []() {
+    using namespace board_ai;
+    viz::SnapshotIO t;
+
+    auto put_int = [](AnyMap& m, const char* key, int v) { m[key] = std::any(v); };
+    auto put_bool = [](AnyMap& m, const char* key, bool v) { m[key] = std::any(v); };
+    auto put_vec = [](AnyMap& m, const char* key, std::vector<int> v) {
+      m[key] = std::any(std::move(v));
+    };
+
+    // ---- emitters (read const persistent.data()) ----
+    t.emitters["current_player"] = [put_int](const IGameState& s, AnyMap& m) {
+      put_int(m, "current_player",
+              static_cast<int>(checked_cast<SState>(s).persistent.data().current_player));
+    };
+    t.emitters["plies"] = [put_int](const IGameState& s, AnyMap& m) {
+      put_int(m, "plies",
+              static_cast<int>(checked_cast<SState>(s).persistent.data().plies));
+    };
+    t.emitters["final_round_remaining"] = [put_int](const IGameState& s, AnyMap& m) {
+      put_int(m, "final_round_remaining",
+              static_cast<int>(checked_cast<SState>(s).persistent.data().final_round_remaining));
+    };
+    t.emitters["stage"] = [put_int](const IGameState& s, AnyMap& m) {
+      put_int(m, "stage",
+              static_cast<int>(checked_cast<SState>(s).persistent.data().stage));
+    };
+    t.emitters["pending_returns"] = [put_int](const IGameState& s, AnyMap& m) {
+      put_int(m, "pending_returns",
+              static_cast<int>(checked_cast<SState>(s).persistent.data().pending_returns));
+    };
+    t.emitters["pending_nobles_size"] = [put_int](const IGameState& s, AnyMap& m) {
+      put_int(m, "pending_nobles_size",
+              static_cast<int>(checked_cast<SState>(s).persistent.data().pending_nobles_size));
+    };
+    t.emitters["winner"] = [put_int](const IGameState& s, AnyMap& m) {
+      put_int(m, "winner",
+              static_cast<int>(checked_cast<SState>(s).persistent.data().winner));
+    };
+    t.emitters["terminal"] = [put_bool](const IGameState& s, AnyMap& m) {
+      put_bool(m, "terminal",
+               static_cast<bool>(checked_cast<SState>(s).persistent.data().terminal));
+    };
+    t.emitters["shared_victory"] = [put_bool](const IGameState& s, AnyMap& m) {
+      put_bool(m, "shared_victory",
+               static_cast<bool>(checked_cast<SState>(s).persistent.data().shared_victory));
+    };
+    t.emitters["nobles_size"] = [put_int](const IGameState& s, AnyMap& m) {
+      put_int(m, "nobles_size",
+              static_cast<int>(checked_cast<SState>(s).persistent.data().nobles_size));
+    };
+    t.emitters["pending_noble_slots"] = [put_vec](const IGameState& s, AnyMap& m) {
+      const auto& d = checked_cast<SState>(s).persistent.data();
+      std::vector<int> v;
+      v.reserve(d.pending_noble_slots.size());
+      for (auto slot : d.pending_noble_slots) v.push_back(static_cast<int>(slot));
+      put_vec(m, "pending_noble_slots", std::move(v));
+    };
+    t.emitters["scores"] = [put_vec](const IGameState& s, AnyMap& m) {
+      const auto& d = checked_cast<SState>(s).persistent.data();
+      put_vec(m, "scores", std::vector<int>(d.scores.begin(), d.scores.end()));
+    };
+    t.emitters["bank"] = [put_vec](const IGameState& s, AnyMap& m) {
+      const auto& d = checked_cast<SState>(s).persistent.data();
+      std::vector<int> v;
+      v.reserve(d.bank.size());
+      for (auto x : d.bank) v.push_back(static_cast<int>(x));
+      put_vec(m, "bank", std::move(v));
+    };
+    t.emitters["player_points"] = [put_vec](const IGameState& s, AnyMap& m) {
+      const auto& d = checked_cast<SState>(s).persistent.data();
+      std::vector<int> v(NPlayers);
+      for (int p = 0; p < NPlayers; ++p) v[p] = static_cast<int>(d.player_points[p]);
+      put_vec(m, "player_points", std::move(v));
+    };
+    t.emitters["player_cards_count"] = [put_vec](const IGameState& s, AnyMap& m) {
+      const auto& d = checked_cast<SState>(s).persistent.data();
+      std::vector<int> v(NPlayers);
+      for (int p = 0; p < NPlayers; ++p) v[p] = static_cast<int>(d.player_cards_count[p]);
+      put_vec(m, "player_cards_count", std::move(v));
+    };
+    t.emitters["player_nobles_count"] = [put_vec](const IGameState& s, AnyMap& m) {
+      const auto& d = checked_cast<SState>(s).persistent.data();
+      std::vector<int> v(NPlayers);
+      for (int p = 0; p < NPlayers; ++p) v[p] = static_cast<int>(d.player_nobles_count[p]);
+      put_vec(m, "player_nobles_count", std::move(v));
+    };
+    t.emitters["reserved_size"] = [put_vec](const IGameState& s, AnyMap& m) {
+      const auto& d = checked_cast<SState>(s).persistent.data();
+      std::vector<int> v(NPlayers);
+      for (int p = 0; p < NPlayers; ++p) v[p] = static_cast<int>(d.reserved_size[p]);
+      put_vec(m, "reserved_size", std::move(v));
+    };
+    t.emitters["tableau_size"] = [put_vec](const IGameState& s, AnyMap& m) {
+      const auto& d = checked_cast<SState>(s).persistent.data();
+      std::vector<int> v(3);
+      for (int tier = 0; tier < 3; ++tier) v[tier] = static_cast<int>(d.tableau_size[tier]);
+      put_vec(m, "tableau_size", std::move(v));
+    };
+    t.emitters["nobles"] = [put_vec](const IGameState& s, AnyMap& m) {
+      const auto& d = checked_cast<SState>(s).persistent.data();
+      std::vector<int> v;
+      v.reserve(d.nobles.size());
+      for (auto nid : d.nobles) v.push_back(static_cast<int>(nid));
+      put_vec(m, "nobles", std::move(v));
+    };
+    t.emitters["player_gems"] = [put_vec](const IGameState& s, AnyMap& m) {
+      const auto& d = checked_cast<SState>(s).persistent.data();
+      const int stride = static_cast<int>(d.player_gems[0].size());
+      std::vector<int> flat;
+      flat.reserve(NPlayers * stride);
+      for (int p = 0; p < NPlayers; ++p) {
+        for (auto v : d.player_gems[p]) flat.push_back(static_cast<int>(v));
+      }
+      put_vec(m, "player_gems_flat", std::move(flat));
+    };
+    t.emitters["player_bonuses"] = [put_vec](const IGameState& s, AnyMap& m) {
+      const auto& d = checked_cast<SState>(s).persistent.data();
+      const int stride = static_cast<int>(d.player_bonuses[0].size());
+      std::vector<int> flat;
+      flat.reserve(NPlayers * stride);
+      for (int p = 0; p < NPlayers; ++p) {
+        for (auto v : d.player_bonuses[p]) flat.push_back(static_cast<int>(v));
+      }
+      put_vec(m, "player_bonuses_flat", std::move(flat));
+    };
+    t.emitters["tableau"] = [put_vec](const IGameState& s, AnyMap& m) {
+      const auto& d = checked_cast<SState>(s).persistent.data();
+      std::vector<int> flat(3 * 4, -1);
+      for (int tier = 0; tier < 3; ++tier) {
+        for (int slot = 0; slot < 4; ++slot) {
+          flat[tier * 4 + slot] = static_cast<int>(d.tableau[tier][slot]);
+        }
+      }
+      put_vec(m, "tableau_flat", std::move(flat));
+    };
+    t.emitters["reserved_visible"] = [put_vec](const IGameState& s, AnyMap& m) {
+      const auto& d = checked_cast<SState>(s).persistent.data();
+      std::vector<int> flat(NPlayers * 3);
+      for (int p = 0; p < NPlayers; ++p) {
+        for (int i = 0; i < 3; ++i) {
+          flat[p * 3 + i] = (d.reserved_visible[p][i] != 0) ? 1 : 0;
+        }
+      }
+      put_vec(m, "reserved_visible_flat", std::move(flat));
+    };
+
+    // ---- appliers (each opens its own mutate_persistent block) ----
+    auto get_int = [](const AnyMap& m, const char* key) -> int {
+      auto it = m.find(key);
+      return (it != m.end()) ? std::any_cast<int>(it->second) : 0;
+    };
+    auto get_bool = [](const AnyMap& m, const char* key) -> bool {
+      auto it = m.find(key);
+      return (it != m.end()) ? std::any_cast<bool>(it->second) : false;
+    };
+    auto get_iv = [](const AnyMap& m, const char* key) -> std::vector<int> {
+      auto it = m.find(key);
+      if (it == m.end()) return {};
+      if (it->second.type() == typeid(std::vector<int>)) {
+        return std::any_cast<std::vector<int>>(it->second);
+      }
+      if (it->second.type() == typeid(std::vector<std::any>)) {
+        const auto& av = std::any_cast<const std::vector<std::any>&>(it->second);
+        std::vector<int> out;
+        out.reserve(av.size());
+        for (const auto& x : av) {
+          if (x.type() == typeid(int)) out.push_back(std::any_cast<int>(x));
+        }
+        return out;
+      }
+      return {};
+    };
+
+    auto with_mut = [](IGameState& s, std::function<void(SData&)> fn) {
+      mutate_persistent<NPlayers>(checked_cast<SState>(s),
+                                  [&](SData& d) { fn(d); });
+    };
+
+    t.appliers["current_player"] = [get_int, with_mut](IGameState& s, const AnyMap& m) {
+      with_mut(s, [&](SData& d) {
+        d.current_player = static_cast<std::int8_t>(get_int(m, "current_player"));
+      });
+    };
+    t.appliers["plies"] = [get_int, with_mut](IGameState& s, const AnyMap& m) {
+      with_mut(s, [&](SData& d) {
+        d.plies = static_cast<std::int16_t>(get_int(m, "plies"));
+      });
+    };
+    t.appliers["final_round_remaining"] = [get_int, with_mut](IGameState& s, const AnyMap& m) {
+      with_mut(s, [&](SData& d) {
+        d.final_round_remaining = static_cast<std::int8_t>(get_int(m, "final_round_remaining"));
+      });
+    };
+    t.appliers["stage"] = [get_int, with_mut](IGameState& s, const AnyMap& m) {
+      with_mut(s, [&](SData& d) {
+        d.stage = static_cast<std::int8_t>(get_int(m, "stage"));
+      });
+    };
+    t.appliers["pending_returns"] = [get_int, with_mut](IGameState& s, const AnyMap& m) {
+      with_mut(s, [&](SData& d) {
+        d.pending_returns = static_cast<std::int8_t>(get_int(m, "pending_returns"));
+      });
+    };
+    t.appliers["pending_nobles_size"] = [get_int, with_mut](IGameState& s, const AnyMap& m) {
+      with_mut(s, [&](SData& d) {
+        d.pending_nobles_size = static_cast<std::int8_t>(get_int(m, "pending_nobles_size"));
+      });
+    };
+    t.appliers["winner"] = [get_int, with_mut](IGameState& s, const AnyMap& m) {
+      with_mut(s, [&](SData& d) {
+        d.winner = static_cast<std::int8_t>(get_int(m, "winner"));
+      });
+    };
+    t.appliers["terminal"] = [get_bool, with_mut](IGameState& s, const AnyMap& m) {
+      with_mut(s, [&](SData& d) { d.terminal = get_bool(m, "terminal"); });
+    };
+    t.appliers["shared_victory"] = [get_bool, with_mut](IGameState& s, const AnyMap& m) {
+      with_mut(s, [&](SData& d) { d.shared_victory = get_bool(m, "shared_victory"); });
+    };
+    t.appliers["nobles_size"] = [get_int, with_mut](IGameState& s, const AnyMap& m) {
+      with_mut(s, [&](SData& d) {
+        d.nobles_size = static_cast<std::int8_t>(get_int(m, "nobles_size"));
+      });
+    };
+    t.appliers["pending_noble_slots"] = [get_iv, with_mut](IGameState& s, const AnyMap& m) {
+      auto v = get_iv(m, "pending_noble_slots");
+      with_mut(s, [&](SData& d) {
+        for (size_t i = 0; i < d.pending_noble_slots.size(); ++i) {
+          d.pending_noble_slots[i] = (i < v.size())
+              ? static_cast<std::int8_t>(v[i]) : -1;
+        }
+      });
+    };
+    t.appliers["scores"] = [get_iv, with_mut](IGameState& s, const AnyMap& m) {
+      auto v = get_iv(m, "scores");
+      with_mut(s, [&](SData& d) {
+        for (int p = 0; p < NPlayers && p < static_cast<int>(v.size()); ++p) {
+          d.scores[p] = v[p];
+        }
+      });
+    };
+    t.appliers["bank"] = [get_iv, with_mut](IGameState& s, const AnyMap& m) {
+      auto v = get_iv(m, "bank");
+      with_mut(s, [&](SData& d) {
+        for (size_t i = 0; i < d.bank.size() && i < v.size(); ++i) {
+          d.bank[i] = static_cast<std::int8_t>(v[i]);
+        }
+      });
+    };
+    t.appliers["player_points"] = [get_iv, with_mut](IGameState& s, const AnyMap& m) {
+      auto v = get_iv(m, "player_points");
+      with_mut(s, [&](SData& d) {
+        for (int p = 0; p < NPlayers && p < static_cast<int>(v.size()); ++p) {
+          d.player_points[p] = static_cast<std::int8_t>(v[p]);
+        }
+      });
+    };
+    t.appliers["player_cards_count"] = [get_iv, with_mut](IGameState& s, const AnyMap& m) {
+      auto v = get_iv(m, "player_cards_count");
+      with_mut(s, [&](SData& d) {
+        for (int p = 0; p < NPlayers && p < static_cast<int>(v.size()); ++p) {
+          d.player_cards_count[p] = static_cast<std::int8_t>(v[p]);
+        }
+      });
+    };
+    t.appliers["player_nobles_count"] = [get_iv, with_mut](IGameState& s, const AnyMap& m) {
+      auto v = get_iv(m, "player_nobles_count");
+      with_mut(s, [&](SData& d) {
+        for (int p = 0; p < NPlayers && p < static_cast<int>(v.size()); ++p) {
+          d.player_nobles_count[p] = static_cast<std::int8_t>(v[p]);
+        }
+      });
+    };
+    t.appliers["reserved_size"] = [get_iv, with_mut](IGameState& s, const AnyMap& m) {
+      auto v = get_iv(m, "reserved_size");
+      with_mut(s, [&](SData& d) {
+        for (int p = 0; p < NPlayers && p < static_cast<int>(v.size()); ++p) {
+          d.reserved_size[p] = static_cast<std::int8_t>(v[p]);
+        }
+      });
+    };
+    t.appliers["tableau_size"] = [get_iv, with_mut](IGameState& s, const AnyMap& m) {
+      auto v = get_iv(m, "tableau_size");
+      with_mut(s, [&](SData& d) {
+        for (int tier = 0; tier < 3 && tier < static_cast<int>(v.size()); ++tier) {
+          d.tableau_size[tier] = static_cast<std::int8_t>(v[tier]);
+        }
+      });
+    };
+    t.appliers["nobles"] = [get_iv, with_mut](IGameState& s, const AnyMap& m) {
+      auto v = get_iv(m, "nobles");
+      with_mut(s, [&](SData& d) {
+        for (size_t i = 0; i < d.nobles.size(); ++i) {
+          d.nobles[i] = (i < v.size()) ? static_cast<std::int16_t>(v[i]) : -1;
+        }
+      });
+    };
+    t.appliers["player_gems"] = [get_iv, with_mut](IGameState& s, const AnyMap& m) {
+      auto flat = get_iv(m, "player_gems_flat");
+      with_mut(s, [&](SData& d) {
+        const int stride = static_cast<int>(d.player_gems[0].size());
+        for (int p = 0; p < NPlayers; ++p) {
+          for (int i = 0; i < stride; ++i) {
+            const int idx = p * stride + i;
+            if (idx < static_cast<int>(flat.size())) {
+              d.player_gems[p][i] = static_cast<std::int8_t>(flat[idx]);
+            }
+          }
+        }
+      });
+    };
+    t.appliers["player_bonuses"] = [get_iv, with_mut](IGameState& s, const AnyMap& m) {
+      auto flat = get_iv(m, "player_bonuses_flat");
+      with_mut(s, [&](SData& d) {
+        const int stride = static_cast<int>(d.player_bonuses[0].size());
+        for (int p = 0; p < NPlayers; ++p) {
+          for (int i = 0; i < stride; ++i) {
+            const int idx = p * stride + i;
+            if (idx < static_cast<int>(flat.size())) {
+              d.player_bonuses[p][i] = static_cast<std::int8_t>(flat[idx]);
+            }
+          }
+        }
+      });
+    };
+    t.appliers["tableau"] = [get_iv, with_mut](IGameState& s, const AnyMap& m) {
+      auto flat = get_iv(m, "tableau_flat");
+      with_mut(s, [&](SData& d) {
+        for (int tier = 0; tier < 3; ++tier) {
+          for (int slot = 0; slot < 4; ++slot) {
+            const int idx = tier * 4 + slot;
+            if (idx < static_cast<int>(flat.size())) {
+              d.tableau[tier][slot] = static_cast<std::int16_t>(flat[idx]);
+            }
+          }
+        }
+      });
+    };
+    t.appliers["reserved_visible"] = [get_iv, with_mut](IGameState& s, const AnyMap& m) {
+      auto flat = get_iv(m, "reserved_visible_flat");
+      with_mut(s, [&](SData& d) {
+        for (int p = 0; p < NPlayers; ++p) {
+          for (int i = 0; i < 3; ++i) {
+            const int idx = p * 3 + i;
+            if (idx < static_cast<int>(flat.size())) {
+              d.reserved_visible[p][i] = static_cast<std::int8_t>(flat[idx]);
+            }
+          }
+        }
+      });
+    };
+
+    return t;
+  }();
+  return io;
+}
+
 template <int NPlayers>
 PublicEventTrace extract_events(
     const IGameState& before,
@@ -413,100 +789,33 @@ PublicEventTrace extract_events(
   }
 
   // full post-action public snapshot for
-  // message-driven public state推进. Mirrors every field that
-  // SplendorState::hash_public_fields reads.
+  // message-driven public state推进. Schema-driven via
+  // viz::emit_snapshot; per-field emitters live in
+  // splendor_snapshot_io. first_player goes in skip (fixed at game
+  // start, omitted by hash_public_fields).
   {
     AnyMap snap;
-    snap["current_player"] = std::any(static_cast<int>(da.current_player));
-    snap["first_player"] = std::any(static_cast<int>(da.first_player));
-    snap["plies"] = std::any(static_cast<int>(da.plies));
-    snap["final_round_remaining"] = std::any(static_cast<int>(da.final_round_remaining));
-    snap["stage"] = std::any(static_cast<int>(da.stage));
-    snap["pending_returns"] = std::any(static_cast<int>(da.pending_returns));
-    snap["pending_nobles_size"] = std::any(static_cast<int>(da.pending_nobles_size));
-    std::vector<int> pending_noble_slots_v;
-    pending_noble_slots_v.reserve(da.pending_noble_slots.size());
-    for (auto slot : da.pending_noble_slots) pending_noble_slots_v.push_back(static_cast<int>(slot));
-    snap["pending_noble_slots"] = std::any(pending_noble_slots_v);
-    snap["winner"] = std::any(static_cast<int>(da.winner));
-    snap["terminal"] = std::any(static_cast<bool>(da.terminal));
-    snap["shared_victory"] = std::any(static_cast<bool>(da.shared_victory));
+    board_ai::viz::emit_snapshot(after, SplendorState<NPlayers>::schema(),
+                                 splendor_snapshot_io<NPlayers>(), snap,
+                                 /*skip=*/{"first_player"});
 
-    std::vector<int> scores_v(da.scores.begin(), da.scores.end());
-    snap["scores"] = std::any(scores_v);
-    std::vector<int> bank_v;
-    bank_v.reserve(da.bank.size());
-    for (auto v : da.bank) bank_v.push_back(static_cast<int>(v));
-    snap["bank"] = std::any(bank_v);
-
-    // Per-player public arrays, flattened row-major: [p0 values..., p1 values..., ...]
-    auto flatten_player_ints = [&](auto accessor) {
-      std::vector<int> flat;
-      flat.reserve(NPlayers * 6);
-      for (int p = 0; p < NPlayers; ++p) {
-        for (auto v : accessor(p)) flat.push_back(static_cast<int>(v));
-      }
-      return flat;
-    };
-    snap["player_gems_flat"] = std::any(flatten_player_ints(
-        [&](int p) -> const auto& { return da.player_gems[p]; }));
-    snap["player_bonuses_flat"] = std::any(flatten_player_ints(
-        [&](int p) -> const auto& { return da.player_bonuses[p]; }));
-    std::vector<int> points_v(NPlayers);
-    std::vector<int> cards_count_v(NPlayers);
-    std::vector<int> nobles_count_v(NPlayers);
-    std::vector<int> reserved_size_v(NPlayers);
-    for (int p = 0; p < NPlayers; ++p) {
-      points_v[p] = static_cast<int>(da.player_points[p]);
-      cards_count_v[p] = static_cast<int>(da.player_cards_count[p]);
-      nobles_count_v[p] = static_cast<int>(da.player_nobles_count[p]);
-      reserved_size_v[p] = static_cast<int>(da.reserved_size[p]);
-    }
-    snap["player_points"] = std::any(points_v);
-    snap["player_cards_count"] = std::any(cards_count_v);
-    snap["player_nobles_count"] = std::any(nobles_count_v);
-    snap["reserved_size"] = std::any(reserved_size_v);
-
-    // Reserved visibility flags (all) + face-up card IDs. Face-down
-    // card IDs are NOT in the snapshot (they're private to the owner;
-    // tracker + self_reserve_deck event handle them).
-    std::vector<int> reserved_visible_flat(NPlayers * 3);
-    std::vector<int> reserved_faceup_ids_flat(NPlayers * 3, -1);
-    for (int p = 0; p < NPlayers; ++p) {
-      for (int i = 0; i < 3; ++i) {
-        const bool visible = da.reserved_visible[p][i] != 0;
-        reserved_visible_flat[p * 3 + i] = visible ? 1 : 0;
-        if (visible) {
-          reserved_faceup_ids_flat[p * 3 + i] = static_cast<int>(da.reserved[p][i]);
-        }
-      }
-    }
-    snap["reserved_visible_flat"] = std::any(reserved_visible_flat);
-    snap["reserved_faceup_ids_flat"] = std::any(reserved_faceup_ids_flat);
-
-    // Tableau: sizes + card IDs per tier (public).
-    std::vector<int> tableau_size_v(3);
-    std::vector<int> tableau_ids_flat(3 * 4, -1);
-    for (int t = 0; t < 3; ++t) {
-      tableau_size_v[t] = static_cast<int>(da.tableau_size[t]);
-      for (int slot = 0; slot < 4; ++slot) {
-        tableau_ids_flat[t * 4 + slot] = static_cast<int>(da.tableau[t][slot]);
-      }
-    }
-    snap["tableau_size"] = std::any(tableau_size_v);
-    snap["tableau_flat"] = std::any(tableau_ids_flat);
-
-    // Deck sizes (public); contents are hidden.
+    // Snapshot-only keys (not schema fields):
+    //  - deck_sizes: public per-tier deck sizes (contents hidden)
+    //  - reserved_faceup_ids_flat: partial-reveal sidecar for the
+    //    schema "reserved_visible" gate
     std::vector<int> deck_sizes_v(3);
     for (int t = 0; t < 3; ++t) deck_sizes_v[t] = static_cast<int>(da.decks[t].size());
     snap["deck_sizes"] = std::any(deck_sizes_v);
 
-    // Nobles (public IDs + slot count).
-    snap["nobles_size"] = std::any(static_cast<int>(da.nobles_size));
-    std::vector<int> nobles_v;
-    nobles_v.reserve(da.nobles.size());
-    for (auto nid : da.nobles) nobles_v.push_back(static_cast<int>(nid));
-    snap["nobles"] = std::any(nobles_v);
+    std::vector<int> reserved_faceup_ids_flat(NPlayers * 3, -1);
+    for (int p = 0; p < NPlayers; ++p) {
+      for (int i = 0; i < 3; ++i) {
+        if (da.reserved_visible[p][i] != 0) {
+          reserved_faceup_ids_flat[p * 3 + i] = static_cast<int>(da.reserved[p][i]);
+        }
+      }
+    }
+    snap["reserved_faceup_ids_flat"] = std::any(reserved_faceup_ids_flat);
 
     out.public_snapshot = std::move(snap);
   }
@@ -514,23 +823,23 @@ PublicEventTrace extract_events(
   return out;
 }
 
-// applier — inverse of the snapshot extractor above.
-// Overwrites public fields onto `state`, leaves hidden fields (face-down
-// reserved ids, deck contents) for randomize_unseen to fill.
+// applier — inverse of the snapshot extractor above. Schema-driven via
+// viz::apply_snapshot; per-field appliers live in splendor_snapshot_io
+// (each opens its own mutate_persistent — see docs/devlog/2026-05-09.md).
+// Snapshot-only keys (deck_sizes, pending_noble_slots,
+// reserved_faceup_ids_flat) are handled here in a single trailing
+// mutate_persistent block. Hidden fields (face-down reserved ids, deck
+// contents) are left for randomize_unseen to fill.
 template <int NPlayers>
 void apply_public_state(IGameState& state, const AnyMap& snap) {
   auto& s = board_ai::checked_cast<SplendorState<NPlayers>>(state);
 
-  auto get_int = [&](const char* key) -> int {
-    auto it = snap.find(key);
-    return (it != snap.end()) ? std::any_cast<int>(it->second) : 0;
-  };
-  auto get_bool = [&](const char* key) -> bool {
-    auto it = snap.find(key);
-    return (it != snap.end()) ? std::any_cast<bool>(it->second) : false;
-  };
-  // Robust int-vector accessor: handles vector<int> + empty-vector<any>
-  // fallback (py_to_any defaults empty lists to vector<any>).
+  // Schema-driven public fields. first_player skipped (fixed at game start).
+  board_ai::viz::apply_snapshot(state, SplendorState<NPlayers>::schema(),
+                                splendor_snapshot_io<NPlayers>(), snap,
+                                /*skip=*/{"first_player"});
+
+  // Snapshot-only keys: variable-length vectors and partial-reveal sidecar.
   auto get_iv = [&](const char* key) -> std::vector<int> {
     auto it = snap.find(key);
     if (it == snap.end()) return {};
@@ -548,97 +857,11 @@ void apply_public_state(IGameState& state, const AnyMap& snap) {
     }
     return {};
   };
+  auto deck_sizes = get_iv("deck_sizes");
+  auto faceup_ids_flat = get_iv("reserved_faceup_ids_flat");
 
   mutate_persistent<NPlayers>(s, [&](SplendorData<NPlayers>& d) {
-    d.current_player = static_cast<std::int8_t>(get_int("current_player"));
-    d.first_player = static_cast<std::int8_t>(get_int("first_player"));
-    d.plies = static_cast<std::int16_t>(get_int("plies"));
-    d.final_round_remaining = static_cast<std::int8_t>(get_int("final_round_remaining"));
-    d.stage = static_cast<std::int8_t>(get_int("stage"));
-    d.pending_returns = static_cast<std::int8_t>(get_int("pending_returns"));
-    d.pending_nobles_size = static_cast<std::int8_t>(get_int("pending_nobles_size"));
-    d.winner = static_cast<std::int8_t>(get_int("winner"));
-    d.terminal = get_bool("terminal");
-    d.shared_victory = get_bool("shared_victory");
-
-    auto pns = get_iv("pending_noble_slots");
-    for (size_t i = 0; i < d.pending_noble_slots.size(); ++i) {
-      d.pending_noble_slots[i] = (i < pns.size()) ? static_cast<std::int8_t>(pns[i]) : -1;
-    }
-
-    auto scores_v = get_iv("scores");
-    for (int p = 0; p < NPlayers && p < static_cast<int>(scores_v.size()); ++p) {
-      d.scores[p] = scores_v[p];
-    }
-    auto bank_v = get_iv("bank");
-    for (size_t i = 0; i < d.bank.size() && i < bank_v.size(); ++i) {
-      d.bank[i] = static_cast<std::int8_t>(bank_v[i]);
-    }
-
-    auto gems_flat = get_iv("player_gems_flat");
-    auto bonuses_flat = get_iv("player_bonuses_flat");
-    const int stride_gems = d.player_gems[0].size();
-    const int stride_bonuses = d.player_bonuses[0].size();
-    for (int p = 0; p < NPlayers; ++p) {
-      for (int i = 0; i < stride_gems; ++i) {
-        const int idx = p * stride_gems + i;
-        if (idx < static_cast<int>(gems_flat.size())) {
-          d.player_gems[p][i] = static_cast<std::int8_t>(gems_flat[idx]);
-        }
-      }
-      for (int i = 0; i < stride_bonuses; ++i) {
-        const int idx = p * stride_bonuses + i;
-        if (idx < static_cast<int>(bonuses_flat.size())) {
-          d.player_bonuses[p][i] = static_cast<std::int8_t>(bonuses_flat[idx]);
-        }
-      }
-    }
-
-    auto points = get_iv("player_points");
-    auto cards_count = get_iv("player_cards_count");
-    auto nobles_count = get_iv("player_nobles_count");
-    auto reserved_sz = get_iv("reserved_size");
-    for (int p = 0; p < NPlayers; ++p) {
-      if (p < static_cast<int>(points.size())) d.player_points[p] = static_cast<std::int8_t>(points[p]);
-      if (p < static_cast<int>(cards_count.size())) d.player_cards_count[p] = static_cast<std::int8_t>(cards_count[p]);
-      if (p < static_cast<int>(nobles_count.size())) d.player_nobles_count[p] = static_cast<std::int8_t>(nobles_count[p]);
-      if (p < static_cast<int>(reserved_sz.size())) d.reserved_size[p] = static_cast<std::int8_t>(reserved_sz[p]);
-    }
-
-    auto visible_flat = get_iv("reserved_visible_flat");
-    auto faceup_ids_flat = get_iv("reserved_faceup_ids_flat");
-    for (int p = 0; p < NPlayers; ++p) {
-      for (int i = 0; i < 3; ++i) {
-        const int idx = p * 3 + i;
-        if (idx < static_cast<int>(visible_flat.size())) {
-          d.reserved_visible[p][i] = static_cast<std::int8_t>(visible_flat[idx]);
-        }
-        // Face-up reserved cards: overwrite from snapshot. Face-down
-        // reserved cards: leave as-is (tracker / self_reserve_deck handle).
-        if (idx < static_cast<int>(faceup_ids_flat.size()) &&
-            visible_flat[idx] != 0 &&
-            faceup_ids_flat[idx] >= 0) {
-          d.reserved[p][i] = static_cast<std::int16_t>(faceup_ids_flat[idx]);
-        }
-      }
-    }
-
-    auto tableau_sz = get_iv("tableau_size");
-    auto tableau_ids = get_iv("tableau_flat");
-    for (int t = 0; t < 3; ++t) {
-      if (t < static_cast<int>(tableau_sz.size())) {
-        d.tableau_size[t] = static_cast<std::int8_t>(tableau_sz[t]);
-      }
-      for (int slot = 0; slot < 4; ++slot) {
-        const int idx = t * 4 + slot;
-        if (idx < static_cast<int>(tableau_ids.size())) {
-          d.tableau[t][slot] = static_cast<std::int16_t>(tableau_ids[idx]);
-        }
-      }
-    }
-
     // Deck sizes are public; contents will be filled by randomize_unseen.
-    auto deck_sizes = get_iv("deck_sizes");
     for (int t = 0; t < 3; ++t) {
       const int target = (t < static_cast<int>(deck_sizes.size())) ? deck_sizes[t] : 0;
       if (target < 0) continue;
@@ -651,10 +874,18 @@ void apply_public_state(IGameState& state, const AnyMap& snap) {
       }
     }
 
-    d.nobles_size = static_cast<std::int8_t>(get_int("nobles_size"));
-    auto nobles_v = get_iv("nobles");
-    for (size_t i = 0; i < d.nobles.size(); ++i) {
-      d.nobles[i] = (i < nobles_v.size()) ? static_cast<std::int16_t>(nobles_v[i]) : -1;
+    // Partial-reveal sidecar: face-up reserved cards overwrite from
+    // snapshot (gated on schema-applied reserved_visible). Face-down
+    // reserved cards: leave as-is (tracker / self_reserve_deck handle).
+    for (int p = 0; p < NPlayers; ++p) {
+      for (int i = 0; i < 3; ++i) {
+        const int idx = p * 3 + i;
+        if (idx < static_cast<int>(faceup_ids_flat.size()) &&
+            d.reserved_visible[p][i] != 0 &&
+            faceup_ids_flat[idx] >= 0) {
+          d.reserved[p][i] = static_cast<std::int16_t>(faceup_ids_flat[idx]);
+        }
+      }
     }
   });
 }

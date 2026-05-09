@@ -52,7 +52,6 @@ SNAPSHOT_ONLY_KEYS: dict[str, set[str]] = {
     },
     "splendor": {
         "deck_sizes",                 # public per-tier deck sizes
-        "pending_noble_slots",        # variable-length pending pick list
         "reserved_faceup_ids_flat",   # partial-reveal: id when reserved_visible
     },
     "azul": {
@@ -71,7 +70,9 @@ SCHEMA_FIELDS_NOT_IN_SNAPSHOT: dict[str, set[str]] = {
     "azul": {
         "game_first_player",  # fixed at game start; observer infers from history
     },
-    "splendor": set(),
+    "splendor": {
+        "first_player",  # fixed at game start; observer infers from history
+    },
     "loveletter": set(),
     "coup": {
         "first_player",  # fixed at game start; not in hash_public_fields either
