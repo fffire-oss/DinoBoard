@@ -50,8 +50,7 @@ BANNED_PATTERNS: list[tuple[str, str]] = [
 # allowlisted (none of the six games have been moved yet beyond their
 # initial reset shuffle). Each entry is removed by its game's Phase 2 PR.
 ALLOWLISTED_GAMES: set[str] = {
-    "tictactoe",   # no rng usage anyway, just being safe — remove early
-    "quoridor",    # no rng usage anyway — remove early
+    # Phase 2 step 1: tictactoe + quoridor removed (no rng usage).
     "azul",
     "splendor",
     "loveletter",
