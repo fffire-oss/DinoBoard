@@ -348,10 +348,9 @@ void apply_initial_observation(IGameState& state, int /*perspective*/, const Any
 // Per-field emitter/applier table for the public_snapshot. Schema's
 // declaration order in splendor_state.cpp drives `viz::emit_snapshot`
 // / `viz::apply_snapshot`; entries here translate one schema all_public
-// field to AnyMap key. Every all_public field except `first_player`
-// (fixed at game start, in skip set) must have an entry in BOTH maps;
-// emit/apply throw if not. Snapshot-only keys (deck_sizes,
-// pending_noble_slots, reserved_faceup_ids_flat) are NOT schema fields.
+// field to AnyMap key. Every all_public field must have an entry in
+// BOTH maps; emit/apply throw if not. Snapshot-only keys (deck_sizes,
+// reserved_faceup_ids_flat) are NOT schema fields.
 //
 // Note on COW: each applier opens its own `mutate_persistent` block,
 // so applying the full schema does ~one shared_ptr reseat per field.
@@ -376,6 +375,10 @@ const board_ai::viz::SnapshotIO& splendor_snapshot_io() {
     t.emitters["current_player"] = [put_int](const IGameState& s, AnyMap& m) {
       put_int(m, "current_player",
               static_cast<int>(checked_cast<SState>(s).persistent.data().current_player));
+    };
+    t.emitters["first_player"] = [put_int](const IGameState& s, AnyMap& m) {
+      put_int(m, "first_player",
+              static_cast<int>(checked_cast<SState>(s).persistent.data().first_player));
     };
     t.emitters["plies"] = [put_int](const IGameState& s, AnyMap& m) {
       put_int(m, "plies",
@@ -544,6 +547,11 @@ const board_ai::viz::SnapshotIO& splendor_snapshot_io() {
     t.appliers["current_player"] = [get_int, with_mut](IGameState& s, const AnyMap& m) {
       with_mut(s, [&](SData& d) {
         d.current_player = static_cast<std::int8_t>(get_int(m, "current_player"));
+      });
+    };
+    t.appliers["first_player"] = [get_int, with_mut](IGameState& s, const AnyMap& m) {
+      with_mut(s, [&](SData& d) {
+        d.first_player = static_cast<std::int8_t>(get_int(m, "first_player"));
       });
     };
     t.appliers["plies"] = [get_int, with_mut](IGameState& s, const AnyMap& m) {
@@ -791,13 +799,11 @@ PublicEventTrace extract_events(
   // full post-action public snapshot for
   // message-driven public state推进. Schema-driven via
   // viz::emit_snapshot; per-field emitters live in
-  // splendor_snapshot_io. first_player goes in skip (fixed at game
-  // start, omitted by hash_public_fields).
+  // splendor_snapshot_io.
   {
     AnyMap snap;
     board_ai::viz::emit_snapshot(after, SplendorState<NPlayers>::schema(),
-                                 splendor_snapshot_io<NPlayers>(), snap,
-                                 /*skip=*/{"first_player"});
+                                 splendor_snapshot_io<NPlayers>(), snap);
 
     // Snapshot-only keys (not schema fields):
     //  - deck_sizes: public per-tier deck sizes (contents hidden)
@@ -834,10 +840,9 @@ template <int NPlayers>
 void apply_public_state(IGameState& state, const AnyMap& snap) {
   auto& s = board_ai::checked_cast<SplendorState<NPlayers>>(state);
 
-  // Schema-driven public fields. first_player skipped (fixed at game start).
+  // Schema-driven public fields.
   board_ai::viz::apply_snapshot(state, SplendorState<NPlayers>::schema(),
-                                splendor_snapshot_io<NPlayers>(), snap,
-                                /*skip=*/{"first_player"});
+                                splendor_snapshot_io<NPlayers>(), snap);
 
   // Snapshot-only keys: variable-length vectors and partial-reveal sidecar.
   auto get_iv = [&](const char* key) -> std::vector<int> {

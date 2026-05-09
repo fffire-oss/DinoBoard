@@ -70,9 +70,7 @@ SCHEMA_FIELDS_NOT_IN_SNAPSHOT: dict[str, set[str]] = {
     "azul": {
         "game_first_player",  # fixed at game start; observer infers from history
     },
-    "splendor": {
-        "first_player",  # fixed at game start; observer infers from history
-    },
+    "splendor": set(),
     "loveletter": set(),
     "coup": {
         "first_player",  # fixed at game start; not in hash_public_fields either
