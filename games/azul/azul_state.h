@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "../../engine/core/game_interfaces.h"
+#include "../../engine/core/visibility_schema.h"
 
 namespace board_ai::azul {
 
@@ -88,6 +89,19 @@ class AzulState final : public CloneableState<AzulState<NPlayers>> {
   using Cfg = AzulConfig<NPlayers>;
 
   AzulState();
+
+  // Phase 3 — visibility schema. Azul partitions:
+  //   - all_public: every game-facing field. Factories, center pile,
+  //     each player's pattern lines / wall / floor / score, round meta,
+  //     the first-player marker. Every viewer sees all of these.
+  //   - bag and box_lid (variable-length vectors): NOT declared as
+  //     schema slots. Their contents are face-down (hidden) and their
+  //     sizes are publicly derivable; both already handled by
+  //     hash_public_fields (multiset-only) and randomize_unseen.
+  // PlayerState's sub-fields are flattened into top-level schema names
+  // (player_line_len, player_wall_mask, ...) since the schema doesn't
+  // model nested structs — every consumer addresses fields by string.
+  static const viz::VisibilitySchema& schema();
 
   StateHash64 state_hash(bool include_hidden_rng) const override;
   void hash_public_fields(Hasher& h) const override;

@@ -3,7 +3,67 @@
 #include <algorithm>
 #include <functional>
 
+#include "../../engine/core/viz_runtime.h"
+
 namespace board_ai::azul {
+
+template <int NPlayers>
+const viz::VisibilitySchema& AzulState<NPlayers>::schema() {
+  static const viz::VisibilitySchema s = []() {
+    viz::VisibilitySchema schema;
+    schema.n_players = Cfg::kPlayers;
+
+    // ---- public scalars ----
+    viz::declare_field(schema, "current_player",
+                       viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "game_first_player",
+                       viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "first_player_next_round",
+                       viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "winner", viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "round_index",
+                       viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "terminal", viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "first_player_token_in_center",
+                       viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "shared_victory",
+                       viz::all_public({}, Cfg::kPlayers));
+
+    // ---- public 1D / 2D ----
+    viz::declare_field(schema, "scores",
+                       viz::all_public({Cfg::kPlayers}, Cfg::kPlayers));
+    viz::declare_field(
+        schema, "factories",
+        viz::all_public({Cfg::kFactories, kColors}, Cfg::kPlayers));
+    viz::declare_field(schema, "center",
+                       viz::all_public({kColors}, Cfg::kPlayers));
+
+    // ---- per-player public boards (PlayerState sub-fields, flattened) ----
+    viz::declare_field(
+        schema, "player_line_len",
+        viz::all_public({Cfg::kPlayers, kRows}, Cfg::kPlayers));
+    viz::declare_field(
+        schema, "player_line_color",
+        viz::all_public({Cfg::kPlayers, kRows}, Cfg::kPlayers));
+    viz::declare_field(
+        schema, "player_wall_mask",
+        viz::all_public({Cfg::kPlayers, kRows}, Cfg::kPlayers));
+    viz::declare_field(
+        schema, "player_floor",
+        viz::all_public({Cfg::kPlayers, 7}, Cfg::kPlayers));
+    viz::declare_field(schema, "player_floor_count",
+                       viz::all_public({Cfg::kPlayers}, Cfg::kPlayers));
+    viz::declare_field(schema, "player_score",
+                       viz::all_public({Cfg::kPlayers}, Cfg::kPlayers));
+
+    // bag / box_lid: variable-length vectors. Their contents are hidden;
+    // sizes are publicly derivable. Already handled by hash_public_fields
+    // (multiset hashing) + randomize_unseen — not a schema slot.
+
+    return schema;
+  }();
+  return s;
+}
 
 template <int NPlayers>
 AzulState<NPlayers>::AzulState() {
@@ -46,6 +106,7 @@ void AzulState<NPlayers>::reset_with_seed(std::uint64_t seed) {
   // hash_public_fields) so canonical vs. shuffled order produce the
   // same public hash for the same draw history.
   refill_factories_from_rng();
+  viz::init_viz(*this, schema());
 }
 
 template <int NPlayers>
