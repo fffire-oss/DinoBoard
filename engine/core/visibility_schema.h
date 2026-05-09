@@ -32,9 +32,11 @@
 // 2D field of shape [a, b], bool[a][b][4]; etc.
 
 #include <cstdint>
+#include <cstddef>
 #include <functional>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -240,15 +242,75 @@ inline void declare_field(VisibilitySchema& schema, const std::string& name,
   schema.fields.push_back(std::move(f));
 }
 
-// NOTE: overlay primitives (reveal_when / derived_size_of / custom)
-// have been removed. Per golden standard I1, rules are the sole writer
-// of state.viz_. Dynamic visibility flips are produced by `do_action_fast`
-// calling the rules-side helpers (`reveal_slot / reveal_slot_to /
-// reset_to_base`), which are added in Phase 1.5 once state.viz_ exists
-// on IGameState. Observer-derived scalars use the `derive_size`
-// declaration helper (also Phase 1.5), which simply sets
-// FieldDecl::derived=true with an all-public base viz — no closure
-// needed.
+// ---------- runtime ops on state.viz_ ----------
+//
+// state.viz_ lives on IGameState (see game_interfaces.h). It maps
+// FieldDecl::name → live VizTensor for THIS state object. The helpers
+// below are the ONLY way rules and framework should poke at it:
+//
+//   init_viz(state, schema)
+//     — Phase 1.2 / 3: called from each game's reset_with_seed override
+//       AFTER reset_with_seed_base(seed) and AFTER game-specific data
+//       init. Copies each FieldDecl::base_viz into state.viz_.
+//
+//   reveal_slot(state, "field", idx0, idx1, ...)
+//     — Phase 1.5+: called from rules.do_action_fast. Sets the viz of
+//       the named field at the given data-axis index to all-1 across
+//       viewers. Idx count must equal data-tensor rank.
+//
+//   reveal_slot_to(state, "field", idx0, ..., viewer)
+//     — Phase 1.5+: like reveal_slot but flips visibility ON only for
+//       `viewer`, leaves other viewers' bits untouched. Used for
+//       Priest-style targeted peeks.
+//
+//   reset_to_base(state, "field", schema, idx0, ...)
+//     — Phase 1.5+: restore the named slot's viewer bits to schema's
+//       declared base viz. Used at end-of-round resets.
+//
+// All four are intentionally NAME-keyed (string lookup), not
+// member-pointer-keyed. The member-pointer offset arithmetic that
+// turns `&CoupState::influence` into a viz key is a Phase 1.5 concern
+// (registry maps `member-ptr → name` at declare-time); Phase 1.2 lands
+// the storage + name-keyed primitives so games can be ported to
+// schema-driven viz without waiting for the sugar layer.
+
+// Compute the flat byte offset for a multi-index into a row-major tensor
+// of shape `shape`. The trailing axis (viewer) is left to the caller —
+// pass `idx.size() == shape.size() - 1` and the function returns the
+// offset of `viz[idx..., 0]`; the viewer-axis stride is `1`.
+inline std::size_t flat_offset_data_only(const std::vector<int>& shape,
+                                         const std::vector<int>& idx) {
+  // shape includes trailing viewer axis (size = data_rank + 1). idx is
+  // data indices only (size = data_rank).
+  if (idx.size() + 1 != shape.size()) {
+    throw std::invalid_argument(
+        "viz::flat_offset_data_only: index rank does not match tensor rank");
+  }
+  // Row-major strides for all axes; the viewer-axis stride is 1.
+  const int rank = static_cast<int>(shape.size());
+  std::size_t stride = 1;
+  std::vector<std::size_t> strides(rank);
+  for (int i = rank - 1; i >= 0; --i) {
+    strides[i] = stride;
+    stride *= static_cast<std::size_t>(shape[i]);
+  }
+  std::size_t off = 0;
+  for (int i = 0; i < static_cast<int>(idx.size()); ++i) {
+    if (idx[i] < 0 || idx[i] >= shape[i]) {
+      throw std::out_of_range(
+          "viz::flat_offset_data_only: index out of range on axis " +
+          std::to_string(i));
+    }
+    off += static_cast<std::size_t>(idx[i]) * strides[i];
+  }
+  return off;
+}
+
+// init_viz / reveal_slot / reveal_slot_to / reset_to_base / walker
+// signatures — bodies live in viz_runtime.h (included after
+// game_interfaces.h to break the include cycle: state.viz_ is on
+// IGameState which forward-declares VizTensor; runtime helpers need
+// the concrete IGameState type).
 
 }  // namespace viz
 }  // namespace board_ai

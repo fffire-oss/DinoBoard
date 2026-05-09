@@ -7,10 +7,12 @@
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "types.h"
+#include "visibility_schema.h"
 
 namespace board_ai {
 
@@ -203,6 +205,22 @@ class IGameState {
   // RNG state — see derive_rng() above for contract.
   std::uint64_t rng_salt_ = 0;
   std::uint64_t draw_nonce_ = 0;
+
+ public:
+  // ========== Per-state visibility tensor (Phase 1.2) ==========
+  //
+  // viz_ stores the live per-field visibility tensor for THIS state, keyed
+  // by FieldDecl::name. Initialized via viz::init_viz(*this, MyGame::schema())
+  // at the end of every game's reset_with_seed override (Phase 3 wires this
+  // into each game; Phase 1.2 only adds the storage + helpers). Mutated only
+  // by rules inside do_action_fast via the rules-side helpers
+  // (viz::reveal_slot / reveal_slot_to / reset_to_base — Phase 1.5).
+  //
+  // Public so framework helpers (init_viz / reveal_slot / hash walker /
+  // encoder masker) can read/write without friending every utility. Games
+  // MUST treat viz_ as opaque outside do_action_fast (golden standard I1:
+  // rules are the sole writer).
+  std::unordered_map<std::string, viz::VizTensor> viz_;
 };
 
 template <typename Derived>
