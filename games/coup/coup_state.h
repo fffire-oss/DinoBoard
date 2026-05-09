@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "../../engine/core/game_interfaces.h"
+#include "../../engine/core/visibility_schema.h"
 
 namespace board_ai::coup {
 
@@ -139,6 +140,25 @@ struct CoupState final : public CloneableState<CoupState<NPlayers>> {
   std::vector<CoupData<NPlayers>> undo_stack;
 
   CoupState();
+
+  // Phase 3 — visibility schema. Coup is a hidden-info game:
+  //   - all_public: stage / coins / alive / revealed / current_player /
+  //     declared_action / etc. Everyone at the table sees these.
+  //   - owner_only_first_axis: influence[N][2]. Each player sees only
+  //     their own face-down cards. When a card is revealed-and-lost,
+  //     rules' do_action_fast flips revealed[p][s]=true (public flag
+  //     already in all_public space) — the influence card itself stays
+  //     keyed by owner; consumers gate on revealed[p][s] in Phase 3+.
+  //   - all_hidden: exchange_drawn[2]. Two cards drawn from court_deck
+  //     during Exchange; only the active player sees them. Rules will
+  //     reveal_slot_to(active_player) in do_action_fast on draw, and
+  //     reset_to_base on return-to-deck. (Reveal wiring is a follow-on;
+  //     this PR only declares the base.)
+  //   - court_deck (variable-length vector): NOT declared as a slot
+  //     field. Content is hidden, size is publicly derivable, both are
+  //     already handled by hash_public_fields / randomize_unseen.
+  static const viz::VisibilitySchema& schema();
+
   void reset_with_seed(std::uint64_t seed) override;
   StateHash64 state_hash(bool include_hidden_rng) const override;
   void hash_public_fields(Hasher& h) const override;

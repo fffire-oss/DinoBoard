@@ -3,7 +3,20 @@
 #include <functional>
 #include <random>
 
+#include "../../engine/core/viz_runtime.h"
+
 namespace board_ai::coup {
+
+namespace {
+// Cards in hand: [N players][2 slots]. Owner_only viz means viewer p
+// sees only influence[p][*]. Public revealed[p][s] flags (kept in
+// all_public space) are how rules signal "this slot is now public" —
+// a Phase 3+ consumer that walks influence will gate on revealed[p][s]
+// rather than mutating viz on each reveal/loss, since the public flag
+// is already the canonical "this card is now face-up" signal.
+constexpr int kInfluencePerPlayer = 2;
+constexpr int kExchangeDrawSlots = 2;
+}  // namespace
 
 namespace {
 
@@ -20,6 +33,85 @@ CharId draw_from_deck_local(std::vector<CharId>& deck, std::mt19937_64& rng) {
 }
 
 }  // namespace
+
+template <int NPlayers>
+const viz::VisibilitySchema& CoupState<NPlayers>::schema() {
+  // Built once on first use per template instantiation.
+  static const viz::VisibilitySchema s = []() {
+    viz::VisibilitySchema schema;
+    schema.n_players = Cfg::kPlayers;
+
+    // ---- public scalars ----
+    viz::declare_field(schema, "current_player",
+                       viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "first_player",
+                       viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "winner", viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "terminal", viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "ply", viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "stage", viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "active_player",
+                       viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "declared_action",
+                       viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "action_target",
+                       viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "claimed_character",
+                       viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "challenger",
+                       viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "challenge_loser",
+                       viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "action_challenged",
+                       viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "action_challenge_succeeded",
+                       viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "blocker", viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "block_character",
+                       viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "counter_challenged",
+                       viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "counter_challenge_succeeded",
+                       viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "challenge_check_index",
+                       viz::all_public({}, Cfg::kPlayers));
+    viz::declare_field(schema, "exchange_held_count",
+                       viz::all_public({}, Cfg::kPlayers));
+
+    // ---- public per-player 1D ----
+    viz::declare_field(schema, "coins",
+                       viz::all_public({Cfg::kPlayers}, Cfg::kPlayers));
+    viz::declare_field(schema, "alive",
+                       viz::all_public({Cfg::kPlayers}, Cfg::kPlayers));
+    // revealed[p][s]: public face-up flag per influence slot. all_public
+    // by definition — it's the "is this card now face-up?" public bit.
+    viz::declare_field(
+        schema, "revealed",
+        viz::all_public({Cfg::kPlayers, kInfluencePerPlayer}, Cfg::kPlayers));
+
+    // ---- private per-player ----
+    // influence[N][2]: face-down cards. Owner-only base; once
+    // revealed[p][s] flips public, downstream consumers (encoder /
+    // hash) read this card publicly via the revealed gate. We do NOT
+    // mutate viz on reveal — the public flag is the canonical signal.
+    viz::declare_field(
+        schema, "influence",
+        viz::owner_only_first_axis({Cfg::kPlayers, kInfluencePerPlayer},
+                                   Cfg::kPlayers));
+
+    // ---- hidden ----
+    // exchange_drawn[2]: two cards drawn from court_deck during the
+    // Exchange action, visible only to active_player. Base is hidden;
+    // rules reveal_slot_to(active_player) on draw and reset_to_base on
+    // return-to-deck. (Reveal wiring lands separately; this PR only
+    // declares the base.)
+    viz::declare_field(schema, "exchange_drawn",
+                       viz::all_hidden({kExchangeDrawSlots}, Cfg::kPlayers));
+
+    return schema;
+  }();
+  return s;
+}
 
 template <int NPlayers>
 CoupState<NPlayers>::CoupState() = default;
@@ -63,6 +155,8 @@ void CoupState<NPlayers>::reset_with_seed(std::uint64_t seed) {
   data.first_player = 0;
   data.active_player = 0;
   data.stage = CoupStage::kDeclareAction;
+
+  viz::init_viz(*this, schema());
 }
 
 template <int NPlayers>
