@@ -494,7 +494,7 @@ PublicEventTrace extract_events(
       }
     }
     snap["tableau_size"] = std::any(tableau_size_v);
-    snap["tableau_ids_flat"] = std::any(tableau_ids_flat);
+    snap["tableau_flat"] = std::any(tableau_ids_flat);
 
     // Deck sizes (public); contents are hidden.
     std::vector<int> deck_sizes_v(3);
@@ -624,7 +624,7 @@ void apply_public_state(IGameState& state, const AnyMap& snap) {
     }
 
     auto tableau_sz = get_iv("tableau_size");
-    auto tableau_ids = get_iv("tableau_ids_flat");
+    auto tableau_ids = get_iv("tableau_flat");
     for (int t = 0; t < 3; ++t) {
       if (t < static_cast<int>(tableau_sz.size())) {
         d.tableau_size[t] = static_cast<std::int8_t>(tableau_sz[t]);

@@ -592,7 +592,7 @@ PublicEventTrace extract_events(
       hand_exposed_v[p] = static_cast<int>(da.hand_exposed[p]);
     }
     snap["alive"] = std::any(alive_v);
-    snap["protected"] = std::any(protected_v);
+    snap["protected_flags"] = std::any(protected_v);
     snap["hand_exposed"] = std::any(hand_exposed_v);
 
     std::vector<std::vector<int>> discards_all(NPlayers);
@@ -661,7 +661,7 @@ void apply_public_state(IGameState& state, const AnyMap& snap) {
   d.terminal = get_bool("terminal");
 
   auto alive_v = get_iv("alive");
-  auto protected_v = get_iv("protected");
+  auto protected_v = get_iv("protected_flags");
   auto hand_exposed_v = get_iv("hand_exposed");
   for (int p = 0; p < NPlayers; ++p) {
     if (p < static_cast<int>(alive_v.size())) d.alive[p] = alive_v[p] != 0;

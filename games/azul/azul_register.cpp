@@ -343,11 +343,11 @@ PublicEventTrace extract_events(
       floor_count_v[p] = static_cast<int>(pb.floor_count);
       player_score_v[p] = pb.score;
     }
-    snap["line_len_flat"] = std::any(line_len_flat);
-    snap["line_color_flat"] = std::any(line_color_flat);
-    snap["wall_mask_flat"] = std::any(wall_mask_flat);
-    snap["floor_flat"] = std::any(floor_flat);
-    snap["floor_count"] = std::any(floor_count_v);
+    snap["player_line_len_flat"] = std::any(line_len_flat);
+    snap["player_line_color_flat"] = std::any(line_color_flat);
+    snap["player_wall_mask_flat"] = std::any(wall_mask_flat);
+    snap["player_floor_flat"] = std::any(floor_flat);
+    snap["player_floor_count"] = std::any(floor_count_v);
     snap["player_score"] = std::any(player_score_v);
 
     out.public_snapshot = std::move(snap);
@@ -430,11 +430,11 @@ void apply_public_state(IGameState& state, const AnyMap& snap) {
   s.box_lid.reserve(box_v.size());
   for (int t : box_v) s.box_lid.push_back(static_cast<std::int8_t>(t));
 
-  auto line_len_flat = get_iv("line_len_flat");
-  auto line_color_flat = get_iv("line_color_flat");
-  auto wall_mask_flat = get_iv("wall_mask_flat");
-  auto floor_flat = get_iv("floor_flat");
-  auto floor_count_v = get_iv("floor_count");
+  auto line_len_flat = get_iv("player_line_len_flat");
+  auto line_color_flat = get_iv("player_line_color_flat");
+  auto wall_mask_flat = get_iv("player_wall_mask_flat");
+  auto floor_flat = get_iv("player_floor_flat");
+  auto floor_count_v = get_iv("player_floor_count");
   auto player_score_v = get_iv("player_score");
   for (int p = 0; p < NPlayers; ++p) {
     auto& pb = s.players[p];
