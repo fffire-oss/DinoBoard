@@ -1,22 +1,17 @@
-"""Phase 1.1 lint (golden standard I3, §2.3): rules code must not directly
-construct std::random_device / std::mt19937{...} / std::uniform_int_distribution
-etc. — all randomness must flow through IGameState::derive_rng(domain_tag).
+"""Lint (golden standard I3, §2.3): rules code must not directly
+construct std::random_device / std::mt19937{...} / std::shuffle / splitmix64
+— all randomness must flow through IGameState::derive_rng(domain_tag).
 
-Lifecycle:
-  - Phase 1.1 (this PR): test exists but is SKIPPED for the six games
-    that haven't migrated yet. The allowlist below names every game whose
-    rules / state currently still constructs std::mt19937 etc.
-  - Phase 2 (per-game): each game's PR removes its allowlist entry as it
-    finishes migrating to derive_rng.
-  - Phase 2 wrap-up: last allowlist entry is removed; this lint flips to
-    error mode (any new file in games/* containing the banned patterns
-    fails CI).
+Phase 2 wrap-up (this state): every shipped game has been migrated to
+derive_rng. The allowlist is empty and the test runs in error mode for
+all games. Any new file in games/<id>/*_rules.cpp or *_state.cpp
+containing a banned pattern fails CI.
 
-The lint only inspects files under games/<id>/*_rules.cpp and
-*_state.cpp, since those are the files that golden standard §2.3
-governs. net_adapter.cpp, register.cpp etc. are part of the
-randomize_unseen / chance dispatch path that Phase 1.1 does NOT
-constrain.
+The lint only inspects *_rules.cpp / *_state.cpp under games/<id>/
+since those are the files governed by §2.3. net_adapter.cpp,
+register.cpp etc. are part of randomize_unseen / chance dispatch
+which has its own contract (must accept an external rng) and is
+deliberately out of scope.
 """
 from __future__ import annotations
 
@@ -48,16 +43,11 @@ BANNED_PATTERNS: list[tuple[str, str]] = [
     ("splitmix64 (home-rolled rng)", r"\bsplitmix64\b"),
 ]
 
-# Per-Phase-2 migration removal target. Phase 1.1 lands with everything
-# allowlisted (none of the six games have been moved yet beyond their
-# initial reset shuffle). Each entry is removed by its game's Phase 2 PR.
-ALLOWLISTED_GAMES: set[str] = {
-    # Phase 2 step 1: tictactoe + quoridor removed (no rng usage).
-    # Phase 2 step 2: azul migrated to derive_rng (per-tile draw).
-    # Phase 2 step 3: splendor migrated (eager COW + derive_rng).
-    # Phase 2 step 4: loveletter migrated (Fisher-Yates via derive_rng).
-    "coup",
-}
+# Phase 2 complete: every shipped game now uses derive_rng. Keep the
+# variable for forward compatibility — if a future game lands with an
+# unmigrated rules path, allowlist it here while the migration PR is
+# in flight.
+ALLOWLISTED_GAMES: set[str] = set()
 
 
 def _files_for(game_id: str) -> list[Path]:
