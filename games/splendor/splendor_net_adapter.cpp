@@ -310,12 +310,9 @@ void SplendorBeliefTracker<NPlayers>::randomize_unseen(IGameState& state, std::m
     }
   }
 
-  // Phase 2: COW no longer carries a per-data nonce. All randomness for
-  // future apply_action_copy calls comes from state.derive_rng(), which
-  // is keyed off framework rng_salt_ + draw_nonce_ — both refreshed by
-  // reseed_rng(rng) below. So perturbing the rng_salt is sufficient to
-  // give this sampled branch its own deterministic draw stream.
-  s->reseed_rng(rng);
+  // Caller-owned rng now drives all subsequent draws via the
+  // do_action_fast(rng) path; nothing on state to reseed.
+  (void)rng;
 
   auto node = std::make_shared<SplendorPersistentNode<NPlayers>>();
   node->action_from_parent = -1;

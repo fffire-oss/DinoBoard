@@ -458,7 +458,8 @@ std::vector<ActionId> QuoridorRules::legal_actions(const IGameState& state) cons
   return out;
 }
 
-UndoToken QuoridorRules::do_action_fast(IGameState& state, ActionId action) const {
+UndoToken QuoridorRules::do_action_fast(IGameState& state, ActionId action,
+                                        std::mt19937_64& /*rng*/) const {
   QuoridorState* s = &checked_cast<QuoridorState>(state);
   UndoToken token{};
   token.undo_depth = static_cast<std::uint32_t>(s->undo_stack.size());

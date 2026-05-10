@@ -78,6 +78,11 @@ SelfplayEpisodeResult run_selfplay_episode(
   std::uniform_real_distribution<double> heuristic_dist(0.0, 1.0);
   int heuristic_moves = 0;
 
+  // Step rng used by do_action_fast for any hidden-info draws (azul
+  // factory refills, splendor tableau replenish, etc.). Seeded off the
+  // episode seed so an episode is reproducible from (seed, action history).
+  std::mt19937_64 step_rng(episode_seed ^ 0xA17EBABEULL);
+
   while (!state->is_terminal() && ply < config.max_game_plies) {
     const int player = state->current_player();
 
@@ -158,7 +163,7 @@ SelfplayEpisodeResult run_selfplay_episode(
       std::unique_ptr<IGameState> state_before;
       const bool need_sb_heur = use_per_perspective || tracing;
       if (need_sb_heur) state_before = state->clone_state();
-      effective_rules.do_action_fast(*state, chosen);
+      effective_rules.do_action_fast(*state, chosen, step_rng);
       if (use_per_perspective) {
         const int num_players = static_cast<int>(per_perspective_trackers.size());
         for (int p = 0; p < num_players; ++p) {
@@ -273,7 +278,7 @@ SelfplayEpisodeResult run_selfplay_episode(
     std::unique_ptr<IGameState> state_before;
     const bool need_state_before = use_per_perspective || tracing;
     if (need_state_before) state_before = state->clone_state();
-    effective_rules.do_action_fast(*state, chosen);
+    effective_rules.do_action_fast(*state, chosen, step_rng);
     if (use_per_perspective) {
       // Every seat's tracker sees every action. Each perspective extracts
       // its own perspective-specific events.

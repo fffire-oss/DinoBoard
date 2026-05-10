@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cmath>
 #include <numeric>
+#include <random>
 #include <stdexcept>
 
 namespace board_ai::runtime {
@@ -82,6 +83,9 @@ SelfplayEpisodeResult run_heuristic_episode(
     return z ^ (z >> 31);
   };
 
+  // Step rng feeds do_action_fast hidden-info draws.
+  std::mt19937_64 step_rng(episode_seed ^ 0xA17EBABEULL);
+
   while (!state->is_terminal() && ply < max_game_plies) {
     const int player = state->current_player();
     auto legal = rules.legal_actions(*state);
@@ -140,7 +144,7 @@ SelfplayEpisodeResult run_heuristic_episode(
     }
     result.samples.push_back(std::move(sample));
 
-    rules.do_action_fast(*state, chosen);
+    rules.do_action_fast(*state, chosen, step_rng);
     ++ply;
   }
 

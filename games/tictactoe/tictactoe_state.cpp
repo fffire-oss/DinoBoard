@@ -31,7 +31,8 @@ TicTacToeState::TicTacToeState() {
 }
 
 void TicTacToeState::reset_with_seed(std::uint64_t seed) {
-  IGameState::reset_with_seed_base(seed);
+  IGameState::reset_step_count_base();
+  (void)seed;  // tictactoe is deterministic; seed unused.
   current_player_ = 0;
   winner_ = -1;
   terminal = false;
@@ -53,9 +54,7 @@ StateHash64 TicTacToeState::state_hash(bool include_hidden_rng) const {
   for (std::int8_t c : board) {
     hash_combine(h, static_cast<std::size_t>(c + 2));
   }
-  if (include_hidden_rng) {
-    hash_combine(h, static_cast<std::size_t>(rng_salt_));
-  }
+  (void)include_hidden_rng;  // RNG no longer on state.
   return static_cast<StateHash64>(h);
 }
 

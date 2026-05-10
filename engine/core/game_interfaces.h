@@ -114,86 +114,13 @@ class IGameState {
   virtual bool is_turn_start() const { return true; }
   virtual void reset_with_seed(std::uint64_t seed) = 0;
 
-  // ========== Framework-provided deterministic RNG (Phase 1.1) ==========
-  //
-  // Single canonical entry point for all game-side randomness inside
-  // do_action_fast / reset_with_seed. Replaces hand-rolled rng_salt /
-  // draw_nonce members in each game.
-  //
-  // Contract:
-  //   - rng_salt_ is set once per game via init_rng_state(seed) (called from
-  //     each game's reset_with_seed override). It is the secret salt that
-  //     varies between sessions; it MUST NEVER appear in hash_public_fields
-  //     or hash_private_fields, and MUST NEVER cross the wire (snapshot,
-  //     event payload, web protocol). Framework guarantees this by keeping
-  //     it as a base-class member that no game's hash override touches.
-  //   - draw_nonce_ is monotonically incremented every time derive_rng() is
-  //     called. It is NOT secret (it's just a counter) and NOT serialized,
-  //     but its monotonic increment guarantees that two consecutive
-  //     derive_rng() calls within the same ply produce independent streams.
-  //   - domain_tag distinguishes parallel random sources within a single
-  //     ply (e.g. "draw from deck A" vs "draw from deck B" must not
-  //     correlate even if the same nonce value is reused due to undo). Pass
-  //     a stable per-call-site uint64 (e.g. a hash of "splendor_deck_tier1").
-  //
-  // Lint guard (CI): do_action_fast must not directly construct
-  // std::mt19937* / random_device — it must go through derive_rng().
-  std::mt19937_64 derive_rng(std::uint64_t domain_tag = 0) {
-    std::uint64_t mixed = rng_salt_;
-    mixed = murmur3_fmix64(mixed ^ (draw_nonce_ + kGoldenRatio64));
-    mixed = murmur3_fmix64(mixed ^ (domain_tag + kGoldenRatio64));
-    ++draw_nonce_;
-    return std::mt19937_64(mixed);
-  }
-
-  // Helper for child reset_with_seed overrides: initializes the RNG salt
-  // and resets the nonce counter. Prefer reset_with_seed_base() below; this
-  // remains for randomize_unseen / belief paths that need just the RNG
-  // half without touching step_count_.
-  void init_rng_state(std::uint64_t seed) {
-    rng_salt_ = sanitize_seed(seed);
-    draw_nonce_ = 0;
-  }
-
-  // Single canonical base setup for reset_with_seed overrides (Phase 1.1).
-  // Resets framework-managed members (step_count_ + rng salt + nonce) in
-  // one call so every game's reset_with_seed has a single uniform first
-  // line:
-  //
-  //   void MyState::reset_with_seed(std::uint64_t seed) {
-  //     IGameState::reset_with_seed_base(seed);   // <-- mandatory first line
-  //     // ... game-specific state init ...
-  //   }
-  //
-  // CI lint test_reset_with_seed_calls_base enforces the first-line rule.
-  void reset_with_seed_base(std::uint64_t seed) {
+  // Single canonical base setup for reset_with_seed overrides. Resets the
+  // framework-managed step counter; games must call this as the first line
+  // of their reset_with_seed override. RNG is NOT framework state — each
+  // game's reset_with_seed constructs a one-shot std::mt19937_64 from the
+  // seed for its initial deal/shuffle and drops it on return.
+  void reset_step_count_base() {
     step_count_ = 0;
-    init_rng_state(seed);
-  }
-
-  // Re-randomize the RNG salt by mixing entropy from `source`. Used by
-  // randomize_unseen paths in net_adapter / belief.sample to perturb the
-  // stream between MCTS simulations without resetting the rest of the
-  // state. Resets nonce to 0 so subsequent derive_rng calls within the
-  // sim see the new salt cleanly.
-  template <typename URNG>
-  void reseed_rng(URNG& source) {
-    std::uint64_t mix = static_cast<std::uint64_t>(source()) << 32 |
-                        static_cast<std::uint64_t>(source());
-    rng_salt_ = sanitize_seed(rng_salt_ ^ murmur3_fmix64(mix));
-    draw_nonce_ = 0;
-  }
-
-  // Read-only accessors (for tests / framework introspection only).
-  std::uint64_t rng_salt() const { return rng_salt_; }
-  std::uint64_t draw_nonce() const { return draw_nonce_; }
-
-  // Restore RNG state — for undo paths only. UndoRecord snapshots
-  // (rng_salt, draw_nonce) before do_action_fast and replays via this on
-  // undo to pin the deterministic stream.
-  void restore_rng_state(std::uint64_t salt, std::uint64_t nonce) {
-    rng_salt_ = salt;
-    draw_nonce_ = nonce;
   }
 
  protected:
@@ -201,10 +128,6 @@ class IGameState {
   // reset_with_seed implementations; bumped by begin_step; rolled back by
   // end_step.
   std::uint32_t step_count_ = 0;
-
-  // RNG state — see derive_rng() above for contract.
-  std::uint64_t rng_salt_ = 0;
-  std::uint64_t draw_nonce_ = 0;
 
  public:
   // ========== Per-state visibility tensor (Phase 1.2) ==========
@@ -245,7 +168,7 @@ class IGameState {
   //
   // Contract:
   //   - May NOT touch viz_ itself, only the typed payload fields.
-  //   - May NOT touch step_count_, rng_salt_, or draw_nonce_.
+  //   - May NOT touch step_count_.
   //   - Must be idempotent — calling twice with the same perspective
   //     produces the same state (because placeholder == placeholder).
   //   - Must handle perspective in [0, num_players()).
@@ -282,7 +205,15 @@ class IGameRules {
   virtual ~IGameRules() = default;
   virtual bool validate_action(const IGameState& state, ActionId action) const = 0;
   virtual std::vector<ActionId> legal_actions(const IGameState& state) const = 0;
-  virtual UndoToken do_action_fast(IGameState& state, ActionId action) const = 0;
+
+  // Caller-owned RNG threads through hidden draws (deck pulls, bag draws).
+  // The state itself holds no rng; the runner / session owns one and
+  // refreshes it between sims. Deterministic-path callers should use
+  // `do_action_deterministic` instead — that path is rng-free by
+  // construction (games freeze hidden draws via their own mechanic, e.g.
+  // Splendor's forced_draw_override = -2 sentinel).
+  virtual UndoToken do_action_fast(IGameState& state, ActionId action,
+                                   std::mt19937_64& rng) const = 0;
   virtual void undo_action(IGameState& state, const UndoToken& token) const = 0;
 
   // `do_action_deterministic` is used by the tail solver path: same as
@@ -291,7 +222,10 @@ class IGameRules {
   // override — e.g. Splendor uses `forced_draw_override = -2` sentinel
   // to mean "freeze the random source". See docs/GAME_DEVELOPMENT_GUIDE §9.2.
   virtual UndoToken do_action_deterministic(IGameState& state, ActionId action) const {
-    return do_action_fast(state, action);
+    // Default: forward to do_action_fast with a throwaway rng. Subclasses
+    // that have hidden draws MUST override this to suppress them.
+    std::mt19937_64 unused_rng(0);
+    return do_action_fast(state, action, unused_rng);
   }
 };
 

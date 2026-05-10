@@ -12,17 +12,11 @@ namespace board_ai::splendor {
 
 namespace {
 
-// Phase 2: randomness for the initial deck/noble setup flows through
-// IGameState::derive_rng(domain_tag), per golden-standard §2.3. Each
-// call derives its own mt19937_64 (the framework draw_nonce_ counter
-// auto-increments) so consecutive picks are independent. Modulo on a
-// 64-bit output is unbiased to within 90/2^64 ≈ 5e-18 for all decks
-// here.
+// Caller-owned rng. Modulo on a 64-bit output is unbiased to within
+// 90/2^64 ≈ 5e-18 for all decks here.
 template <typename T>
-T take_random_from_vector(std::vector<T>& deck, IGameState& state,
-                          std::uint64_t domain_tag) {
+T take_random_from_vector(std::vector<T>& deck, std::mt19937_64& rng) {
   if (deck.empty()) return T{};
-  auto rng = state.derive_rng(domain_tag);
   const size_t idx = static_cast<size_t>(rng() % deck.size());
   const T picked = deck[idx];
   if (idx + 1 < deck.size()) {
@@ -109,7 +103,7 @@ SplendorPersistentState<NPlayers>::SplendorPersistentState(
     : node_(std::move(node)) {}
 
 template <int NPlayers>
-SplendorPersistentState<NPlayers> SplendorPersistentState<NPlayers>::root_from_state(IGameState& state) {
+SplendorPersistentState<NPlayers> SplendorPersistentState<NPlayers>::root_from_state(std::mt19937_64& rng) {
   using Cfg = SplendorConfig<NPlayers>;
   auto data = std::make_shared<SplendorData<NPlayers>>();
   data->current_player = 0;
@@ -150,14 +144,11 @@ SplendorPersistentState<NPlayers> SplendorPersistentState<NPlayers>::root_from_s
       data->decks[static_cast<size_t>(tier - 1)].push_back(static_cast<std::int16_t>(id));
     }
   }
-  // Domain tags split the draw stream so initial-tableau and
-  // initial-noble draws are documentation-distinct (functionally
-  // redundant — derive_rng's draw_nonce_ already increments per call).
   for (int t = 0; t < 3; ++t) {
     auto& deck = data->decks[static_cast<size_t>(t)];
     for (int k = 0; k < 4 && !deck.empty(); ++k) {
       data->tableau[static_cast<size_t>(t)][static_cast<size_t>(k)] =
-          take_random_from_vector(deck, state, 0xc1ULL /* splendor_initial_tableau */);
+          take_random_from_vector(deck, rng);
       data->tableau_size[static_cast<size_t>(t)] += 1;
     }
   }
@@ -168,7 +159,7 @@ SplendorPersistentState<NPlayers> SplendorPersistentState<NPlayers>::root_from_s
   data->nobles.fill(-1);
   for (int i = 0; i < Cfg::kNobleCount; ++i) {
     data->nobles[static_cast<size_t>(i)] = static_cast<std::int16_t>(
-        take_random_from_vector(noble_ids, state, 0xc3ULL /* splendor_initial_nobles */));
+        take_random_from_vector(noble_ids, rng));
   }
 
   auto node = std::make_shared<SplendorPersistentNode<NPlayers>>();
@@ -182,28 +173,25 @@ const SplendorData<NPlayers>& SplendorPersistentState<NPlayers>::data() const {
   if (!node_) {
     throw std::runtime_error("SplendorPersistentState is not initialized");
   }
-  // Phase 2: materialization is now eager. Every node is created with
+  // Materialization is eager. Every node is created with
   // materialized!=nullptr by `advance` (which runs apply_action_copy
-  // with a live IGameState&) or by `root_from_state`. Lazy materialization
-  // is gone because there is no path to derive_rng without IGameState.
+  // with the caller's rng) or by `root_from_state`.
   if (!node_->materialized) {
     throw std::runtime_error(
-        "SplendorPersistentState node has no materialized data — Phase 2 "
-        "requires eager materialization");
+        "SplendorPersistentState node has no materialized data");
   }
   return *node_->materialized;
 }
 
 template <int NPlayers>
 SplendorPersistentState<NPlayers> SplendorPersistentState<NPlayers>::advance(
-    ActionId action, IGameState& state) const {
+    ActionId action, std::mt19937_64& rng) const {
   // Eagerly materialize the child by running apply_action_copy with
-  // state in scope. This is the only place rule transitions consume
-  // randomness (other than initial setup), and it must happen with
-  // IGameState live so derive_rng() works.
+  // the caller's rng. This is the only place rule transitions consume
+  // randomness (other than initial setup).
   const SplendorData<NPlayers>& parent_data = data();
   auto child = std::make_shared<SplendorData<NPlayers>>(
-      SplendorRules<NPlayers>::apply_action_copy(parent_data, action, state));
+      SplendorRules<NPlayers>::apply_action_copy(parent_data, action, rng));
   auto node = std::make_shared<SplendorPersistentNode<NPlayers>>();
   node->parent = node_;
   node->action_from_parent = action;
@@ -212,7 +200,7 @@ SplendorPersistentState<NPlayers> SplendorPersistentState<NPlayers>::advance(
 }
 
 template <int NPlayers>
-StateHash64 SplendorPersistentState<NPlayers>::state_hash(bool include_hidden_rng, std::uint64_t rng_salt) const {
+StateHash64 SplendorPersistentState<NPlayers>::state_hash(bool include_hidden_rng) const {
   using Cfg = SplendorConfig<NPlayers>;
   const SplendorData<NPlayers>& d = data();
   std::size_t h = 0;
@@ -226,12 +214,6 @@ StateHash64 SplendorPersistentState<NPlayers>::state_hash(bool include_hidden_rn
   for (auto slot : d.pending_noble_slots) hash_combine(h,static_cast<std::size_t>(slot + 29));
   hash_combine(h,static_cast<std::size_t>(d.winner + 11));
   hash_combine(h,static_cast<std::size_t>(d.terminal ? 1 : 0));
-  // Phase 2: SplendorData no longer carries a per-data draw_nonce.
-  // Hidden-rng hashing for include_hidden_rng=true now relies on the
-  // framework rng_salt (added at the bottom) plus the COW-internal
-  // bookkeeping (deck contents + size below). The framework
-  // draw_nonce_ on IGameState is what drives randomness through
-  // derive_rng.
   for (int v : d.scores) hash_combine(h,static_cast<std::size_t>(v + 101));
   for (auto v : d.bank) hash_combine(h,static_cast<std::size_t>(v + 7));
   const int actor = d.current_player;
@@ -268,9 +250,6 @@ StateHash64 SplendorPersistentState<NPlayers>::state_hash(bool include_hidden_rn
   hash_combine(h,static_cast<std::size_t>(d.nobles_size + 67));
   for (int i = 0; i < Cfg::kNobleCount; ++i) {
     hash_combine(h,static_cast<std::size_t>(d.nobles[static_cast<size_t>(i)] + 71));
-  }
-  if (include_hidden_rng) {
-    hash_combine(h,static_cast<std::size_t>(rng_salt));
   }
   return static_cast<StateHash64>(h);
 }
@@ -355,19 +334,19 @@ const viz::VisibilitySchema& SplendorState<NPlayers>::schema() {
 
 template <int NPlayers>
 void SplendorState<NPlayers>::reset_with_seed(std::uint64_t seed) {
-  IGameState::reset_with_seed_base(seed);
-  // Phase 2: Persistent tree is seeded by feeding the live IGameState
-  // (this) into root_from_state, which calls this->derive_rng for each
-  // initial draw. No more SplendorData-internal draw_nonce — randomness
-  // flows through the framework draw_nonce_ counter.
-  persistent = SplendorPersistentState<NPlayers>::root_from_state(*this);
+  IGameState::reset_step_count_base();
+  // One-shot rng for the initial deck/noble setup. RNG is not stored
+  // on state — caller of do_action_fast supplies its own rng for any
+  // subsequent randomness (tableau refills after buys).
+  std::mt19937_64 init_rng(seed);
+  persistent = SplendorPersistentState<NPlayers>::root_from_state(init_rng);
   undo_stack.clear();
   viz::init_viz(*this, schema());
 }
 
 template <int NPlayers>
 StateHash64 SplendorState<NPlayers>::state_hash(bool include_hidden_rng) const {
-  return persistent.state_hash(include_hidden_rng, this->rng_salt_);
+  return persistent.state_hash(include_hidden_rng);
 }
 
 template <int NPlayers>

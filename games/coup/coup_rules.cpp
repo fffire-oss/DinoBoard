@@ -361,13 +361,13 @@ std::vector<ActionId> CoupRules<NPlayers>::legal_actions(const IGameState& state
 }
 
 template <int NPlayers>
-UndoToken CoupRules<NPlayers>::do_action_fast(IGameState& state, ActionId action) const {
+UndoToken CoupRules<NPlayers>::do_action_fast(IGameState& state, ActionId action,
+                                              std::mt19937_64& rng) const {
   auto& s = checked_cast<CoupState<NPlayers>>(state);
   auto& d = s.data;
   s.undo_stack.push_back(d);
   s.begin_step();
   d.ply++;
-  auto rng = s.derive_rng(0xc2ULL /* domain: coup_action_draws */);
 
   switch (d.stage) {
     case CoupStage::kDeclareAction: {

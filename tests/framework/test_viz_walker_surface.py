@@ -5,7 +5,7 @@ Phase 3 (per-game schema bring-up) doesn't accidentally rename or
 move the canonical traversal — every consumer (state hash builder,
 encoder masker, snapshot extractor) must share this single visit.
 
-Behavioral correctness (perspective filtering, internal-field skip,
+Behavioral correctness (perspective filtering, empty-viz skip,
 declaration-order stability, out-of-range perspective rejection) is
 covered by the C++ smoke test in CI; this file only enforces the
 header-level vocabulary the plan locked in.
@@ -43,13 +43,16 @@ def test_viz_walker_h_defines_for_each_visible_slot() -> None:
     ), "for_each_visible_slot must take an explicit int perspective"
 
 
-def test_viz_walker_skips_internal_fields() -> None:
-    """Internal fields (rng salt, step counter) MUST NOT be visited —
-    they have no semantic content for any viewer and must not leak
-    into hash / encoder / snapshot. Pin this with a token check."""
+def test_viz_walker_skips_empty_viz_fields() -> None:
+    """Fields whose runtime viz is empty (no viewers, no slots) MUST
+    NOT be visited — they have no semantic content for any viewer and
+    must not leak into hash / encoder / snapshot. The internal/derived
+    flags were removed in the "state holds only public game data"
+    refactor (plan hazy-popping-wozniak.md); the walker now relies on
+    `v.empty()` directly."""
     text = _read(WALKER_H)
-    assert "field.internal" in text, (
-        "walker must explicitly skip FieldDecl::internal"
+    assert "v.empty()" in text, (
+        "walker must explicitly skip empty-viz fields via v.empty()"
     )
 
 

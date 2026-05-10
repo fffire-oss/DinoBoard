@@ -54,10 +54,7 @@ SNAPSHOT_ONLY_KEYS: dict[str, set[str]] = {
         "deck_sizes",                 # public per-tier deck sizes
         "reserved_faceup_ids_flat",   # partial-reveal: id when reserved_visible
     },
-    "azul": {
-        "bag",      # variable-length hidden multiset (order is hidden)
-        "box_lid",  # variable-length hidden multiset
-    },
+    "azul": set(),
 }
 
 

@@ -521,6 +521,21 @@ PublicEventTrace extract_coup_events(
       da.stage != CoupStage::kExchangeReturn2) {
     AnyMap payload;
     payload["player"] = std::any(db.active_player);
+    // If the exchange just completed for the perspective player, the AI
+    // session needs the resulting unrevealed influence pinned to truth —
+    // do_action_fast is no longer run on the AI side, so the in-flight
+    // hand/draws have not been merged. Carry the post-exchange unrevealed
+    // influence cards in the payload; the applier writes them onto state.
+    if (db.active_player == perspective &&
+        perspective >= 0 && perspective < NPlayers) {
+      std::vector<int> influence(2, -1);
+      for (int sl = 0; sl < 2; ++sl) {
+        if (!da.revealed[perspective][sl]) {
+          influence[sl] = static_cast<int>(da.influence[perspective][sl]);
+        }
+      }
+      payload["influence"] = std::any(influence);
+    }
     out.post_events.push_back({"exchange_complete", std::move(payload)});
   }
 
@@ -846,7 +861,54 @@ void apply_coup_event(
     d.exchange_drawn[1] = static_cast<CharId>(drawn[1]);
     return;
   }
-  // card_revealed / exchange_complete: tracker-only, no state mutation.
+  // card_revealed: tracker-only, no state mutation.
+  // exchange_complete: when payload carries an "influence" vector (which
+  // happens iff the exchange completed for the perspective player), pin
+  // perspective's unrevealed influence slots to truth. The AI session no
+  // longer runs do_action_fast, so without this override the perspective's
+  // own hand reflects the pre-exchange characters.
+  if (phase == EventPhase::kPostAction && kind == "exchange_complete") {
+    auto it_p = payload.find("player");
+    auto it_i = payload.find("influence");
+    if (it_p == payload.end() || it_i == payload.end()) return;
+    int p = std::any_cast<int>(it_p->second);
+    if (p < 0 || p >= NPlayers) return;
+    auto& s = board_ai::checked_cast<CoupState<NPlayers>>(state);
+    auto& d = s.data;
+    std::vector<int> influence;
+    if (it_i->second.type() == typeid(std::vector<int>)) {
+      influence = std::any_cast<std::vector<int>>(it_i->second);
+    } else if (it_i->second.type() == typeid(std::vector<std::any>)) {
+      const auto& av = std::any_cast<const std::vector<std::any>&>(it_i->second);
+      influence.reserve(av.size());
+      for (const auto& x : av) {
+        influence.push_back(x.type() == typeid(int) ? std::any_cast<int>(x) : -1);
+      }
+    } else {
+      return;
+    }
+    for (int sl = 0; sl < 2 && sl < static_cast<int>(influence.size()); ++sl) {
+      if (d.revealed[p][sl]) continue;
+      const int role = influence[sl];
+      if (role < 0 || role >= kCharacterCount) continue;
+      const CharId old_role = d.influence[p][sl];
+      d.influence[p][sl] = static_cast<CharId>(role);
+      // Keep court_deck multiset feasible: swap out an old-role copy and
+      // swap in a deck card that matches the new role, mirroring
+      // self_exchange_draw's invariance trick. Best-effort.
+      if (old_role >= 0) {
+        d.court_deck.push_back(old_role);
+        auto it = std::find(d.court_deck.begin(), d.court_deck.end(),
+                            static_cast<CharId>(role));
+        if (it != d.court_deck.end()) {
+          d.court_deck.erase(it);
+        } else if (!d.court_deck.empty()) {
+          d.court_deck.pop_back();
+        }
+      }
+    }
+    return;
+  }
 }
 
 template <int NPlayers>

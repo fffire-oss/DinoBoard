@@ -263,7 +263,8 @@ std::vector<ActionId> LoveLetterRules<NPlayers>::legal_actions(const IGameState&
 }
 
 template <int NPlayers>
-UndoToken LoveLetterRules<NPlayers>::do_action_fast(IGameState& state, ActionId action) const {
+UndoToken LoveLetterRules<NPlayers>::do_action_fast(IGameState& state, ActionId action,
+                                                    std::mt19937_64& /*rng*/) const {
   auto& s = checked_cast<LoveLetterState<NPlayers>>(state);
   auto& d = s.data;
 

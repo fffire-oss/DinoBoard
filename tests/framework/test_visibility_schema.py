@@ -91,9 +91,10 @@ def test_igamestate_carries_viz_member() -> None:
         r"std::unordered_map<\s*std::string\s*,\s*viz::VizTensor\s*>\s*viz_",
         text,
     ), "IGameState must carry `std::unordered_map<std::string, viz::VizTensor> viz_`"
-    # Phase 1.1 + 1.2 framework primitives still in place.
-    assert "reset_with_seed_base" in text
-    assert "derive_rng" in text
+    # Step-count base helper still in place. RNG helpers were removed in
+    # the "RNG out of IGameState" refactor (plan hazy-popping-wozniak.md);
+    # the runner owns the rng now.
+    assert "reset_step_count_base" in text
 
 
 def test_runtime_header_includes_full_igamestate() -> None:

@@ -87,7 +87,7 @@ LoveLetterState<NPlayers>::LoveLetterState() {
 
 template <int NPlayers>
 void LoveLetterState<NPlayers>::reset_with_seed(std::uint64_t seed) {
-  IGameState::reset_with_seed_base(seed);
+  IGameState::reset_step_count_base();
   auto& d = data;
   d.current_player = 0;
   d.first_player = 0;
@@ -114,12 +114,11 @@ void LoveLetterState<NPlayers>::reset_with_seed(std::uint64_t seed) {
     }
   }
 
-  // Fisher-Yates over the deck using a fresh derive_rng stream. Phase 2:
-  // std::shuffle is banned in *_state.cpp because it hides the per-iteration
-  // rng() consumption pattern; an explicit loop makes the randomness flow
-  // visible. Modulo bias on mt19937_64 % 16 is < 2^-60.
+  // One-shot rng for the initial deck shuffle. RNG is not stored on
+  // state — caller of do_action_fast supplies its own rng for any
+  // subsequent randomness.
   {
-    auto rng = this->derive_rng(0xb1ULL /* domain: loveletter_initial_shuffle */);
+    std::mt19937_64 rng(seed);
     for (size_t i = d.deck.size(); i > 1; --i) {
       const size_t j = static_cast<size_t>(rng() % i);
       std::swap(d.deck[i - 1], d.deck[j]);
@@ -177,8 +176,6 @@ StateHash64 LoveLetterState<NPlayers>::state_hash(bool include_hidden_rng) const
     for (auto c : d.deck) {
       hash_combine(h, static_cast<std::size_t>(c + 43));
     }
-    hash_combine(h, static_cast<std::size_t>(this->rng_salt_));
-    hash_combine(h, static_cast<std::size_t>(this->draw_nonce_));
   }
 
   for (auto c : d.face_up_removed) {

@@ -1,15 +1,15 @@
-"""Phase 1.1 lint (golden standard I3): every game's reset_with_seed
-override must call IGameState::reset_with_seed_base(seed) as its first
-real statement.
+"""Lint (golden standard I3): every game's reset_with_seed override must
+call IGameState::reset_step_count_base() as its first real statement.
 
-Why first: reset_with_seed_base resets framework-managed members
-(step_count_, rng_salt_, draw_nonce_). If a game's body runs first and
-calls derive_rng() before the base call, it pulls from stale RNG salt
-and breaks determinism. Putting it FIRST is the rule; this lint enforces
-it.
+Why first: reset_step_count_base resets the framework-managed step_count_
+member which guards DAG acyclicity. If a game's body runs first and
+mutates state before the base call, the step counter is out of sync with
+the rest of the (zeroed) public fields, breaking the DAG invariant. RNG
+no longer lives on IGameState (Commit C of plan
+hazy-popping-wozniak.md), so this rule reduces to "step_count first."
 
-Allowlist: any game .cpp not yet migrated. Phase 1.1 PR migrates all
-six games at once, so the allowlist starts empty.
+Allowlist: any game .cpp not yet migrated. Empty by default — all six
+games migrate together.
 """
 from __future__ import annotations
 
@@ -64,7 +64,7 @@ def _extract_reset_body(text: str, game_id: str) -> str | None:
 @pytest.mark.parametrize("path", _state_cpp_files(), ids=lambda p: p.parent.name)
 def test_reset_with_seed_first_line_calls_base(path: Path) -> None:
     """Every reset_with_seed body's first non-comment, non-blank line must
-    be `IGameState::reset_with_seed_base(<arg>);`."""
+    be `IGameState::reset_step_count_base();`."""
     game_id = path.parent.name
     if game_id in ALLOWLIST:
         pytest.skip(f"{game_id} on allowlist; remove when migrated")
@@ -85,15 +85,15 @@ def test_reset_with_seed_first_line_calls_base(path: Path) -> None:
 
     assert first_line is not None, f"{path.name}: empty reset_with_seed body"
 
-    # Match either `IGameState::reset_with_seed_base(...)` or, conceivably,
-    # `this->reset_with_seed_base(...)`. The first form is preferred (it
+    # Match either `IGameState::reset_step_count_base(...)` or, conceivably,
+    # `this->reset_step_count_base(...)`. The first form is preferred (it
     # makes the base-class call site explicit).
     pattern = re.compile(
-        r"^(?:IGameState\s*::|this\s*->)?\s*reset_with_seed_base\s*\("
+        r"^(?:IGameState\s*::|this\s*->)?\s*reset_step_count_base\s*\("
     )
     assert pattern.match(first_line), (
         f"{path.name}: first statement of reset_with_seed must be "
-        f"`IGameState::reset_with_seed_base(seed);` (golden standard I3 Phase 1.1).\n"
+        f"`IGameState::reset_step_count_base();` (golden standard I3).\n"
         f"  got: {first_line!r}\n"
         f"  in: {path}"
     )

@@ -116,8 +116,9 @@ class FilteredRulesWrapper final : public IGameRules {
     return legal;
   }
 
-  UndoToken do_action_fast(IGameState& state, ActionId action) const override {
-    return inner_.do_action_fast(state, action);
+  UndoToken do_action_fast(IGameState& state, ActionId action,
+                           std::mt19937_64& rng) const override {
+    return inner_.do_action_fast(state, action, rng);
   }
 
   void undo_action(IGameState& state, const UndoToken& token) const override {

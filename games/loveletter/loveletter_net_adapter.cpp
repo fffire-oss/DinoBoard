@@ -556,9 +556,22 @@ void LoveLetterBeliefTracker<NPlayers>::randomize_unseen(
     d.set_aside_card = unseen[idx++];
   }
 
+  // Write perspective's own hand from tracker authoritative state. When
+  // perspective is dead (public alive==false), hand becomes 0 to match
+  // truth (which clears hand on elimination via do_action_fast). Without
+  // this, state.hand[perspective] drifts because do_action_fast no longer
+  // runs in the AI session.
+  if (perspective_player_ >= 0 && perspective_player_ < NPlayers) {
+    d.hand[perspective_player_] =
+        d.alive[perspective_player_] ? own_hand_ : static_cast<std::int8_t>(0);
+  }
+
   for (int p = 0; p < NPlayers; ++p) {
     if (p == perspective_player_) continue;
-    if (!d.alive[p]) continue;
+    if (!d.alive[p]) {
+      d.hand[p] = 0;
+      continue;
+    }
     if (known_hand_[p] > 0) {
       d.hand[p] = known_hand_[p];
     } else if (idx < unseen.size()) {
@@ -566,7 +579,15 @@ void LoveLetterBeliefTracker<NPlayers>::randomize_unseen(
     }
   }
 
-  if (d.current_player != perspective_player_ && d.drawn_card != 0) {
+  // drawn_card is the card the current_player drew at start of their turn.
+  // If current_player is perspective, use tracker authoritative value;
+  // otherwise sample from unseen pool. When the game is terminal or no
+  // active draw is in flight, clear it.
+  if (d.terminal) {
+    d.drawn_card = 0;
+  } else if (d.current_player == perspective_player_) {
+    d.drawn_card = own_drawn_card_;
+  } else if (d.drawn_card != 0) {
     if (idx < unseen.size()) {
       d.drawn_card = unseen[idx++];
     }
@@ -577,10 +598,9 @@ void LoveLetterBeliefTracker<NPlayers>::randomize_unseen(
     d.deck.push_back(unseen[idx++]);
   }
 
-  // Reseed framework RNG so subsequent derive_rng() calls on this state see
-  // a fresh stream. The deck order itself is already determinized above by
-  // shuffling `unseen` into `d.deck`.
-  s->reseed_rng(rng);
+  // Caller-owned rng now drives all subsequent draws via do_action_fast(rng);
+  // nothing on state to reseed.
+  (void)rng;
 }
 
 template <int NPlayers>

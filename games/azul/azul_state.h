@@ -48,11 +48,9 @@ struct AzulSnapshot {
   std::array<int, Cfg::kPlayers> scores{};
   std::array<std::array<std::uint8_t, kColors>, Cfg::kFactories> factories{};
   std::array<std::uint8_t, kColors> center{};
-  std::vector<std::int8_t> bag{};
-  std::vector<std::int8_t> box_lid{};
+  std::array<int, kColors> bag_counts{};
+  std::array<int, kColors> box_lid_counts{};
   std::array<PlayerState, Cfg::kPlayers> players{};
-  std::uint64_t rng_salt = 0;
-  std::uint64_t draw_nonce = 0;
 };
 
 template <int NPlayers>
@@ -73,8 +71,6 @@ struct UndoRecord {
   int source_factory_idx = -1;
   std::array<std::uint8_t, kColors> prev_factory_source{};
   PlayerState prev_player{};
-  std::uint64_t prev_rng_salt = 0;
-  std::uint64_t prev_draw_nonce = 0;
 };
 
 struct PersistentTreeCache {
@@ -93,11 +89,10 @@ class AzulState final : public CloneableState<AzulState<NPlayers>> {
   // Phase 3 — visibility schema. Azul partitions:
   //   - all_public: every game-facing field. Factories, center pile,
   //     each player's pattern lines / wall / floor / score, round meta,
-  //     the first-player marker. Every viewer sees all of these.
-  //   - bag and box_lid (variable-length vectors): NOT declared as
-  //     schema slots. Their contents are face-down (hidden) and their
-  //     sizes are publicly derivable; both already handled by
-  //     hash_public_fields (multiset-only) and randomize_unseen.
+  //     the first-player marker, AND bag_counts / box_lid_counts.
+  //     Tiles within a color are interchangeable; only counts are real,
+  //     and counts are publicly derivable (start total minus what's been
+  //     placed/discarded), so every viewer sees them.
   // PlayerState's sub-fields are flattened into top-level schema names
   // (player_line_len, player_wall_mask, ...) since the schema doesn't
   // model nested structs — every consumer addresses fields by string.
@@ -124,8 +119,8 @@ class AzulState final : public CloneableState<AzulState<NPlayers>> {
 
   std::array<std::array<std::uint8_t, kColors>, Cfg::kFactories> factories{};
   std::array<std::uint8_t, kColors> center{};
-  std::vector<std::int8_t> bag{};
-  std::vector<std::int8_t> box_lid{};
+  std::array<int, kColors> bag_counts{};
+  std::array<int, kColors> box_lid_counts{};
   std::array<PlayerState, Cfg::kPlayers> players{};
 
   std::vector<UndoRecord<NPlayers>> undo_stack{};
@@ -133,8 +128,8 @@ class AzulState final : public CloneableState<AzulState<NPlayers>> {
 
   void reset_with_seed(std::uint64_t seed) override;
   bool all_sources_empty() const;
-  void refill_factories_from_rng();
-  int draw_one_tile();
+  void refill_factories_from_rng(std::mt19937_64& rng);
+  int draw_one_tile(std::mt19937_64& rng);
   StateHash64 state_signature() const { return state_hash(false); }
   bool is_tree_cache_consistent() const;
 };

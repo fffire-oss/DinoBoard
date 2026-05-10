@@ -4,9 +4,13 @@
 //
 // A game declares, ONCE, every field in its IGameState — its name, the
 // shape of its data tensor, and a bool[shape..., NPlayers] visibility
-// tensor saying which seats see which slots. The framework derives:
-//   - state_hash_for_perspective(p) (hash all viz[..., p]==1 && !internal)
-//   - encoder feature scope (encode all viz[..., p]==1 && !internal)
+// tensor saying which seats see which slots. There is no
+// public/internal/derived flag — visibility is wholly carried by the
+// viz tensor. A field with all-1 viz is fully public; a field with
+// all-0 (or empty) viz is fully hidden; per-seat patterns sit in
+// between. The framework derives:
+//   - state_hash_for_perspective(p) (hash all slots with viz[..., p]==1)
+//   - encoder feature scope (encode all slots with viz[..., p]==1)
 //   - extract_snapshot / apply_snapshot (filter by viz)
 //   - protocol-level visibility_mask (bit-packed, sent over the wire)
 //
@@ -71,9 +75,10 @@ inline VizTensor all_public(const std::vector<int>& data_shape, int n_players) {
   return v;
 }
 
-// No viewer sees any slot. For internal RNG state, framework-managed
-// step_count, etc. (Marked `internal=true` separately so consumers can
-// also exclude them from hashes.)
+// No viewer sees any slot. For framework-managed bookkeeping that no
+// player observes (e.g. step_count when explicitly modeled as a viz
+// field). Hash / encoder / walker all naturally skip slots with viz=0
+// for the active perspective, so no separate flag is needed.
 inline VizTensor all_hidden(const std::vector<int>& data_shape, int n_players) {
   VizTensor v;
   v.shape = data_shape;
@@ -135,26 +140,18 @@ inline VizTensor owner_only_first_axis(const std::vector<int>& data_shape, int n
 
 // One field in the game state.
 //
-// FieldDecl is intentionally minimal: just shape (carried by base_viz),
-// the static base visibility, and two flags. Dynamic visibility is NOT
-// described here — `do_action_fast` mutates state.viz_ directly via the
-// rules-side helpers (Phase 1.5). That keeps rules as the sole viz
-// writer (golden standard I1).
+// FieldDecl is intentionally minimal: just the name and the static base
+// visibility. Visibility is the single dimension along which fields
+// differ — there are no public/internal/derived flags. Dynamic
+// visibility is NOT described here — `do_action_fast` mutates
+// state.viz_ directly via the rules-side helpers (Phase 1.5). That
+// keeps rules as the sole viz writer (golden standard I1).
 struct FieldDecl {
   std::string name;             // stable identifier; doubles as path key
                                 // for snapshot serialization
   VizTensor base_viz;           // static visibility — what state.viz_
                                 // gets initialized to and what
                                 // reset_to_base restores to
-  bool internal = false;        // RNG state, step counter, etc. — never
-                                // hashed, encoded, walked, or sent
-                                // over wire
-  bool derived = false;         // observer-derived scalar (e.g.
-                                // deck.size()); excluded from snapshot
-                                // values (recomputable from another
-                                // field) but still public in hash. The
-                                // `derive_size` declaration helper that
-                                // sets this flag is added in Phase 1.5.
 };
 
 // Describes the visibility audience of a single public-event payload.
@@ -211,8 +208,7 @@ struct VisibilitySchema {
 // and pushes a FieldDecl onto the schema.
 
 inline void declare_field(VisibilitySchema& schema, const std::string& name,
-                          VizTensor base_viz,
-                          bool internal = false, bool derived = false) {
+                          VizTensor base_viz) {
   // Name uniqueness — schema is the single source of truth for path keys
   // used in snapshots, hashes, and event payloads. Duplicates would let
   // one field silently shadow another.
@@ -223,8 +219,9 @@ inline void declare_field(VisibilitySchema& schema, const std::string& name,
     }
   }
   // viewer_count consistency — every field's viz must match schema.n_players.
-  // Empty viz (size==0) is allowed and means "internal/no-viz", typically
-  // paired with internal=true.
+  // Empty viz (size==0) is allowed and means "no viz" (the walker
+  // skips empty-viz fields, so they are effectively hidden from every
+  // perspective without needing a separate flag).
   if (!base_viz.empty() && schema.n_players > 0 &&
       base_viz.viewer_count() != schema.n_players) {
     throw std::invalid_argument(
@@ -237,8 +234,6 @@ inline void declare_field(VisibilitySchema& schema, const std::string& name,
   FieldDecl f;
   f.name = name;
   f.base_viz = std::move(base_viz);
-  f.internal = internal;
-  f.derived = derived;
   schema.fields.push_back(std::move(f));
 }
 
@@ -249,9 +244,9 @@ inline void declare_field(VisibilitySchema& schema, const std::string& name,
 // below are the ONLY way rules and framework should poke at it:
 //
 //   init_viz(state, schema)
-//     — Phase 1.2 / 3: called from each game's reset_with_seed override
-//       AFTER reset_with_seed_base(seed) and AFTER game-specific data
-//       init. Copies each FieldDecl::base_viz into state.viz_.
+//     — Called from each game's reset_with_seed override AFTER
+//       reset_step_count_base() and AFTER game-specific data init.
+//       Copies each FieldDecl::base_viz into state.viz_.
 //
 //   reveal_slot(state, "field", idx0, idx1, ...)
 //     — Phase 1.5+: called from rules.do_action_fast. Sets the viz of

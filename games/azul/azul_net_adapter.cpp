@@ -95,24 +95,18 @@ void AzulFeatureEncoder<NPlayers>::encode_public(
   }
 
   // Bag composition (aggregate count per color — observer-visible:
-  // all players know how many of each color remain in the bag, only
-  // the draw order is hidden).
-  std::array<int, kColors> bag_counts{};
-  bag_counts.fill(0);
-  for (std::int8_t t : s->bag) {
-    if (t >= 0 && t < kColors) {
-      bag_counts[static_cast<size_t>(t)] += 1;
-    }
-  }
+  // all players know how many of each color remain in the bag).
   for (int c = 0; c < kColors; ++c) {
-    out->push_back(static_cast<float>(bag_counts[static_cast<size_t>(c)]) / 20.0f);
+    out->push_back(static_cast<float>(s->bag_counts[static_cast<size_t>(c)]) / 20.0f);
   }
 
   // Metadata
   out->push_back(s->first_player_token_in_center ? 1.0f : 0.0f);
   out->push_back(s->current_player_ == perspective_player ? 1.0f : 0.0f);
+  int bag_total = 0;
+  for (int c : s->bag_counts) bag_total += c;
   out->push_back(std::min(s->round_index, 20) / 20.0f);
-  out->push_back(static_cast<float>(s->bag.size()) / 100.0f);
+  out->push_back(static_cast<float>(bag_total) / 100.0f);
 }
 
 template <int NPlayers>
@@ -132,12 +126,10 @@ void AzulBeliefTracker<NPlayers>::observe_public_event(
 }
 
 template <int NPlayers>
-void AzulBeliefTracker<NPlayers>::randomize_unseen(IGameState& state, std::mt19937& rng) const {
-  auto* s = dynamic_cast<AzulState<NPlayers>*>(&state);
-  if (!s) return;
-
-  std::shuffle(s->bag.begin(), s->bag.end(), rng);
-  s->reseed_rng(rng);
+void AzulBeliefTracker<NPlayers>::randomize_unseen(IGameState& /*state*/, std::mt19937& /*rng*/) const {
+  // No-op: the bag is now stored as per-color counts (the only public
+  // fact). There is no order to resample, and counts are publicly
+  // derivable, so observer state already matches truth.
 }
 
 template class AzulFeatureEncoder<2>;

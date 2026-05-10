@@ -114,12 +114,12 @@ class SplendorPersistentState {
   SplendorPersistentState() = default;
   explicit SplendorPersistentState(std::shared_ptr<const SplendorPersistentNode<NPlayers>> node);
 
-  static SplendorPersistentState root_from_state(IGameState& state);
+  static SplendorPersistentState root_from_state(std::mt19937_64& rng);
 
   bool valid() const { return static_cast<bool>(node_); }
   const SplendorData<NPlayers>& data() const;
-  SplendorPersistentState advance(ActionId action, IGameState& state) const;
-  StateHash64 state_hash(bool include_hidden_rng, std::uint64_t rng_salt) const;
+  SplendorPersistentState advance(ActionId action, std::mt19937_64& rng) const;
+  StateHash64 state_hash(bool include_hidden_rng) const;
 
  private:
   std::shared_ptr<const SplendorPersistentNode<NPlayers>> node_{};

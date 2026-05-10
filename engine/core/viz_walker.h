@@ -79,15 +79,13 @@ inline void walk_data_axes_recursive(
 // [0, viewer_count) for any visited field. Callers should clamp before
 // calling — we don't silently no-op.
 //
-// Internal fields (FieldDecl::internal == true) are skipped entirely:
-// their base_viz is empty by convention (init_viz still stores the
-// empty VizTensor under their name so reads never miss-key, but the
-// walker has nothing to visit).
+// Fields with empty base_viz are silently skipped (`continue` on
+// v.empty() below). The walker has nothing to visit on a 0-element viz
+// tensor, so an explicit "internal" flag would be redundant.
 inline void for_each_visible_slot(const IGameState& state,
                                   const VisibilitySchema& schema, int perspective,
                                   const SlotVisitor& fn) {
   for (const auto& field : schema.fields) {
-    if (field.internal) continue;
     const VizTensor& v = viz_get(state, field.name);
     if (v.empty()) continue;  // declared but no viz — pass through
     if (perspective < 0 || perspective >= v.viewer_count()) {

@@ -358,7 +358,7 @@ void CoupBeliefTracker<NPlayers>::randomize_unseen(
     }
     d.court_deck.clear();
     while (idx < unseen.size()) d.court_deck.push_back(unseen[idx++]);
-    s->reseed_rng(rng);
+    (void)rng;
     return;
   }
 
@@ -453,8 +453,6 @@ void CoupBeliefTracker<NPlayers>::randomize_unseen(
     }
   }
   for (CharId c : deck) d.court_deck.push_back(c);
-
-  s->reseed_rng(rng);
 }
 
 template class CoupFeatureEncoder<2>;

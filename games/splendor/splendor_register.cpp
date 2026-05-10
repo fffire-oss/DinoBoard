@@ -1142,7 +1142,7 @@ board_ai::HeuristicResult pick(
   // perspective → undo. SplendorRules provides do_action_fast + undo_action.
   auto& mut_rules = const_cast<board_ai::IGameRules&>(rules);
   for (ActionId a : legal) {
-    auto tok = mut_rules.do_action_fast(state, a);
+    auto tok = mut_rules.do_action_deterministic(state, a);
     double s_val = eval_position<NPlayers>(s.persistent.data(), player);
     mut_rules.undo_action(state, tok);
     result.scores.push_back(s_val);

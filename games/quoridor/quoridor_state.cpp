@@ -38,7 +38,8 @@ QuoridorState::QuoridorState() {
 }
 
 void QuoridorState::reset_with_seed(std::uint64_t seed) {
-  IGameState::reset_with_seed_base(seed);
+  IGameState::reset_step_count_base();
+  (void)seed;  // quoridor is deterministic; seed unused.
   current_player_ = 0;
   winner_ = -1;
   terminal = false;
@@ -69,9 +70,7 @@ StateHash64 QuoridorState::state_hash(bool include_hidden_rng) const {
   }
   for (std::uint8_t w : h_walls) hash_combine(h,static_cast<std::size_t>(w));
   for (std::uint8_t w : v_walls) hash_combine(h,static_cast<std::size_t>(w));
-  if (include_hidden_rng) {
-    hash_combine(h,static_cast<std::size_t>(rng_salt_));
-  }
+  (void)include_hidden_rng;  // RNG no longer on state.
   return static_cast<StateHash64>(h);
 }
 

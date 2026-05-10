@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <random>
 
 namespace board_ai::runtime {
 
@@ -21,6 +22,10 @@ ArenaMatchResult run_arena_match(
   ArenaMatchResult result{};
   auto state = initial_state.clone_state();
   int ply = 0;
+
+  // Step rng feeds do_action_fast hidden-info draws. Caller-owned now
+  // that RNG is no longer on state.
+  std::mt19937_64 step_rng(match_seed ^ 0xA17EBABEULL);
 
   while (!state->is_terminal() && ply < max_game_plies) {
     const int player = state->current_player();
@@ -78,7 +83,7 @@ ArenaMatchResult run_arena_match(
     result.ply_stats.push_back({stats.tail_solved, stats.tail_solve_value});
     std::unique_ptr<IGameState> state_before;
     if (belief_tracker) state_before = state->clone_state();
-    rules.do_action_fast(*state, chosen);
+    rules.do_action_fast(*state, chosen, step_rng);
     if (belief_tracker) {
       PublicEventTrace evt;
       if (public_event_extractor) {

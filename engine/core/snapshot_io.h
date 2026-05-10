@@ -23,10 +23,10 @@
 // possible to silently forget a field. Symmetric guarantee for
 // `apply_snapshot` / appliers.
 //
-// Variable-length vectors (azul.bag / coup.court_deck / etc.) and
-// partial-reveal sidecars (coup.revealed_char_flat) are NOT schema
-// fields, so they are NOT emitted by this helper. Games write/read those
-// directly to/from `snap` either side of the call.
+// Variable-length vectors (coup.court_deck / etc.) and partial-reveal
+// sidecars (coup.revealed_char_flat) are NOT schema fields, so they are
+// NOT emitted by this helper. Games write/read those directly to/from
+// `snap` either side of the call.
 //
 // Fields that the schema declares all_public but `hash_public_fields`
 // legitimately omits (e.g. azul `game_first_player` — fixed at game
@@ -82,7 +82,6 @@ inline void emit_snapshot(
     AnyMap& snap,
     const std::unordered_set<std::string>& skip = {}) {
   for (const auto& f : schema.fields) {
-    if (f.internal || f.derived) continue;
     if (skip.count(f.name)) continue;
     if (!detail::is_all_public(f.base_viz)) continue;
     auto it = io.emitters.find(f.name);
@@ -105,7 +104,6 @@ inline void apply_snapshot(
     const AnyMap& snap,
     const std::unordered_set<std::string>& skip = {}) {
   for (const auto& f : schema.fields) {
-    if (f.internal || f.derived) continue;
     if (skip.count(f.name)) continue;
     if (!detail::is_all_public(f.base_viz)) continue;
     auto it = io.appliers.find(f.name);

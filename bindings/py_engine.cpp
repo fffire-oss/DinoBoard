@@ -532,7 +532,7 @@ py::dict run_constrained_eval_vs_heuristic_py(
       ply_stats_vec.push_back({stats.tail_solved, stats.tail_solve_value});
       std::unique_ptr<IGameState> state_before;
       if (bt) state_before = state->clone_state();
-      bundle.rules->do_action_fast(*state, chosen);
+      bundle.rules->do_action_fast(*state, chosen, rng);
       if (bt) tracker_observe(*bt, bundle, *state_before, chosen, *state, cp);
     } else {
       if (!bundle.heuristic_picker) break;
@@ -547,7 +547,7 @@ py::dict run_constrained_eval_vs_heuristic_py(
       ply_stats_vec.push_back({false, 0.0f});
       std::unique_ptr<IGameState> state_before;
       if (bt) state_before = state->clone_state();
-      bundle.rules->do_action_fast(*state, chosen);
+      bundle.rules->do_action_fast(*state, chosen, rng);
       if (bt) tracker_observe(*bt, bundle, *state_before, chosen, *state, cp);
     }
     ++ply;
@@ -643,9 +643,10 @@ py::dict encode_state_for_perspective_py(
   }
   py::gil_scoped_release release2;
 
+  std::mt19937_64 step_rng(seed ^ 0xA17EBABEULL);
   for (const auto& [actor, action] : pairs) {
     auto before = bundle.state->clone_state();
-    bundle.rules->do_action_fast(*bundle.state, action);
+    bundle.rules->do_action_fast(*bundle.state, action, step_rng);
     if (tracker_init_done && bundle.public_event_extractor) {
       auto ev = bundle.public_event_extractor(*before, action, *bundle.state, tracker_perspective);
       bundle.belief_tracker->observe_public_event(actor, action, ev.pre_events, ev.post_events);
@@ -812,29 +813,41 @@ class GameSessionWrapper {
     if (perspective < 0 || perspective >= static_cast<int>(ai_views_.size())) return;
     if (!ai_views_[perspective]) return;
     const int actor = truth_before.current_player();
+    // ai_views_ run on a sampled-hidden world that gets re-overwritten by
+    // public_snapshot + randomize_unseen below; their step rng must not be
+    // shared with truth's step_rng_ or truth's draw sequence drifts (truth
+    // consumes one draw per action; sharing would consume N+1).
+    const std::uint64_t view_step_seed = seed_ ^
+        (static_cast<std::uint64_t>(ply_count_) * kGoldenRatio64) ^
+        (static_cast<std::uint64_t>(perspective) * 0xA17EBABEULL);
+    std::mt19937_64 view_step_rng(view_step_seed);
     if (!bundle_->public_event_extractor || !bundle_->public_event_applier) {
       // Fully-public game: just replay the action on ai_view, tracker
       // gets empty events (it has no hidden info to track).
-      bundle_->rules->do_action_fast(*ai_views_[perspective], action);
+      bundle_->rules->do_action_fast(*ai_views_[perspective], action, view_step_rng);
       if (ai_trackers_[perspective]) {
         ai_trackers_[perspective]->observe_public_event(actor, action, {}, {});
       }
       return;
     }
+    // Selfplay path: there is no external ground truth feeding messages —
+    // ai_view must advance via the action itself. do_action_fast runs in
+    // the per-perspective sampled-hidden world; the resulting state may
+    // diverge from truth on hidden-dependent fields, but the public
+    // snapshot below overwrites public fields and tracker resampling
+    // refreshes hidden fields, so the observer's information set ends up
+    // correct.
     PublicEventTrace trace = bundle_->public_event_extractor(
         truth_before, action, *bundle_->state, perspective);
     for (const auto& [kind, payload] : trace.pre_events) {
       bundle_->public_event_applier(
           *ai_views_[perspective], EventPhase::kPreAction, kind, payload);
     }
-    bundle_->rules->do_action_fast(*ai_views_[perspective], action);
+    bundle_->rules->do_action_fast(*ai_views_[perspective], action, view_step_rng);
     for (const auto& [kind, payload] : trace.post_events) {
       bundle_->public_event_applier(
           *ai_views_[perspective], EventPhase::kPostAction, kind, payload);
     }
-    // Overwrite ai_view's public fields from the truth snapshot, so the
-    // observer's public state is rebuilt from the message stream and never
-    // reflects do_action_fast's reads of sampled hidden.
     if (bundle_->public_state_applier && !trace.public_snapshot.empty()) {
       bundle_->public_state_applier(*ai_views_[perspective], trace.public_snapshot);
     }
@@ -920,7 +933,7 @@ class GameSessionWrapper {
     py::gil_scoped_release release;
     const int actor = bundle_->state->current_player();
     std::unique_ptr<IGameState> state_before = bundle_->state->clone_state();
-    bundle_->rules->do_action_fast(*bundle_->state, action);
+    bundle_->rules->do_action_fast(*bundle_->state, action, step_rng_);
     if (bt_) {
       tracker_observe(*bt_, *bundle_, *state_before, action, *bundle_->state,
                       actor);
@@ -1003,20 +1016,29 @@ class GameSessionWrapper {
     py::gil_scoped_release release;
     external_obs_mode_ = true;
     const int actor = bundle_->state->current_player();
+    // AI session does NOT run game rules. State is rebuilt from the
+    // message stream:
+    //   1. pre_events  — hidden info the action depends on / reveals
+    //                    BEFORE the action (e.g. opp hand exposed).
+    //   2. snapshot    — overwrites all public fields to the post-action
+    //                    truth (current_player, reserved_size, scores, ...).
+    //   3. post_events — hidden info the action produces AFTER the action
+    //                    (e.g. self-reserved card_id) — applied last so
+    //                    snapshot can't clobber, and so post-event
+    //                    handlers see the updated public state from (2).
+    // We also bump step_count manually since do_action_fast (which would
+    // normally call begin_step) is intentionally skipped here. step_count
+    // is framework-managed bookkeeping included in state_hash_for_perspective
+    // for DAG acyclicity.
+    bundle_->state->begin_step();
     for (const auto& [kind, payload] : pre_list) {
       bundle_->public_event_applier(*bundle_->state, EventPhase::kPreAction, kind, payload);
     }
-    bundle_->rules->do_action_fast(*bundle_->state, action);
-    for (const auto& [kind, payload] : post_list) {
-      bundle_->public_event_applier(*bundle_->state, EventPhase::kPostAction, kind, payload);
-    }
-
-    // If the game provides a public_state_applier AND the caller passed
-    // a snapshot, overwrite session state_'s public fields from truth.
-    // Session public state is therefore rebuilt from the message stream —
-    // do_action_fast's output is discarded on the public side.
     if (have_snapshot && bundle_->public_state_applier) {
       bundle_->public_state_applier(*bundle_->state, snap_map);
+    }
+    for (const auto& [kind, payload] : post_list) {
+      bundle_->public_event_applier(*bundle_->state, EventPhase::kPostAction, kind, payload);
     }
 
     if (bt_) {
@@ -1053,7 +1075,7 @@ class GameSessionWrapper {
       py::gil_scoped_release release;
       const int actor = bundle_->state->current_player();
       std::unique_ptr<IGameState> state_before = bundle_->state->clone_state();
-      bundle_->rules->do_action_fast(*bundle_->state, action);
+      bundle_->rules->do_action_fast(*bundle_->state, action, step_rng_);
       if (bundle_->public_event_extractor) {
         have_extractor = true;
         PublicEventTrace trace = bundle_->public_event_extractor(
@@ -1352,6 +1374,7 @@ class GameSessionWrapper {
   std::unique_ptr<runtime::FilteredRulesWrapper> filtered_rules_;
   IBeliefTracker* bt_ = nullptr;
   std::size_t ply_count_ = 0;
+  std::mt19937_64 step_rng_{seed_ ^ 0xA17EBABEULL};
   bool ts_enabled_ = false;
   int ts_depth_limit_ = 10;
   std::int64_t ts_node_budget_ = 200000;
@@ -1384,15 +1407,16 @@ py::dict test_belief_tracker_py(
   IBeliefTracker* bt = bundle.belief_tracker.get();
   tracker_init(*bt, bundle, *state, 0);
 
-  std::mt19937_64 rng(seed);
+  std::mt19937_64 action_rng(seed);
+  std::mt19937_64 step_rng(seed ^ 0xA17EBABEULL);
   int actual_plies = 0;
   for (int i = 0; i < plies && !state->is_terminal(); ++i) {
     auto legal = bundle.rules->legal_actions(*state);
     if (legal.empty()) break;
-    const size_t idx = rng() % legal.size();
+    const size_t idx = action_rng() % legal.size();
     ActionId chosen = legal[idx];
     auto state_before = state->clone_state();
-    bundle.rules->do_action_fast(*state, chosen);
+    bundle.rules->do_action_fast(*state, chosen, step_rng);
     tracker_observe(*bt, bundle, *state_before, chosen, *state, 0);
     actual_plies += 1;
   }

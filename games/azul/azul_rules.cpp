@@ -135,7 +135,8 @@ bool AzulRules<NPlayers>::will_round_end_after_action(const AzulState<NPlayers>&
 }
 
 template <int NPlayers>
-void AzulRules<NPlayers>::apply_round_settlement(AzulState<NPlayers>& state) {
+void AzulRules<NPlayers>::apply_round_settlement(AzulState<NPlayers>& state,
+                                                 std::mt19937_64& rng) {
   bool any_full_row = false;
   for (int pid = 0; pid < Cfg::kPlayers; ++pid) {
     auto& p = state.players[pid];
@@ -150,8 +151,8 @@ void AzulRules<NPlayers>::apply_round_settlement(AzulState<NPlayers>& state) {
           p.wall_mask[row] = static_cast<std::uint8_t>(p.wall_mask[row] | bit);
           round_gain += score_wall_placement(p, row, col);
         }
-        for (int i = 0; i < cap - 1; ++i) {
-          state.box_lid.push_back(static_cast<std::int8_t>(color));
+        if (cap - 1 > 0 && color >= 0 && color < kColors) {
+          state.box_lid_counts[color] += cap - 1;
         }
         p.line_len[row] = 0;
         p.line_color[row] = -1;
@@ -162,7 +163,7 @@ void AzulRules<NPlayers>::apply_round_settlement(AzulState<NPlayers>& state) {
     for (int i = 0; i < p.floor_count && i < 7; ++i) {
       penalty += kFloorPenalties[i];
       if (p.floor[i] >= 0 && p.floor[i] < kColors) {
-        state.box_lid.push_back(p.floor[i]);
+        ++state.box_lid_counts[p.floor[i]];
       }
       p.floor[i] = -1;
     }
@@ -218,11 +219,12 @@ void AzulRules<NPlayers>::apply_round_settlement(AzulState<NPlayers>& state) {
   state.current_player_ = state.first_player_next_round;
   state.winner_ = -1;
   state.shared_victory = false;
-  state.refill_factories_from_rng();
+  state.refill_factories_from_rng(rng);
 }
 
 template <int NPlayers>
-void AzulRules<NPlayers>::apply_action_no_undo(AzulState<NPlayers>& state, ActionId action) {
+void AzulRules<NPlayers>::apply_action_no_undo(AzulState<NPlayers>& state, ActionId action,
+                                               std::mt19937_64& rng) {
   const int source = decode_source(action);
   const int color = decode_color(action);
   const int target_line = decode_target_line(action);
@@ -277,7 +279,7 @@ void AzulRules<NPlayers>::apply_action_no_undo(AzulState<NPlayers>& state, Actio
 
   const bool round_ended = state.all_sources_empty();
   if (round_ended) {
-    apply_round_settlement(state);
+    apply_round_settlement(state, rng);
   } else if (!state.terminal) {
     state.current_player_ = (state.current_player_ + 1) % Cfg::kPlayers;
   }
@@ -340,7 +342,8 @@ std::vector<ActionId> AzulRules<NPlayers>::legal_actions(const IGameState& state
 }
 
 template <int NPlayers>
-UndoToken AzulRules<NPlayers>::do_action_fast(IGameState& state, ActionId action) const {
+UndoToken AzulRules<NPlayers>::do_action_fast(IGameState& state, ActionId action,
+                                              std::mt19937_64& rng) const {
   auto* s = &checked_cast<AzulState<NPlayers>>(state);
   if (!validate_action(*s, action)) {
     return UndoToken{};
@@ -357,8 +360,6 @@ UndoToken AzulRules<NPlayers>::do_action_fast(IGameState& state, ActionId action
   rec.prev_shared_victory = s->shared_victory;
   rec.prev_scores = s->scores;
   rec.prev_center = s->center;
-  rec.prev_rng_salt = s->rng_salt();
-  rec.prev_draw_nonce = s->draw_nonce();
   rec.prev_player = s->players[s->current_player_];
   const int source = decode_source(action);
   if (source >= 0 && source < Cfg::kFactories) {
@@ -378,17 +379,15 @@ UndoToken AzulRules<NPlayers>::do_action_fast(IGameState& state, ActionId action
     rec.full_before.scores = s->scores;
     rec.full_before.factories = s->factories;
     rec.full_before.center = s->center;
-    rec.full_before.bag.assign(s->bag.begin(), s->bag.end());
-    rec.full_before.box_lid.assign(s->box_lid.begin(), s->box_lid.end());
+    rec.full_before.bag_counts = s->bag_counts;
+    rec.full_before.box_lid_counts = s->box_lid_counts;
     rec.full_before.players = s->players;
-    rec.full_before.rng_salt = s->rng_salt();
-    rec.full_before.draw_nonce = s->draw_nonce();
   }
   s->undo_stack.push_back(rec);
 
   UndoToken token{};
   token.undo_depth = static_cast<std::uint32_t>(s->undo_stack.size());
-  apply_action_no_undo(*s, action);
+  apply_action_no_undo(*s, action, rng);
   return token;
 }
 
@@ -396,7 +395,10 @@ template <int NPlayers>
 UndoToken AzulRules<NPlayers>::do_action_deterministic(IGameState& state, ActionId action) const {
   auto* s = &checked_cast<AzulState<NPlayers>>(state);
   const int prev_round = s->round_index;
-  UndoToken token = do_action_fast(state, action);
+  // Deterministic path: no draws happen because we abort before refill if
+  // the action would end a round. So the rng is never consumed.
+  std::mt19937_64 unused_rng(0);
+  UndoToken token = do_action_fast(state, action, unused_rng);
   if (!s->terminal && s->round_index != prev_round) {
     s->terminal = true;
     s->winner_ = -1;
@@ -421,10 +423,9 @@ void AzulRules<NPlayers>::undo_action(IGameState& state, const UndoToken& token)
     s->scores = rec.full_before.scores;
     s->factories = rec.full_before.factories;
     s->center = rec.full_before.center;
-    s->bag.assign(rec.full_before.bag.begin(), rec.full_before.bag.end());
-    s->box_lid.assign(rec.full_before.box_lid.begin(), rec.full_before.box_lid.end());
+    s->bag_counts = rec.full_before.bag_counts;
+    s->box_lid_counts = rec.full_before.box_lid_counts;
     s->players = rec.full_before.players;
-    s->restore_rng_state(rec.full_before.rng_salt, rec.full_before.draw_nonce);
     s->end_step();
     return;
   }
@@ -438,7 +439,6 @@ void AzulRules<NPlayers>::undo_action(IGameState& state, const UndoToken& token)
   s->scores = rec.prev_scores;
   s->center = rec.prev_center;
   s->players[s->current_player_] = rec.prev_player;
-  s->restore_rng_state(rec.prev_rng_salt, rec.prev_draw_nonce);
   if (rec.has_factory_source && rec.source_factory_idx >= 0 && rec.source_factory_idx < Cfg::kFactories) {
     s->factories[rec.source_factory_idx] = rec.prev_factory_source;
   }

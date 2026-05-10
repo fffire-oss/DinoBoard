@@ -95,7 +95,7 @@ HeuristicResult heuristic_pick_quoridor(
 
   for (size_t i = 0; i < legal.size(); ++i) {
     auto clone = state.clone_state();
-    rules.do_action_fast(*clone, legal[i]);
+    rules.do_action_deterministic(*clone, legal[i]);
     const auto& after = board_ai::checked_cast<QuoridorState>(*clone);
     const int d_me = QuoridorRules::shortest_path_distance(after, me);
     const int d_opp = QuoridorRules::shortest_path_distance(after, opp);
@@ -167,7 +167,7 @@ board_ai::GameRegistrar reg("quoridor", [](std::uint64_t seed) {
         if (after_gap > before_gap) filtered.push_back(action);
       } else {
         auto clone = state.clone_state();
-        rules.do_action_fast(*clone, action);
+        rules.do_action_deterministic(*clone, action);
         const auto& after_state = board_ai::checked_cast<QuoridorState>(*clone);
         const int after_me = QuoridorRules::shortest_path_distance(after_state, me);
         const int after_opp = QuoridorRules::shortest_path_distance(after_state, opp);

@@ -141,33 +141,26 @@ def _play_full_game(
                 action_id = body["action_id"]
                 assert action_id in legal, (
                     f"AI returned illegal action {action_id}; legal={legal}")
-                # Drive ground truth with the same action; for hidden-info
-                # games we discard the trace because the AI session has
-                # already advanced its own state via decide().
-                if has_events:
-                    gt.apply_action_with_trace(action_id, ai_seat)
-                else:
-                    gt.apply_action(action_id)
-                action_log.append((current, action_id))
             else:
                 action_id = _random_legal(rng, legal)
-                if has_events:
-                    trace = gt.apply_action_with_trace(action_id, ai_seat)
-                    obs_payload = {
-                        "action_id": action_id,
-                        "pre_events": trace["pre_events"],
-                        "post_events": trace["post_events"],
-                        "public_snapshot": trace["public_snapshot"],
-                    }
-                else:
-                    gt.apply_action(action_id)
-                    obs_payload = {"action_id": action_id}
-                action_log.append((current, action_id))
-                resp = client.post(
-                    f"/ai/sessions/{session_id}/observe",
-                    json=obs_payload,
-                )
-                assert resp.status_code == 200, resp.text
+
+            if has_events:
+                trace = gt.apply_action_with_trace(action_id, ai_seat)
+                obs_payload = {
+                    "action_id": action_id,
+                    "pre_events": trace["pre_events"],
+                    "post_events": trace["post_events"],
+                    "public_snapshot": trace["public_snapshot"],
+                }
+            else:
+                gt.apply_action(action_id)
+                obs_payload = {"action_id": action_id}
+            action_log.append((current, action_id))
+            resp = client.post(
+                f"/ai/sessions/{session_id}/observe",
+                json=obs_payload,
+            )
+            assert resp.status_code == 200, resp.text
 
         status = client.get(f"/ai/sessions/{session_id}").json()
         return {

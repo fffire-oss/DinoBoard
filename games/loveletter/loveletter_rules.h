@@ -14,7 +14,8 @@ class LoveLetterRules final : public IGameRules {
 
   bool validate_action(const IGameState& state, ActionId action) const override;
   std::vector<ActionId> legal_actions(const IGameState& state) const override;
-  UndoToken do_action_fast(IGameState& state, ActionId action) const override;
+  UndoToken do_action_fast(IGameState& state, ActionId action,
+                           std::mt19937_64& rng) const override;
   void undo_action(IGameState& state, const UndoToken& token) const override;
 };
 

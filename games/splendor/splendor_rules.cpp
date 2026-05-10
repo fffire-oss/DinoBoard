@@ -22,7 +22,7 @@ constexpr std::array<int, 5> kTakeOneColors{{0, 1, 2, 3, 4}};
 
 template <int NPlayers>
 std::int16_t draw_random_from_deck(SplendorData<NPlayers>& d, int tier_index,
-                                   IGameState& state) {
+                                   std::mt19937_64& rng) {
   auto& deck = d.decks[static_cast<size_t>(tier_index)];
   if (deck.empty()) return -1;
 
@@ -46,10 +46,8 @@ std::int16_t draw_random_from_deck(SplendorData<NPlayers>& d, int tier_index,
     }
   }
 
-  // Phase 2 normal path: draw via state.derive_rng. modulo bias on a
-  // 64-bit output for deck.size() <= 90 is below 1e-17, well under any
-  // observable statistical effect.
-  auto rng = state.derive_rng(0xc2ULL /* splendor_deck_draw */);
+  // Caller-provided rng. modulo bias on a 64-bit output for deck.size()
+  // <= 90 is below 1e-17 — irrelevant.
   const size_t idx = static_cast<size_t>(rng() % deck.size());
   const std::int16_t picked = deck[idx];
   if (idx + 1 < deck.size()) {
@@ -159,10 +157,10 @@ void update_pending_returns_state(SplendorData<NPlayers>& d, int player) {
 }
 
 template <int NPlayers>
-void draw_tableau(SplendorData<NPlayers>& d, int tier_index, IGameState& state) {
+void draw_tableau(SplendorData<NPlayers>& d, int tier_index, std::mt19937_64& rng) {
   while (d.tableau_size[static_cast<size_t>(tier_index)] < 4 &&
          !d.decks[static_cast<size_t>(tier_index)].empty()) {
-    const auto id = draw_random_from_deck(d, tier_index, state);
+    const auto id = draw_random_from_deck(d, tier_index, rng);
     d.tableau[static_cast<size_t>(tier_index)][static_cast<size_t>(d.tableau_size[static_cast<size_t>(tier_index)])] = id;
     d.tableau_size[static_cast<size_t>(tier_index)] += 1;
   }
@@ -357,7 +355,7 @@ std::vector<ActionId> SplendorRules<NPlayers>::legal_actions_data(const Splendor
 
 template <int NPlayers>
 SplendorData<NPlayers> SplendorRules<NPlayers>::apply_action_copy(
-    const SplendorData<NPlayers>& src, ActionId action, IGameState& state) {
+    const SplendorData<NPlayers>& src, ActionId action, std::mt19937_64& rng) {
   SplendorData<NPlayers> d = src;
   if (d.terminal) return d;
   const auto legal = legal_actions_data(d);
@@ -434,7 +432,7 @@ SplendorData<NPlayers> SplendorRules<NPlayers>::apply_action_copy(
       d.player_points[player] += card.points;
       d.player_cards_count[player] += 1;
       bought_card = true;
-      draw_tableau(d, tier, state);
+      draw_tableau(d, tier, rng);
     }
   } else if (action >= Cfg::kBuyReservedOffset && action < Cfg::kBuyReservedOffset + Cfg::kBuyReservedCount) {
     const int idx = action - Cfg::kBuyReservedOffset;
@@ -459,7 +457,7 @@ SplendorData<NPlayers> SplendorRules<NPlayers>::apply_action_copy(
       d.reserved[static_cast<size_t>(player)][static_cast<size_t>(idx)] = static_cast<std::int16_t>(cid);
       d.reserved_visible[static_cast<size_t>(player)][static_cast<size_t>(idx)] = 1;
       d.reserved_size[static_cast<size_t>(player)] += 1;
-      draw_tableau(d, tier, state);
+      draw_tableau(d, tier, rng);
       if (d.bank[5] > 0) {
         d.bank[5] -= 1;
         d.player_gems[player][5] += 1;
@@ -468,7 +466,7 @@ SplendorData<NPlayers> SplendorRules<NPlayers>::apply_action_copy(
   } else if (action >= Cfg::kReserveDeckOffset && action < Cfg::kReserveDeckOffset + Cfg::kReserveDeckCount) {
     const int tier = action - Cfg::kReserveDeckOffset;
     if (d.reserved_size[static_cast<size_t>(player)] < 3 && !d.decks[static_cast<size_t>(tier)].empty()) {
-      const int cid = draw_random_from_deck(d, tier, state);
+      const int cid = draw_random_from_deck(d, tier, rng);
       const int idx = d.reserved_size[static_cast<size_t>(player)];
       d.reserved[static_cast<size_t>(player)][static_cast<size_t>(idx)] = static_cast<std::int16_t>(cid);
       d.reserved_visible[static_cast<size_t>(player)][static_cast<size_t>(idx)] = 0;
@@ -535,14 +533,15 @@ std::vector<ActionId> SplendorRules<NPlayers>::legal_actions(const IGameState& s
 }
 
 template <int NPlayers>
-UndoToken SplendorRules<NPlayers>::do_action_fast(IGameState& state, ActionId action) const {
+UndoToken SplendorRules<NPlayers>::do_action_fast(IGameState& state, ActionId action,
+                                                  std::mt19937_64& rng) const {
   auto* s = &checked_cast<SplendorState<NPlayers>>(state);
   UndoToken t{};
   t.undo_depth = static_cast<std::uint32_t>(s->undo_stack.size());
   s->undo_stack.push_back(s->persistent);
   s->begin_step();
   if (validate_action(*s, action)) {
-    s->persistent = s->persistent.advance(action, state);
+    s->persistent = s->persistent.advance(action, rng);
   }
   return t;
 }
@@ -557,7 +556,10 @@ UndoToken SplendorRules<NPlayers>::do_action_deterministic(IGameState& state, Ac
   if (validate_action(*s, action)) {
     auto data_copy = s->persistent.data();
     data_copy.forced_draw_override = -2;
-    auto applied = apply_action_copy(data_copy, action, state);
+    // Deterministic path: forced_draw_override = -2 freezes draws, so
+    // the rng is never consumed. A throwaway rng is fine.
+    std::mt19937_64 unused_rng(0);
+    auto applied = apply_action_copy(data_copy, action, unused_rng);
     applied.forced_draw_override = -1;
     auto node = std::make_shared<SplendorPersistentNode<NPlayers>>();
     node->action_from_parent = action;

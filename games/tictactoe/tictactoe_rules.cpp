@@ -45,7 +45,8 @@ std::vector<ActionId> TicTacToeRules::legal_actions(const IGameState& state) con
   return out;
 }
 
-UndoToken TicTacToeRules::do_action_fast(IGameState& state, ActionId action) const {
+UndoToken TicTacToeRules::do_action_fast(IGameState& state, ActionId action,
+                                         std::mt19937_64& /*rng*/) const {
   TicTacToeState* s = &checked_cast<TicTacToeState>(state);
   s->begin_step();  // framework step counter for DAG acyclicity
   UndoToken token{};

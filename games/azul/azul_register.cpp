@@ -58,17 +58,19 @@ AnyMap serialize_azul(const IGameState& state) {
   m["center"] = std::any(center);
 
   std::vector<int> bag_counts(board_ai::azul::kColors, 0);
-  for (auto tile : s.bag) {
-    if (tile >= 0 && tile < board_ai::azul::kColors) bag_counts[tile]++;
+  int bag_total = 0;
+  for (int c = 0; c < board_ai::azul::kColors; ++c) {
+    bag_counts[c] = s.bag_counts[c];
+    bag_total += s.bag_counts[c];
   }
   m["bag_counts"] = std::any(bag_counts);
-  m["bag_total"] = std::any(static_cast<int>(s.bag.size()));
+  m["bag_total"] = std::any(bag_total);
 
-  // Box lid contents (tiles returned from completed pattern rows / floor
+  // Box lid counts (tiles returned from completed pattern rows / floor
   // overflow). Exposed for tile-conservation invariants in test suites.
   std::vector<int> box_counts(board_ai::azul::kColors, 0);
-  for (auto tile : s.box_lid) {
-    if (tile >= 0 && tile < board_ai::azul::kColors) box_counts[tile]++;
+  for (int c = 0; c < board_ai::azul::kColors; ++c) {
+    box_counts[c] = s.box_lid_counts[c];
   }
   m["box_counts"] = std::any(box_counts);
 
@@ -223,18 +225,13 @@ void recompute_bag_from_visible(AzulState<NPlayers>& s) {
     }
   }
   // Box_lid holds tiles already "consumed" out of bag but recyclable. Keep
-  // box_lid as-is; put the remainder into bag.
+  // box_lid_counts as-is; put the remainder into bag_counts.
   for (int c = 0; c < kColors; ++c) {
-    for (std::int8_t t : s.box_lid) {
-      if (t == static_cast<std::int8_t>(c)) visible[c]++;
-    }
+    visible[c] += s.box_lid_counts[c];
   }
-  s.bag.clear();
   for (int c = 0; c < kColors; ++c) {
     const int remaining = 20 - visible[c];
-    for (int i = 0; i < remaining && remaining > 0; ++i) {
-      s.bag.push_back(static_cast<std::int8_t>(c));
-    }
+    s.bag_counts[c] = remaining > 0 ? remaining : 0;
   }
 }
 
@@ -364,6 +361,16 @@ const board_ai::viz::SnapshotIO& azul_snapshot_io() {
       std::vector<int> v(NPlayers);
       for (int p = 0; p < NPlayers; ++p) v[p] = sa.players[p].score;
       put_vec(m, "player_score", std::move(v));
+    };
+    t.emitters["bag_counts"] = [put_vec](const IGameState& s, AnyMap& m) {
+      const auto& sa = checked_cast<AzulS>(s);
+      put_vec(m, "bag_counts",
+              std::vector<int>(sa.bag_counts.begin(), sa.bag_counts.end()));
+    };
+    t.emitters["box_lid_counts"] = [put_vec](const IGameState& s, AnyMap& m) {
+      const auto& sa = checked_cast<AzulS>(s);
+      put_vec(m, "box_lid_counts",
+              std::vector<int>(sa.box_lid_counts.begin(), sa.box_lid_counts.end()));
     };
 
     // ---- appliers ----
@@ -499,6 +506,20 @@ const board_ai::viz::SnapshotIO& azul_snapshot_io() {
         sa.players[p].score = v[p];
       }
     };
+    t.appliers["bag_counts"] = [get_iv](IGameState& s, const AnyMap& m) {
+      auto v = get_iv(m, "bag_counts");
+      auto& sa = checked_cast<AzulS>(s);
+      for (int c = 0; c < kColors; ++c) {
+        sa.bag_counts[c] = (c < static_cast<int>(v.size())) ? v[c] : 0;
+      }
+    };
+    t.appliers["box_lid_counts"] = [get_iv](IGameState& s, const AnyMap& m) {
+      auto v = get_iv(m, "box_lid_counts");
+      auto& sa = checked_cast<AzulS>(s);
+      for (int c = 0; c < kColors; ++c) {
+        sa.box_lid_counts[c] = (c < static_cast<int>(v.size())) ? v[c] : 0;
+      }
+    };
 
     return t;
   }();
@@ -522,8 +543,10 @@ void apply_initial_observation(IGameState& state, int /*perspective*/, const Any
   }
   overwrite_factories_from_any(s, it->second);
   // At game start, center is always empty and box_lid is empty.
-  for (int c = 0; c < kColors; ++c) s.center[c] = 0;
-  s.box_lid.clear();
+  for (int c = 0; c < kColors; ++c) {
+    s.center[c] = 0;
+    s.box_lid_counts[c] = 0;
+  }
   recompute_bag_from_visible(s);
 }
 
@@ -546,30 +569,17 @@ PublicEventTrace extract_events(
   }
 
   // Public snapshot mirrors AzulState::hash_public_fields. Azul has no
-  // per-perspective private info (bag order is symmetric hidden to ALL),
-  // so the snapshot is literally the whole public state. The schema's
-  // declaration order drives `viz::emit_snapshot`; the SnapshotIO table
-  // below provides one emitter per all_public field. Variable-length
-  // hidden multisets (bag / box_lid) are NOT schema fields, so we still
-  // write them by hand alongside.
+  // per-perspective private info, so the snapshot is literally the whole
+  // public state. The schema's declaration order drives
+  // `viz::emit_snapshot`; the SnapshotIO table below provides one
+  // emitter per all_public field — including `bag_counts` and
+  // `box_lid_counts`, which are now first-class public fields (only
+  // counts matter; tiles within a color are interchangeable).
   {
     AnyMap snap;
     board_ai::viz::emit_snapshot(after, AzulState<NPlayers>::schema(),
                                  azul_snapshot_io<NPlayers>(), snap,
                                  /*skip=*/{"game_first_player"});
-
-    // Snapshot-only: variable-length hidden multisets (sizes & multiset
-    // composition are public; draw order is sampled by randomize_unseen).
-    std::vector<int> bag_v;
-    bag_v.reserve(sa.bag.size());
-    for (auto t : sa.bag) bag_v.push_back(static_cast<int>(t));
-    snap["bag"] = std::any(bag_v);
-
-    std::vector<int> box_v;
-    box_v.reserve(sa.box_lid.size());
-    for (auto t : sa.box_lid) box_v.push_back(static_cast<int>(t));
-    snap["box_lid"] = std::any(box_v);
-
     out.public_snapshot = std::move(snap);
   }
 
@@ -578,47 +588,13 @@ PublicEventTrace extract_events(
 
 // applier — writes public fields from truth snapshot. Schema-driven via
 // `viz::apply_snapshot`; per-field appliers live in `azul_snapshot_io`.
-// `bag` and `box_lid` are not schema fields (variable-length hidden
-// multisets handled by hash_public_fields/randomize_unseen) — handled
-// directly here.
+// `bag_counts` and `box_lid_counts` are first-class schema fields and
+// flow through the same path.
 template <int NPlayers>
 void apply_public_state(IGameState& state, const AnyMap& snap) {
-  auto& s = board_ai::checked_cast<AzulState<NPlayers>>(state);
-
   board_ai::viz::apply_snapshot(state, AzulState<NPlayers>::schema(),
                                 azul_snapshot_io<NPlayers>(), snap,
                                 /*skip=*/{"game_first_player"});
-
-  // Robust int-vector accessor: handles both vector<int> and
-  // vector<any> (empty-list case where py_to_any can't detect
-  // all-int-because-empty and defaults to vector<any>).
-  auto get_iv = [&](const char* key) -> std::vector<int> {
-    auto it = snap.find(key);
-    if (it == snap.end()) return {};
-    if (it->second.type() == typeid(std::vector<int>)) {
-      return std::any_cast<std::vector<int>>(it->second);
-    }
-    if (it->second.type() == typeid(std::vector<std::any>)) {
-      const auto& av = std::any_cast<const std::vector<std::any>&>(it->second);
-      std::vector<int> out;
-      out.reserve(av.size());
-      for (const auto& x : av) {
-        if (x.type() == typeid(int)) out.push_back(std::any_cast<int>(x));
-      }
-      return out;
-    }
-    return {};
-  };
-
-  auto bag_v = get_iv("bag");
-  s.bag.clear();
-  s.bag.reserve(bag_v.size());
-  for (int t : bag_v) s.bag.push_back(static_cast<std::int8_t>(t));
-
-  auto box_v = get_iv("box_lid");
-  s.box_lid.clear();
-  s.box_lid.reserve(box_v.size());
-  for (int t : box_v) s.box_lid.push_back(static_cast<std::int8_t>(t));
 }
 
 template <int NPlayers>

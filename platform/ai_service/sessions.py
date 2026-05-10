@@ -55,10 +55,13 @@ class AISession:
     ) -> None:
         """Record that a player played action_id.
 
-        Caller must send observations in turn order. The AI's own moves are
-        applied via decide() and MUST NOT be re-sent via observe(). This
-        mirrors how an external game server would notify the AI of OTHER
-        players' moves between its own decisions.
+        Caller must send observations in turn order — including for the AI's
+        own moves. `decide()` is non-mutating: it picks an action and returns
+        it, but does not advance the session. The caller then applies the
+        action on its ground-truth game and forwards the resulting trace
+        (events + snapshot) back via `observe()`. This mirrors how an external
+        game server notifies the AI of every player's move and is the only
+        path through which session state advances.
 
         For hidden-info games (those with a registered public_event_applier),
         the caller MUST pass `pre_events`, `post_events`, and `public_snapshot`
@@ -109,12 +112,13 @@ class AISession:
     def decide(self) -> dict:
         """Ask the AI to pick an action at the current position.
 
-        Returns {"action_id": int, "action_info": dict, "stats": dict}. The
-        caller is expected to apply this action to its ground-truth game and
-        then send observations for any subsequent non-AI moves.
-
-        The returned action has already been committed to this session's
-        internal state; the caller must NOT re-send it via observe().
+        Returns {"action_id": int, "action_info": dict, "stats": dict}. This
+        call is NON-MUTATING — the session's state is not advanced. The caller
+        is expected to apply this action to its ground-truth game and then
+        forward the resulting trace back via `observe()` (just like for any
+        other player's move). This guarantees AI session state is rebuilt
+        from the message stream only, never from speculative rule execution
+        on a sampled-hidden world.
         """
         with self._lock:
             if self._closed:
@@ -131,8 +135,6 @@ class AISession:
                 )
             result = self._gs.get_ai_action(self.simulations, self.temperature)
             action_id = result["action"]
-            self._gs.apply_action(action_id)
-            self._action_count += 1
             return {
                 "action_id": action_id,
                 "action_info": result["action_info"],

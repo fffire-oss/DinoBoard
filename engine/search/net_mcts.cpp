@@ -366,6 +366,12 @@ ActionId NetMcts::search_root(
       cfg_.root_belief_tracker->randomize_unseen(*sim_state, per_sim_rng);
     }
 
+    // Per-sim step rng. Each simulation derives its own seed from the
+    // root rng so descents through hidden-info games (azul refills,
+    // splendor tableau replenishes) get an independent stream — without
+    // it the rules cannot proceed past a draw.
+    std::mt19937_64 sim_step_rng(root_sample_rng() ^ 0xA17EBABEULL);
+
     // Path records for backup. For UCT2 we also track which edge we came
     // through INTO each node on the path; the sqrt() in UCB uses that edge's
     // visit_count, not the node's global visit_count (which in a DAG mixes
@@ -475,7 +481,7 @@ ActionId NetMcts::search_root(
             " hash_full=" + std::to_string(h_full));
       }
       const ActionId final_action = nodes[cur_idx].edges[best_edge].action;
-      rules.do_action_fast(*sim_state, final_action);
+      rules.do_action_fast(*sim_state, final_action, sim_step_rng);
 
       // DAG node lookup: after do_action, compute hash under the NEW
       // current_player's perspective (decision node = acting-player view).

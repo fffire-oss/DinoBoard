@@ -118,7 +118,7 @@ CoupState<NPlayers>::CoupState() = default;
 
 template <int NPlayers>
 void CoupState<NPlayers>::reset_with_seed(std::uint64_t seed) {
-  IGameState::reset_with_seed_base(seed);
+  IGameState::reset_step_count_base();
   data = CoupData<NPlayers>{};
   undo_stack.clear();
 
@@ -130,9 +130,11 @@ void CoupState<NPlayers>::reset_with_seed(std::uint64_t seed) {
     }
   }
 
-  // One derive_rng stream covers the opening 2-cards-per-player deal.
+  // One-shot rng for opening 2-cards-per-player deal. RNG is not stored
+  // on state — caller of do_action_fast supplies its own rng for any
+  // subsequent randomness (e.g. challenge redraws).
   {
-    auto rng = this->derive_rng(0xc1ULL /* domain: coup_initial_deal */);
+    std::mt19937_64 rng(seed);
     for (int p = 0; p < NPlayers; ++p) {
       data.influence[p][0] = draw_from_deck_local(data.court_deck, rng);
       data.influence[p][1] = draw_from_deck_local(data.court_deck, rng);
@@ -204,8 +206,6 @@ StateHash64 CoupState<NPlayers>::state_hash(bool include_hidden_rng) const {
     for (auto c : data.court_deck) {
       combine(static_cast<std::size_t>(c + 1));
     }
-    combine(static_cast<std::size_t>(this->rng_salt_));
-    combine(static_cast<std::size_t>(this->draw_nonce_));
     for (int i = 0; i < 2; ++i) {
       combine(static_cast<std::size_t>(data.exchange_drawn[i] + 1));
     }
