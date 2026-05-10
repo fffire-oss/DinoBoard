@@ -893,6 +893,15 @@ void apply_public_state(IGameState& state, const AnyMap& snap) {
       }
     }
   });
+
+  // Re-sync state.viz_["reserved"] from the just-applied reserved_visible.
+  // The API path skips do_action_fast, so the rules-side
+  // reveal_slot/reset_to_base transitions never run on observer state;
+  // without this call, the schema-driven hash would walk a stale viz_
+  // and diverge from truth (which did run do_action_fast). The actual viz
+  // writes live in splendor_rules.cpp::sync_splendor_reserved_viz to keep
+  // the I1 invariant (rules.cpp is the sole writer of viz_).
+  board_ai::splendor::sync_splendor_reserved_viz<NPlayers>(state);
 }
 
 template <int NPlayers>

@@ -90,6 +90,15 @@ This compatibility does **not** extend to 3p/4p: `value_len == 1 && num_players 
 - Engine is fully game-agnostic. All game-specific logic lives in the game's GameBundle registration.
 - One game = state + rules + net_adapter + register + config/game.json + web frontend.
 
+## do_action_fast vs do_action_deterministic — undo support split
+
+Two action-application entry points exist on `IGameRules`. They differ only in which path supports undo:
+
+- **`do_action_fast(state, action, rng)`** — used by MCTS, selfplay, arena, and the web/API session. **Does NOT support undo.** Callers always discard the state after the simulation/episode/move. Rules implementations MUST NOT push to `undo_stack` here, MUST NOT snapshot `viz_` here, and MUST NOT do any other "save state for restore" work. Cloning state on the hot path (sims fire millions of times) for an undo that never happens is pure waste. The `UndoToken` returned is a vestige of the shared signature with `do_action_deterministic`; for `fast` it carries no obligation.
+- **`do_action_deterministic(state, action)`** — used by the tail solver. **Supports undo via `undo_action`.** The solver does alpha-beta on the same state object via `do_action_deterministic` → recurse → `undo_action`. This path freezes any RNG-dependent draws (e.g. Splendor's `forced_draw_override = -2`) so the move is reproducible without a runner-owned RNG. Rules implementations DO push to `undo_stack` here, MUST snapshot anything they mutate (`persistent`, `viz_`, etc.) so `undo_action` can restore atomically.
+
+If you find yourself adding undo-stack pushes to `do_action_fast`, stop — that's the bug. The cure is to remove them, not to mirror them in undo_action. The two existing callers of `undo_action` are both inside `engine/search/tail_solver.cpp`; they are paired with `do_action_deterministic`, never with `do_action_fast`. Don't break this invariant.
+
 ## Web Frontend Design
 
 **Before touching any web frontend code — new game or modification — read `docs/guide/WEB_DESIGN_PRINCIPLES.md` and follow it. It is mandatory, not a style suggestion.** When you design a new game frontend, update the doc if you discover a new principle worth codifying for the next game; don't carry the lesson only in your head.

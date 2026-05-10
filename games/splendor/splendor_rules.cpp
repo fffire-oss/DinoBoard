@@ -4,6 +4,8 @@
 #include <array>
 #include <cstdint>
 
+#include "../../engine/core/viz_runtime.h"
+
 namespace board_ai::splendor {
 
 namespace {
@@ -532,16 +534,61 @@ std::vector<ActionId> SplendorRules<NPlayers>::legal_actions(const IGameState& s
   return legal_actions_data(s->persistent.data());
 }
 
+// Phase 3.3 reveal/reset wiring. Splendor's only viz transitions:
+//   reserve-from-tableau → reserved[player][new_idx] becomes public.
+//   buy-reserved         → remove_reserved_at compacts the array, so
+//                          reset all 3 slots and re-reveal the ones
+//                          still flagged as visible after the advance.
+//   reserve-from-deck    → owner-only, base_viz already correct, no
+//                          viz call needed.
+template <int NPlayers>
+static void apply_splendor_viz_transition(IGameState& state,
+                                          ActionId action,
+                                          int player,
+                                          int reserved_size_before,
+                                          const SplendorData<NPlayers>& d_after) {
+  using Cfg = SplendorConfig<NPlayers>;
+  if (action >= Cfg::kReserveFaceupOffset &&
+      action < Cfg::kReserveFaceupOffset + Cfg::kReserveFaceupCount) {
+    if (reserved_size_before < 3) {
+      viz::reveal_slot(state, "reserved",
+                       {player, reserved_size_before});
+    }
+  } else if (action >= Cfg::kBuyReservedOffset &&
+             action < Cfg::kBuyReservedOffset + Cfg::kBuyReservedCount) {
+    for (int i = 0; i < 3; ++i) {
+      viz::reset_to_base(state, "reserved",
+                         SplendorState<NPlayers>::schema(),
+                         {player, i});
+    }
+    for (int i = 0; i < d_after.reserved_size[player]; ++i) {
+      if (d_after.reserved_visible[player][i] != 0) {
+        viz::reveal_slot(state, "reserved", {player, i});
+      }
+    }
+  }
+}
+
 template <int NPlayers>
 UndoToken SplendorRules<NPlayers>::do_action_fast(IGameState& state, ActionId action,
                                                   std::mt19937_64& rng) const {
+  // do_action_fast does NOT support undo — only do_action_deterministic
+  // does (used by the tail solver). MCTS uses do_action_fast and discards
+  // the state at the end of each simulation, so an undo path is dead
+  // weight. Skipping the undo_stack push keeps the hot path tight and
+  // avoids the cost of cloning state.viz_ every sim step.
   auto* s = &checked_cast<SplendorState<NPlayers>>(state);
   UndoToken t{};
   t.undo_depth = static_cast<std::uint32_t>(s->undo_stack.size());
-  s->undo_stack.push_back(s->persistent);
   s->begin_step();
   if (validate_action(*s, action)) {
+    const auto& d_before = s->persistent.data();
+    const int player = d_before.current_player;
+    const int reserved_size_before = d_before.reserved_size[player];
     s->persistent = s->persistent.advance(action, rng);
+    apply_splendor_viz_transition<NPlayers>(state, action, player,
+                                            reserved_size_before,
+                                            s->persistent.data());
   }
   return t;
 }
@@ -551,10 +598,15 @@ UndoToken SplendorRules<NPlayers>::do_action_deterministic(IGameState& state, Ac
   auto* s = &checked_cast<SplendorState<NPlayers>>(state);
   UndoToken t{};
   t.undo_depth = static_cast<std::uint32_t>(s->undo_stack.size());
-  s->undo_stack.push_back(s->persistent);
+  SplendorUndoFrame<NPlayers> frame;
+  frame.persistent = s->persistent;
+  frame.viz_snapshot = s->viz_;
+  s->undo_stack.push_back(std::move(frame));
   s->begin_step();
   if (validate_action(*s, action)) {
     auto data_copy = s->persistent.data();
+    const int player = data_copy.current_player;
+    const int reserved_size_before = data_copy.reserved_size[player];
     data_copy.forced_draw_override = -2;
     // Deterministic path: forced_draw_override = -2 freezes draws, so
     // the rng is never consumed. A throwaway rng is fine.
@@ -565,6 +617,9 @@ UndoToken SplendorRules<NPlayers>::do_action_deterministic(IGameState& state, Ac
     node->action_from_parent = action;
     node->materialized = std::make_shared<const SplendorData<NPlayers>>(std::move(applied));
     s->persistent = SplendorPersistentState<NPlayers>(std::move(node));
+    apply_splendor_viz_transition<NPlayers>(state, action, player,
+                                            reserved_size_before,
+                                            s->persistent.data());
   }
   return t;
 }
@@ -573,14 +628,37 @@ template <int NPlayers>
 void SplendorRules<NPlayers>::undo_action(IGameState& state, const UndoToken& token) const {
   auto* s = &checked_cast<SplendorState<NPlayers>>(state);
   if (s->undo_stack.empty()) return;
-  s->persistent = s->undo_stack.back();
+  auto frame = std::move(s->undo_stack.back());
   s->undo_stack.pop_back();
+  s->persistent = std::move(frame.persistent);
+  s->viz_ = std::move(frame.viz_snapshot);
   s->end_step();
   (void)token;
+}
+
+template <int NPlayers>
+void sync_splendor_reserved_viz(IGameState& state) {
+  using Cfg = SplendorConfig<NPlayers>;
+  auto& s = checked_cast<SplendorState<NPlayers>>(state);
+  const auto& d = s.persistent.data();
+  const auto& schema = SplendorState<NPlayers>::schema();
+  for (int p = 0; p < Cfg::kPlayers; ++p) {
+    for (int i = 0; i < 3; ++i) {
+      // Reset to schema base (owner-only_first_axis) and then reveal if
+      // the just-applied snapshot says this slot is publicly face-up.
+      viz::reset_to_base(state, "reserved", schema, {p, i});
+      if (d.reserved_visible[p][i] != 0) {
+        viz::reveal_slot(state, "reserved", {p, i});
+      }
+    }
+  }
 }
 
 template class SplendorRules<2>;
 template class SplendorRules<3>;
 template class SplendorRules<4>;
+template void sync_splendor_reserved_viz<2>(IGameState&);
+template void sync_splendor_reserved_viz<3>(IGameState&);
+template void sync_splendor_reserved_viz<4>(IGameState&);
 
 }  // namespace board_ai::splendor

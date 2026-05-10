@@ -5,6 +5,9 @@
 #include <memory>
 #include <vector>
 
+#include <string>
+#include <unordered_map>
+
 #include "../../engine/core/game_interfaces.h"
 #include "../../engine/core/visibility_schema.h"
 
@@ -125,11 +128,21 @@ class SplendorPersistentState {
   std::shared_ptr<const SplendorPersistentNode<NPlayers>> node_{};
 };
 
+// Undo frame bundling persistent state with a snapshot of viz_ taken
+// before do_action_fast applies any reveal_slot / reset_to_base. Required
+// because rules now mutate state.viz_ (Phase 3.3 reveal/reset wiring), so
+// undo_action must restore both pieces atomically.
+template <int NPlayers>
+struct SplendorUndoFrame {
+  SplendorPersistentState<NPlayers> persistent{};
+  std::unordered_map<std::string, viz::VizTensor> viz_snapshot{};
+};
+
 template <int NPlayers>
 struct SplendorState final : public CloneableState<SplendorState<NPlayers>> {
   using Cfg = SplendorConfig<NPlayers>;
   SplendorPersistentState<NPlayers> persistent{};
-  std::vector<SplendorPersistentState<NPlayers>> undo_stack{};
+  std::vector<SplendorUndoFrame<NPlayers>> undo_stack{};
 
   SplendorState();
 
@@ -153,6 +166,8 @@ struct SplendorState final : public CloneableState<SplendorState<NPlayers>> {
   StateHash64 state_hash(bool include_hidden_rng) const override;
   void hash_public_fields(Hasher& h) const override;
   void hash_private_fields(int player, Hasher& h) const override;
+  void hash_field_slot(Hasher& h, const std::string& name,
+                       const std::vector<int>& idx) const override;
   int current_player() const override;
   int first_player() const override;
   bool is_terminal() const override;

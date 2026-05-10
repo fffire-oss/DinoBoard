@@ -80,6 +80,24 @@ class IGameState {
   virtual void hash_public_fields(Hasher& h) const = 0;
   virtual void hash_private_fields(int player, Hasher& h) const = 0;
 
+  // Phase 3.6.a hook: typed value emission for one schema slot.
+  //
+  // Used by `framework::hash_public_via_schema` / `hash_private_via_schema`
+  // (engine/core/schema_hash.h) when a game's hash_public_fields /
+  // hash_private_fields delegate to the framework walker. Implementations
+  // dispatch on `name` to `h.add(this->myfield[idx0][idx1]...)` — a single
+  // mechanical switch per game replacing the per-field hand-written loops.
+  //
+  // Contract:
+  //   - Must NOT consult viz_; visibility filtering is done by the walker
+  //     before this hook is invoked.
+  //   - Must emit a stable, deterministic byte sequence per (name, idx).
+  //   - Default body is empty: games still using the legacy hand-written
+  //     hash_public_fields / hash_private_fields don't need to override
+  //     this until they migrate to the schema-driven path.
+  virtual void hash_field_slot(Hasher& /*h*/, const std::string& /*name*/,
+                               const std::vector<int>& /*idx*/) const {}
+
   // Framework-provided perspective hash. Combines step_count (for DAG
   // acyclicity) + public fields + given player's private fields. NOT
   // virtual — games override the two helpers above, not this.

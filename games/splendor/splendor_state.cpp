@@ -6,6 +6,7 @@
 #include <stdexcept>
 
 #include "splendor_rules.h"
+#include "../../engine/core/schema_hash.h"
 #include "../../engine/core/viz_runtime.h"
 
 namespace board_ai::splendor {
@@ -351,51 +352,15 @@ StateHash64 SplendorState<NPlayers>::state_hash(bool include_hidden_rng) const {
 
 template <int NPlayers>
 void SplendorState<NPlayers>::hash_public_fields(Hasher& h) const {
-  using Cfg = SplendorConfig<NPlayers>;
-  const SplendorData<NPlayers>& d = persistent.data();
-  h.add(d.current_player + 3);
-  h.add(d.first_player + 5);
-  h.add(d.plies + 17);
-  h.add(d.final_round_remaining + 9);
-  h.add(d.stage + 21);
-  h.add(d.pending_returns + 25);
-  h.add(d.pending_nobles_size + 27);
-  for (auto slot : d.pending_noble_slots) h.add(slot + 29);
-  h.add(d.winner + 11);
-  h.add(d.terminal ? 1 : 0);
-  for (int v : d.scores) h.add(v + 101);
-  for (auto v : d.bank) h.add(v + 7);
-  for (int p = 0; p < Cfg::kPlayers; ++p) {
-    for (auto v : d.player_gems[p]) h.add(v + 13);
-    for (auto v : d.player_bonuses[p]) h.add(v + 19);
-    h.add(d.player_points[p] + 23);
-    h.add(d.player_cards_count[p] + 29);
-    h.add(d.player_nobles_count[p] + 31);
-    h.add(d.reserved_size[p] + 37);
-    // Reserved slots: face-up visibility + face-up card id are public.
-    // Face-down (blind) card ids are per-owner private — hashed in
-    // hash_private_fields for their owner only.
-    for (int i = 0; i < 3; ++i) {
-      const bool visible = d.reserved_visible[p][static_cast<size_t>(i)] != 0;
-      h.add((visible ? 1 : 0) + 43);
-      if (visible) {
-        h.add(d.reserved[p][static_cast<size_t>(i)] + 41);
-      }
-    }
-  }
+  // Schema-driven path: walker iterates declared fields, calls
+  // hash_field_slot for each slot whose runtime viz is 1 for every
+  // viewer. Public deck SIZE is appended manually — `decks` is a
+  // variable-length per-tier vector NOT declared in the schema (its
+  // contents are hidden; only the size is public).
+  framework::hash_public_via_schema(*this, schema(), h);
+  const auto& d = persistent.data();
   for (int t = 0; t < 3; ++t) {
-    h.add(d.tableau_size[t] + 47);
-    for (auto cid : d.tableau[t]) h.add(cid + 53);
-    h.add(d.decks[t].size() + 59);
-    // Deck size IS public: starts known, decrements 1 every tableau refill
-    // (after buy/reserve-from-tableau) and every blind reserve — all public
-    // events. Deck contents are hidden; only the size is hashed.
-    // randomize_unseen MUST preserve this size; otherwise the hash drifts
-    // across sampled worlds (BUG-028 family).
-  }
-  h.add(d.nobles_size + 67);
-  for (int i = 0; i < Cfg::kNobleCount; ++i) {
-    h.add(d.nobles[static_cast<size_t>(i)] + 71);
+    h.add(static_cast<std::int64_t>(d.decks[static_cast<size_t>(t)].size()) + 59);
   }
 }
 
@@ -403,15 +368,82 @@ template <int NPlayers>
 void SplendorState<NPlayers>::hash_private_fields(int player, Hasher& h) const {
   using Cfg = SplendorConfig<NPlayers>;
   if (player < 0 || player >= Cfg::kPlayers) return;
+  framework::hash_private_via_schema(*this, schema(), player, h);
+}
+
+template <int NPlayers>
+void SplendorState<NPlayers>::hash_field_slot(
+    Hasher& h, const std::string& name,
+    const std::vector<int>& idx) const {
+  using Cfg = SplendorConfig<NPlayers>;
   const SplendorData<NPlayers>& d = persistent.data();
-  // Player p's private: their own face-down (blind) reserved cards' ids.
-  // Other players' blind reserves are hidden from p.
-  for (int i = 0; i < 3; ++i) {
-    const bool visible = d.reserved_visible[player][static_cast<size_t>(i)] != 0;
-    if (!visible) {
-      h.add(d.reserved[player][static_cast<size_t>(i)] + 73);
-    }
+  // 0-D scalar fields.
+  if (name == "current_player") { h.add(d.current_player + 3); return; }
+  if (name == "first_player") { h.add(d.first_player + 5); return; }
+  if (name == "plies") { h.add(d.plies + 17); return; }
+  if (name == "final_round_remaining") { h.add(d.final_round_remaining + 9); return; }
+  if (name == "stage") { h.add(d.stage + 21); return; }
+  if (name == "pending_returns") { h.add(d.pending_returns + 25); return; }
+  if (name == "pending_nobles_size") { h.add(d.pending_nobles_size + 27); return; }
+  if (name == "winner") { h.add(d.winner + 11); return; }
+  if (name == "terminal") { h.add(d.terminal ? 1 : 0); return; }
+  if (name == "shared_victory") { h.add(d.shared_victory ? 1 : 0); return; }
+  if (name == "nobles_size") { h.add(d.nobles_size + 67); return; }
+  // 1-D fields.
+  if (name == "pending_noble_slots") {
+    h.add(d.pending_noble_slots[static_cast<size_t>(idx[0])] + 29); return;
   }
+  if (name == "scores") {
+    h.add(d.scores[static_cast<size_t>(idx[0])] + 101); return;
+  }
+  if (name == "bank") {
+    h.add(d.bank[static_cast<size_t>(idx[0])] + 7); return;
+  }
+  if (name == "player_points") {
+    h.add(d.player_points[static_cast<size_t>(idx[0])] + 23); return;
+  }
+  if (name == "player_cards_count") {
+    h.add(d.player_cards_count[static_cast<size_t>(idx[0])] + 29); return;
+  }
+  if (name == "player_nobles_count") {
+    h.add(d.player_nobles_count[static_cast<size_t>(idx[0])] + 31); return;
+  }
+  if (name == "reserved_size") {
+    h.add(d.reserved_size[static_cast<size_t>(idx[0])] + 37); return;
+  }
+  if (name == "tableau_size") {
+    h.add(d.tableau_size[static_cast<size_t>(idx[0])] + 47); return;
+  }
+  if (name == "nobles") {
+    h.add(d.nobles[static_cast<size_t>(idx[0])] + 71); return;
+  }
+  // 2-D fields.
+  if (name == "player_gems") {
+    h.add(d.player_gems[static_cast<size_t>(idx[0])][static_cast<size_t>(idx[1])] + 13);
+    return;
+  }
+  if (name == "player_bonuses") {
+    h.add(d.player_bonuses[static_cast<size_t>(idx[0])][static_cast<size_t>(idx[1])] + 19);
+    return;
+  }
+  if (name == "tableau") {
+    h.add(d.tableau[static_cast<size_t>(idx[0])][static_cast<size_t>(idx[1])] + 53);
+    return;
+  }
+  if (name == "reserved_visible") {
+    const std::int8_t v = d.reserved_visible[static_cast<size_t>(idx[0])][static_cast<size_t>(idx[1])];
+    h.add((v != 0 ? 1 : 0) + 43);
+    return;
+  }
+  if (name == "reserved") {
+    h.add(d.reserved[static_cast<size_t>(idx[0])][static_cast<size_t>(idx[1])] + 41);
+    return;
+  }
+  // Unknown field: deliberately silent. Adding new schema fields
+  // without a corresponding hash_field_slot entry is caught by
+  // tests/framework/test_public_snapshot_round_trip.py (the public
+  // hash will start drifting from the snapshot path).
+  (void)Cfg::kPlayers;
 }
 
 template <int NPlayers>
