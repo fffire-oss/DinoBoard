@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <stdexcept>
 
+#include "../../engine/core/schema_hash.h"
 #include "../../engine/core/viz_runtime.h"
 
 namespace board_ai::loveletter {
@@ -187,19 +188,13 @@ StateHash64 LoveLetterState<NPlayers>::state_hash(bool include_hidden_rng) const
 
 template <int NPlayers>
 void LoveLetterState<NPlayers>::hash_public_fields(Hasher& h) const {
-  // Public info in Love Letter: everything except any player's hand,
-  // current_player's drawn_card, set_aside_card, and deck contents.
+  // Schema-driven path: walker iterates declared fields, calls
+  // hash_field_slot for each slot whose runtime viz is 1 for every
+  // viewer. Variable-length vectors (discard_piles[p], deck size,
+  // face_up_removed) are NOT in schema and are appended manually.
+  framework::hash_public_via_schema(*this, schema(), h);
   const auto& d = data;
-  h.add(d.current_player + 3);
-  h.add(d.first_player + 5);
-  h.add(d.ply + 7);
-  h.add(d.winner + 11);
-  h.add(d.terminal ? 1 : 0);
-
   for (int p = 0; p < Cfg::kPlayers; ++p) {
-    h.add(d.alive[p] + 13);
-    h.add(d.protected_flags[p] + 17);
-    h.add(d.hand_exposed[p] + 53);
     for (auto c : d.discard_piles[static_cast<size_t>(p)]) h.add(c + 23);
     h.add(d.discard_piles[static_cast<size_t>(p)].size() + 29);
   }
@@ -209,15 +204,48 @@ void LoveLetterState<NPlayers>::hash_public_fields(Hasher& h) const {
 
 template <int NPlayers>
 void LoveLetterState<NPlayers>::hash_private_fields(int player, Hasher& h) const {
-  // Private info for player p: their hand card, plus their drawn_card
-  // if p is the current_player (only current_player has a drawn card).
+  if (player < 0 || player >= Cfg::kPlayers) return;
+  // Walker covers owner-only hand[player]. drawn_card is all_hidden in
+  // schema (no dynamic reveal_slot wiring this PR) and stays
+  // hand-written here under the legacy gate (only current_player's
+  // drawn_card is private to them).
+  framework::hash_private_via_schema(*this, schema(), player, h);
   const auto& d = data;
-  if (player >= 0 && player < Cfg::kPlayers) {
-    h.add(d.hand[player] + 19);
-    if (d.current_player == player && d.drawn_card != 0) {
-      h.add(d.drawn_card + 31);
-    }
+  if (d.current_player == player && d.drawn_card != 0) {
+    h.add(d.drawn_card + 31);
   }
+}
+
+template <int NPlayers>
+void LoveLetterState<NPlayers>::hash_field_slot(
+    Hasher& h, const std::string& name,
+    const std::vector<int>& idx) const {
+  const auto& d = data;
+  // 0-D scalar fields.
+  if (name == "current_player") { h.add(d.current_player + 3); return; }
+  if (name == "first_player") { h.add(d.first_player + 5); return; }
+  if (name == "winner") { h.add(d.winner + 11); return; }
+  if (name == "terminal") { h.add(d.terminal ? 1 : 0); return; }
+  if (name == "ply") { h.add(d.ply + 7); return; }
+  // 1-D per-player fields.
+  if (name == "alive") {
+    h.add(d.alive[static_cast<size_t>(idx[0])] + 13); return;
+  }
+  if (name == "protected_flags") {
+    h.add(d.protected_flags[static_cast<size_t>(idx[0])] + 17); return;
+  }
+  if (name == "hand_exposed") {
+    h.add(d.hand_exposed[static_cast<size_t>(idx[0])] + 53); return;
+  }
+  // Owner-only.
+  if (name == "hand") {
+    h.add(d.hand[static_cast<size_t>(idx[0])] + 19); return;
+  }
+  // all_hidden in schema → walker never visits these. drawn_card is
+  // appended manually in hash_private_fields; set_aside_card is
+  // permanently hidden and excluded from the hash entirely.
+  if (name == "drawn_card") { return; }
+  if (name == "set_aside_card") { return; }
 }
 
 template <int NPlayers>

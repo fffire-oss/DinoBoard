@@ -163,6 +163,8 @@ struct CoupState final : public CloneableState<CoupState<NPlayers>> {
   StateHash64 state_hash(bool include_hidden_rng) const override;
   void hash_public_fields(Hasher& h) const override;
   void hash_private_fields(int player, Hasher& h) const override;
+  void hash_field_slot(Hasher& h, const std::string& name,
+                       const std::vector<int>& idx) const override;
   int current_player() const override;
   int first_player() const override;
   bool is_terminal() const override;

@@ -101,6 +101,8 @@ class AzulState final : public CloneableState<AzulState<NPlayers>> {
   StateHash64 state_hash(bool include_hidden_rng) const override;
   void hash_public_fields(Hasher& h) const override;
   void hash_private_fields(int player, Hasher& h) const override;
+  void hash_field_slot(Hasher& h, const std::string& name,
+                       const std::vector<int>& idx) const override;
   int current_player() const override { return current_player_; }
   int first_player() const override { return game_first_player_; }
   bool is_terminal() const override { return terminal; }

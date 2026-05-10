@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <functional>
 
+#include "../../engine/core/schema_hash.h"
 #include "../../engine/core/viz_runtime.h"
 
 namespace board_ai::azul {
@@ -233,35 +234,80 @@ void AzulState<NPlayers>::hash_public_fields(Hasher& h) const {
   // everyone sees factory contents, center pile, each player's board, and
   // knows the bag composition derivably (bag = all tiles − placed − discarded).
   // The only thing nobody knows is the future draw ORDER, so hash bag/box
-  // as multisets rather than vector order.
-  h.add(current_player_);
-  h.add(first_player_next_round);
-  h.add(winner_ + 1);
-  h.add(round_index);
-  h.add(terminal ? 1 : 0);
-  h.add(first_player_token_in_center ? 1 : 0);
-  h.add(shared_victory ? 1 : 0);
-  for (int s : scores) h.add(s);
-  for (const auto& fac : factories) {
-    for (std::uint8_t c : fac) h.add(c);
-  }
-  for (std::uint8_t c : center) h.add(c);
-  for (int count : bag_counts) h.add(count);
-  for (int count : box_lid_counts) h.add(count);
-  for (const auto& p : players) {
-    for (std::uint8_t len : p.line_len) h.add(len);
-    for (std::int8_t color : p.line_color) h.add(color + 1);
-    for (std::uint8_t m : p.wall_mask) h.add(m);
-    h.add(p.floor_count);
-    for (std::int8_t f : p.floor) h.add(f + 1);
-    h.add(p.score);
-  }
+  // as multisets rather than vector order. Schema declares every field as
+  // all_public, so the framework walker emits them all here; the per-slot
+  // typed dispatch lives in hash_field_slot.
+  framework::hash_public_via_schema(*this, schema(), h);
 }
 
 template <int NPlayers>
 void AzulState<NPlayers>::hash_private_fields(int /*player*/, Hasher& /*h*/) const {
-  // Azul has no non-symmetric private info. Bag composition is
-  // deterministically derivable from public placements; only order is random.
+  // Azul has no non-symmetric private info. Schema has no owner_only or
+  // hidden fields, so the framework walker emits nothing here — every
+  // visible slot was already covered by hash_public_via_schema above.
+}
+
+template <int NPlayers>
+void AzulState<NPlayers>::hash_field_slot(
+    Hasher& h, const std::string& name,
+    const std::vector<int>& idx) const {
+  // 0-D scalars.
+  if (name == "current_player") { h.add(current_player_); return; }
+  if (name == "game_first_player") { h.add(game_first_player_); return; }
+  if (name == "first_player_next_round") { h.add(first_player_next_round); return; }
+  if (name == "winner") { h.add(winner_ + 1); return; }
+  if (name == "round_index") { h.add(round_index); return; }
+  if (name == "terminal") { h.add(terminal ? 1 : 0); return; }
+  if (name == "first_player_token_in_center") {
+    h.add(first_player_token_in_center ? 1 : 0); return;
+  }
+  if (name == "shared_victory") { h.add(shared_victory ? 1 : 0); return; }
+  // 1-D fields.
+  if (name == "scores") {
+    h.add(scores[static_cast<size_t>(idx[0])]); return;
+  }
+  if (name == "center") {
+    h.add(static_cast<int>(center[static_cast<size_t>(idx[0])])); return;
+  }
+  if (name == "bag_counts") {
+    h.add(bag_counts[static_cast<size_t>(idx[0])]); return;
+  }
+  if (name == "box_lid_counts") {
+    h.add(box_lid_counts[static_cast<size_t>(idx[0])]); return;
+  }
+  if (name == "player_floor_count") {
+    h.add(static_cast<int>(players[static_cast<size_t>(idx[0])].floor_count));
+    return;
+  }
+  if (name == "player_score") {
+    h.add(players[static_cast<size_t>(idx[0])].score); return;
+  }
+  // 2-D fields.
+  if (name == "factories") {
+    h.add(static_cast<int>(
+        factories[static_cast<size_t>(idx[0])][static_cast<size_t>(idx[1])]));
+    return;
+  }
+  if (name == "player_line_len") {
+    h.add(static_cast<int>(
+        players[static_cast<size_t>(idx[0])].line_len[static_cast<size_t>(idx[1])]));
+    return;
+  }
+  if (name == "player_line_color") {
+    h.add(static_cast<int>(
+        players[static_cast<size_t>(idx[0])].line_color[static_cast<size_t>(idx[1])]) + 1);
+    return;
+  }
+  if (name == "player_wall_mask") {
+    h.add(static_cast<int>(
+        players[static_cast<size_t>(idx[0])].wall_mask[static_cast<size_t>(idx[1])]));
+    return;
+  }
+  if (name == "player_floor") {
+    h.add(static_cast<int>(
+        players[static_cast<size_t>(idx[0])].floor[static_cast<size_t>(idx[1])]) + 1);
+    return;
+  }
 }
 
 template class AzulState<2>;

@@ -3,6 +3,7 @@
 #include <functional>
 #include <random>
 
+#include "../../engine/core/schema_hash.h"
 #include "../../engine/core/viz_runtime.h"
 
 namespace board_ai::coup {
@@ -216,26 +217,15 @@ StateHash64 CoupState<NPlayers>::state_hash(bool include_hidden_rng) const {
 
 template <int NPlayers>
 void CoupState<NPlayers>::hash_public_fields(Hasher& h) const {
-  // Coup public info: stage, plies, declared actions and challenges, coins,
-  // alive status, revealed (dead) influences, public deck size.
-  h.add(data.current_player);
-  h.add(static_cast<int>(data.stage));
-  h.add(data.ply);
-  h.add(data.active_player);
-  h.add(data.declared_action + 1);
-  h.add(data.action_target + 1);
-  h.add(data.challenger + 1);
-  h.add(data.blocker + 1);
-  h.add(data.challenge_check_index);
-  h.add(data.action_challenged);
-  h.add(data.action_challenge_succeeded);
-  h.add(data.counter_challenged);
-  h.add(data.counter_challenge_succeeded);
+  // Schema-driven path: walker iterates declared fields, calls
+  // hash_field_slot for each slot whose runtime viz is 1 for every
+  // viewer. influence is owner_only base (no dynamic reveal_slot
+  // wiring this PR), so revealed-and-public influence cards are
+  // appended manually below. court_deck size is variable-length /
+  // off-schema and also appended manually.
+  framework::hash_public_via_schema(*this, schema(), h);
   for (int p = 0; p < NPlayers; ++p) {
-    h.add(data.alive[p]);
-    h.add(data.coins[p]);
     for (int s = 0; s < 2; ++s) {
-      h.add(data.revealed[p][s]);
       if (data.revealed[p][s]) {
         h.add(data.influence[p][s] + 1);
       }
@@ -246,14 +236,14 @@ void CoupState<NPlayers>::hash_public_fields(Hasher& h) const {
 
 template <int NPlayers>
 void CoupState<NPlayers>::hash_private_fields(int player, Hasher& h) const {
-  // Coup private: player's own face-down influence cards + any exchange-drawn
-  // cards when player is currently exchanging.
   if (player < 0 || player >= NPlayers) return;
-  for (int s = 0; s < 2; ++s) {
-    if (!data.revealed[player][s]) {
-      h.add(data.influence[player][s] + 100);
-    }
-  }
+  // Walker covers owner's unrevealed influence (owner_only viz). Slots
+  // already revealed are skipped inside hash_field_slot to avoid double
+  // counting with the manual append in hash_public_fields.
+  framework::hash_private_via_schema(*this, schema(), player, h);
+  // exchange_drawn is all_hidden: walker never emits it. Legacy gates
+  // it on (exchanging && active_player == player); preserve here until
+  // dynamic reveal_slot wiring lands.
   const bool exchanging =
       data.stage == CoupStage::kExchangeReturn1 ||
       data.stage == CoupStage::kExchangeReturn2;
@@ -261,6 +251,66 @@ void CoupState<NPlayers>::hash_private_fields(int player, Hasher& h) const {
     for (int i = 0; i < 2; ++i) {
       h.add(data.exchange_drawn[i] + 200);
     }
+  }
+}
+
+template <int NPlayers>
+void CoupState<NPlayers>::hash_field_slot(
+    Hasher& h, const std::string& name,
+    const std::vector<int>& idx) const {
+  // 0-D scalar fields.
+  if (name == "current_player") { h.add(data.current_player); return; }
+  if (name == "first_player") { h.add(static_cast<int>(data.first_player)); return; }
+  if (name == "winner") { h.add(data.winner + 1); return; }
+  if (name == "terminal") { h.add(data.terminal ? 1 : 0); return; }
+  if (name == "ply") { h.add(data.ply); return; }
+  if (name == "stage") { h.add(static_cast<int>(data.stage)); return; }
+  if (name == "active_player") { h.add(data.active_player); return; }
+  if (name == "declared_action") { h.add(data.declared_action + 1); return; }
+  if (name == "action_target") { h.add(data.action_target + 1); return; }
+  if (name == "claimed_character") { h.add(data.claimed_character + 1); return; }
+  if (name == "challenger") { h.add(data.challenger + 1); return; }
+  if (name == "challenge_loser") { h.add(data.challenge_loser + 1); return; }
+  if (name == "action_challenged") { h.add(data.action_challenged ? 1 : 0); return; }
+  if (name == "action_challenge_succeeded") {
+    h.add(data.action_challenge_succeeded ? 1 : 0); return;
+  }
+  if (name == "blocker") { h.add(data.blocker + 1); return; }
+  if (name == "block_character") { h.add(data.block_character + 1); return; }
+  if (name == "counter_challenged") { h.add(data.counter_challenged ? 1 : 0); return; }
+  if (name == "counter_challenge_succeeded") {
+    h.add(data.counter_challenge_succeeded ? 1 : 0); return;
+  }
+  if (name == "challenge_check_index") { h.add(data.challenge_check_index); return; }
+  if (name == "exchange_held_count") { h.add(data.exchange_held_count); return; }
+  // 1-D per-player fields.
+  if (name == "coins") {
+    h.add(data.coins[static_cast<size_t>(idx[0])]); return;
+  }
+  if (name == "alive") {
+    h.add(data.alive[static_cast<size_t>(idx[0])] ? 1 : 0); return;
+  }
+  // 2-D fields.
+  if (name == "revealed") {
+    h.add(data.revealed[static_cast<size_t>(idx[0])]
+                       [static_cast<size_t>(idx[1])] ? 1 : 0);
+    return;
+  }
+  if (name == "influence") {
+    // Revealed slots are emitted publicly via the manual append in
+    // hash_public_fields. Skip here to avoid double-counting in the
+    // owner's private walker pass.
+    const int p = idx[0];
+    const int s = idx[1];
+    if (data.revealed[static_cast<size_t>(p)][static_cast<size_t>(s)]) return;
+    h.add(data.influence[static_cast<size_t>(p)]
+                        [static_cast<size_t>(s)] + 100);
+    return;
+  }
+  if (name == "exchange_drawn") {
+    // all_hidden in schema → walker never visits. hash_private_fields
+    // appends it manually under the legacy gating.
+    return;
   }
 }
 
