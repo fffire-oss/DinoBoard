@@ -209,9 +209,8 @@ vs best，胜率 ≥ 阈值更新 best）。N 人游戏 candidate 轮坐每个�
 信息游戏须 `showWinrateDefault: false`（胜率/失误标记基于 root values，
 含真实隐藏状态）。
 
-**Web AI 配置**（`config/web.json`，可选）：`ai_use_action_filter` /
-`analysis_simulations` / `difficulty_overrides` / `tail_solve`。详见
-[配置参考](docs/guide/CONFIG_REFERENCE.md#webjson--web-平台配置)。
+**Web AI 配置**（`config/web.json`）：`mcts_profiles.{web_expert, web_casual, analysis}` 三个命名 profile，每个含完整 MCTS 旋钮（simulations、temperature、tail_solve、ai_use_action_filter、cover_root_edges 等）；难度 → profile 映射 `{casual → web_casual, expert → web_expert}`，录像分析 / precompute 走 `analysis`。详见
+[配置参考](docs/guide/CONFIG_REFERENCE.md#webjson)。
 
 **AI Pipeline**：每个 human-to-play 局面只跑一次 MCTS（precompute），结
 果两用——智能提示返回 + 落子后读 `action_values[chosen]` 算掉分。AI 自
@@ -400,7 +399,12 @@ vs best，胜率 ≥ 阈值更新 best）。N 人游戏 candidate 轮坐每个�
     信息求解。在 LL Priest+Guard / Coup challenge / Werewolf 查验后发言
     这类"一方确定知识 + 另一方即时推理"高频场景下，AI 强度有天花板。根
     治需要 nested ISMCTS / subgame resampling，会破坏 DAG 共享 + 搜索吞
-    吐降一个量级，未做
+    吐降一个量级，未做。**部分缓解**：`opponent_selection="prior"`（Smooth-UCT
+    风格）在非根对手节点用 policy 先验 multinomial sampling 替代 PUCT
+    bandit，避免对手节点在每个 determinization 里都"贪婪最优"导致的全知
+    偏置；可在 `game.json mcts_profiles.<selfplay|arena|eval>.opponent_selection`
+    / `web.json mcts_profiles.<web_expert|web_casual|analysis>.opponent_selection`
+    配置，默认 `"puct"` 保持向后兼容。根节点（轮到自己）始终走 PUCT。
 11. **策略追逐 / 自博弈非传递循环**（如石头剪刀布的扩展型博弈）—— 当
     前 selfplay 只跟"latest vs best"对打、训练目标是击败当前 best。如
     果游戏存在"A 克 B、B 克 C、C 克 A"的非传递结构，AI 容易陷入局部循

@@ -164,18 +164,18 @@ ArenaMatchResult run_arena_match(
     mcts_cfg.c_puct = pcfg.c_puct;
     mcts_cfg.max_depth = pcfg.max_depth;
     mcts_cfg.value_clip = pcfg.value_clip;
+    mcts_cfg.opponent_selection = pcfg.opponent_selection;
     if (mcts_tracker) {
       mcts_cfg.root_belief_tracker = mcts_tracker;
     }
 
-    if (pcfg.tail_solve_enabled && pcfg.tail_solver) {
-      bool try_ts = false;
-      if (pcfg.tail_solve_trigger) {
-        try_ts = pcfg.tail_solve_trigger(ai_view, ply);
-      } else {
-        try_ts = true;
+    if (pcfg.tail_solve_enabled) {
+      if (!pcfg.tail_solver || !pcfg.tail_solve_trigger) {
+        throw std::invalid_argument(
+            "run_arena_match: tail_solve_enabled=true requires both a "
+            "registered ITailSolver and a TailSolveTrigger.");
       }
-      if (try_ts) {
+      if (pcfg.tail_solve_trigger(ai_view, ply)) {
         mcts_cfg.tail_solve_enabled = true;
         mcts_cfg.tail_solve_config = pcfg.tail_solve_config;
         mcts_cfg.tail_solver = pcfg.tail_solver;

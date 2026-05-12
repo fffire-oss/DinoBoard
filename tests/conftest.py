@@ -113,7 +113,15 @@ _MODEL_CACHE: dict[str, str] = {}
 
 
 def get_test_model(game_id: str, tmp_path_factory=None) -> str:
-    """Return path to a random ONNX model for the given game. Cached per session."""
+    """Return path to a random ONNX model for the given game. Cached per session.
+
+    Weights are initialized under a per-game deterministic seed (derived
+    from game_id) so the same game always produces byte-equal ONNX
+    regardless of cache fill order across pytest runs. Without this,
+    selfplay trajectories driven by these random nets become nondeterministic
+    across runs, surfacing as occasional flakes in tests that depend on
+    specific action sequences (e.g. splendor's belief-equivalence test
+    walking into a reserve+deck_flip edge case at ply ~5)."""
     if game_id in _MODEL_CACHE:
         return _MODEL_CACHE[game_id]
     from training.model import create_model_from_config, export_onnx
@@ -122,7 +130,15 @@ def get_test_model(game_id: str, tmp_path_factory=None) -> str:
     action_space = meta["action_space"]
     num_players = meta["num_players"]
     cfg = {"feature_dim": feature_dim, "action_space": action_space, "num_players": num_players}
-    net = create_model_from_config(cfg)
+    import hashlib
+    digest = hashlib.md5(f"dinoboard_test_model:{game_id}".encode()).digest()
+    seed = int.from_bytes(digest[:4], "big") & 0x7FFFFFFF or 1
+    rng_state = torch.random.get_rng_state()
+    try:
+        torch.manual_seed(seed)
+        net = create_model_from_config(cfg)
+    finally:
+        torch.random.set_rng_state(rng_state)
     model_dir = Path("/tmp/dinoboard_test_models")
     model_dir.mkdir(parents=True, exist_ok=True)
     path = model_dir / f"test_{game_id}.onnx"

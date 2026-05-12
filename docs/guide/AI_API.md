@@ -52,7 +52,7 @@
 | `my_seat` | AI 扮演的座位（0-indexed） |
 | `initial_observation` | 隐藏信息游戏开局时这个 perspective 才能看到的事实（如自己的初始手牌）。隐藏信息游戏必填；完全公开的游戏忽略此字段 |
 
-> AI 强度（`simulations` / `temperature`）由服务端从 `web.json::difficulty_overrides.expert` 解析（fallback `{simulations: 800, temperature: 0.0}`），**客户端不可指定**。
+> AI 强度（`simulations` / `temperature` / `opponent_selection`）由服务端从 `web.json mcts_profiles.web_expert` 解析（`platform/ai_service/sessions.py:_resolve_strength`），**客户端不可指定**——pydantic 会丢弃 body 里塞进来的 `simulations` / `temperature`。
 
 **响应**：
 ```json
@@ -195,7 +195,7 @@ curl -sX DELETE http://localhost:8000/ai/sessions/$SID
 ## 性能提示
 
 - 一个 session 对应一份独立的 ONNX 运行时实例。大量并发会话需要注意内存。
-- 决策延迟主要由服务端配置的 `simulations` 决定（线性）。2p Quoridor 的 800 sim 大约 300ms（视 CPU），Splendor 大约 500ms。调整在 `web.json::difficulty_overrides.expert` 里改。
+- 决策延迟主要由服务端配置的 `simulations` 决定（线性）。2p Quoridor 的 800 sim 大约 300ms（视 CPU），Splendor 大约 500ms。调整在 `web.json mcts_profiles.web_expert.simulations` 里改。
 - 单个 session 内部的 `decide` 是线程安全的——多个 session 间的并发 request 互不干扰。
 - 长时间不用的 session 应该及时 `DELETE`；没有自动 GC。
 

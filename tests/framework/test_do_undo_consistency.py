@@ -68,7 +68,7 @@ def test_features_stable_across_mcts_simulations(game_id):
 @pytest.mark.parametrize("game_id", FRAMEWORK_GAMES)
 def test_long_game_no_crash(game_id):
     """Play a full-length game with many MCTS simulations. No crash = do/undo surviving."""
-    max_plies = load_game_config(game_id).get("training", {}).get("max_game_plies", 200)
+    max_plies = load_game_config(game_id).get("max_game_plies", 200)
     max_plies = min(max_plies, 100)  # cap for test speed
     ep = dinoboard_engine.run_selfplay_episode(
         game_id=game_id, seed=42, model_path=get_test_model(game_id), simulations=50,

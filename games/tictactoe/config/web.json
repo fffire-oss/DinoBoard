@@ -9,17 +9,16 @@
       "dirichlet_epsilon": 0.0,
       "dirichlet_on_first_n_plies": 0,
       "opponent_selection": "puct",
-      "tail_solve_enabled": true,
-      "tail_solve_depth_limit": 7,
-      "tail_solve_node_budget": 1000000,
+      "tail_solve_enabled": false,
+      "tail_solve_depth_limit": 10,
+      "tail_solve_node_budget": 200000,
       "tail_solve_margin_weight": 0.0,
       "ai_use_action_filter": false,
       "cover_root_edges": false
     },
     "web_casual": {
       "inherits": "web_expert",
-      "simulations": 10,
-      "tail_solve_enabled": false
+      "simulations": 10
     },
     "analysis": {
       "inherits": "web_expert",

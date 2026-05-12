@@ -93,9 +93,11 @@ def test_arena_both_sides_get_turns():
 
 def test_eval_batch_side_swap_logic():
     """Verify the pipeline's side-swapping evaluation logic."""
+    from training.mcts_profile import resolve_profile
     from training.pipeline import run_eval_batch
 
     m = get_test_model("tictactoe")
+    p = resolve_profile("tictactoe", "arena")
     r = run_eval_batch(
         game_id="tictactoe",
         candidate_path=m,
@@ -105,6 +107,13 @@ def test_eval_batch_side_swap_logic():
         sims_candidate=10,
         sims_opponent=10,
         max_workers=1,
+        max_plies=50,
+        temperature=p.temperature,
+        opponent_selection=p.opponent_selection,
+        tail_solve_enabled=p.tail_solve_enabled,
+        tail_solve_depth_limit=p.tail_solve_depth_limit,
+        tail_solve_node_budget=p.tail_solve_node_budget,
+        tail_solve_margin_weight=p.tail_solve_margin_weight,
     )
     total = r["wins"] + r["losses"] + r["draws"]
     assert total == 10, f"expected 10 games, got {total}"
@@ -126,6 +135,7 @@ def test_eval_vs_heuristic_side_swap_logic():
         constrained=True,
         heuristic_temperature=0.0,
         max_workers=1,
+        opponent_selection="puct",
     )
     total = r["wins"] + r["losses"] + r["draws"]
     assert total == 6
@@ -141,11 +151,13 @@ def test_eval_vs_heuristic_constrained_vs_free():
         game_id="quoridor", model_path=m, num_games=10,
         base_seed=42, simulations=10, constrained=True,
         heuristic_temperature=0.0, max_workers=1,
+        opponent_selection="puct",
     )
     fr = run_eval_vs_heuristic(
         game_id="quoridor", model_path=m, num_games=10,
         base_seed=42, simulations=10, constrained=False,
         heuristic_temperature=0.0, max_workers=1,
+        opponent_selection="puct",
     )
     assert cr["wins"] + cr["losses"] + cr["draws"] == 10
     assert fr["wins"] + fr["losses"] + fr["draws"] == 10

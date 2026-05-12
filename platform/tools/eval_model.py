@@ -1,22 +1,19 @@
 """Evaluate trained models: run arena matches, report win rates, save replays.
 
-Test training results against heuristic or another model:
-  - model vs heuristic: --heuristic-temp, --constrained
-  - model vs model: --model-b
-  - parallel execution: --workers N
-  - stats only (no file output): --no-save
-  - alternating sides with per-side breakdown
+All MCTS knobs (sims / temperature / opponent_selection / tail_solve) come from
+the named profile (default `arena`). Pass --profile to use a different one
+(e.g. `web_expert` for analysis-strength games).
 
 Usage:
-  # Quick 40-game eval, 4 workers, stats only
+  # Quick 40-game eval against arena profile, 4 workers, stats only
   python platform/tools/eval_model.py --game quoridor \\
     --model-a runs/quoridor_v14/models/model_best.onnx \\
-    --sims 400 --games 40 --workers 4 --no-save -o /tmp/eval
+    --games 40 --workers 4 --no-save -o /tmp/eval
 
-  # Save replays for review in web UI
+  # Eval at web_expert strength
   python platform/tools/eval_model.py --game quoridor \\
     --model-a runs/quoridor_v14/models/model_best.onnx \\
-    --sims 800 --games 10 -o replays/v14_eval
+    --profile web_expert --games 10 -o replays/v14_eval
 """
 import argparse
 import json
@@ -25,7 +22,9 @@ from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from game_service.replay import build_replay_dict
+from training.mcts_profile import max_game_plies, resolve_profile
 
 
 def _run_one_game(task: dict) -> dict:
@@ -37,8 +36,9 @@ def _run_one_game(task: dict) -> dict:
             model_path=task["model_a"],
             simulations=task["sims"],
             model_is_player=task["model_player"],
-            constrained=task["constrained"],
-            heuristic_temperature=task["heuristic_temp"])
+            constrained=False,
+            heuristic_temperature=task["heuristic_temp"],
+            opponent_selection=task["opp_sel"])
     else:
         ma = task["model_a"] if task["model_is_first"] else task["model_b"]
         mb = task["model_b"] if task["model_is_first"] else task["model_a"]
@@ -47,7 +47,11 @@ def _run_one_game(task: dict) -> dict:
             model_paths=[ma, mb],
             simulations_list=[task["sims"], task["sims"]],
             temperature=task["temp"], max_game_plies=task["max_plies"],
-            tail_solve=False)
+            tail_solve=task["tail_solve_enabled"],
+            tail_solve_depth_limit=task["tail_solve_depth_limit"],
+            tail_solve_node_budget=task["tail_solve_node_budget"],
+            tail_solve_margin_weight=task["tail_solve_margin_weight"],
+            opponent_selection_list=[task["opp_sel"], task["opp_sel"]])
 
     return {
         "game_idx": task["game_idx"],
@@ -68,17 +72,19 @@ def main():
     p.add_argument("--model-b", default=None, help="Opponent model path (omit for heuristic)")
     p.add_argument("--name-a", default=None, help="Display name for model A")
     p.add_argument("--name-b", default=None, help="Display name for opponent")
-    p.add_argument("--heuristic-temp", type=float, default=0.0, help="Heuristic temperature")
-    p.add_argument("--constrained", action="store_true", help="Use constrained action filter")
-    p.add_argument("--sims", type=int, default=800)
-    p.add_argument("--temp", type=float, default=0.1)
-    p.add_argument("--max-plies", type=int, default=200)
+    p.add_argument("--profile", default="arena",
+                   help="MCTS profile name (default 'arena'; e.g. 'web_expert')")
+    p.add_argument("--heuristic-temp", type=float, default=0.0,
+                   help="Heuristic opponent temperature (heuristic-vs-model only)")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--games", type=int, default=1, help="Number of games (alternates sides)")
     p.add_argument("--workers", type=int, default=1, help="Parallel workers")
     p.add_argument("--output", "-o", required=True, help="Output dir or file path")
     p.add_argument("--no-save", action="store_true", help="Only print stats, skip saving replay JSON")
     args = p.parse_args()
+
+    profile = resolve_profile(args.game, args.profile)
+    game_max_plies = max_game_plies(args.game)
 
     name_a = args.name_a or Path(args.model_a).stem
     is_heuristic = args.model_b is None
@@ -99,10 +105,14 @@ def main():
             "model_a": args.model_a,
             "model_b": args.model_b,
             "is_heuristic": is_heuristic,
-            "sims": args.sims,
-            "temp": args.temp,
-            "max_plies": args.max_plies,
-            "constrained": args.constrained,
+            "sims": profile.simulations,
+            "temp": profile.temperature,
+            "max_plies": game_max_plies,
+            "opp_sel": profile.opponent_selection,
+            "tail_solve_enabled": profile.tail_solve_enabled,
+            "tail_solve_depth_limit": profile.tail_solve_depth_limit,
+            "tail_solve_node_budget": profile.tail_solve_node_budget,
+            "tail_solve_margin_weight": profile.tail_solve_margin_weight,
             "heuristic_temp": args.heuristic_temp,
         })
 
@@ -168,9 +178,12 @@ def main():
                 "total_plies": r["total_plies"],
             },
             config={
-                "simulations": args.sims,
-                "temperature": args.temp,
-                "constrained": args.constrained,
+                "profile": args.profile,
+                "simulations": profile.simulations,
+                "temperature": profile.temperature,
+                "opponent_selection": profile.opponent_selection,
+                "tail_solve_enabled": profile.tail_solve_enabled,
+                "max_game_plies": game_max_plies,
                 "heuristic_temperature": args.heuristic_temp if is_heuristic else None,
                 "model_player": model_player,
             },

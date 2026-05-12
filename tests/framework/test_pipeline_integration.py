@@ -18,10 +18,26 @@ from training.pipeline import (
     compute_schedule_ratio,
     train_step,
     rotate_z_values,
-    _get_temperature_key,
 )
+from training.mcts_profile import profile_as_dict, resolve_profile
 from training.model import PVNet, create_model_from_config, export_onnx
 from training.cli import find_game_config
+
+
+def _selfplay_cfg(game_id: str, **overrides) -> dict:
+    """Build a selfplay worker cfg from the game's selfplay profile, overlaid with overrides.
+
+    `_worker_selfplay` reads every profile field strictly (no .get() defaults),
+    so tests must hand it a full blob. Easiest is to start from the resolved
+    profile and patch the fields the test cares about.
+    """
+    cfg = profile_as_dict(resolve_profile(game_id, "selfplay"))
+    cfg.setdefault("max_game_plies", 200)
+    cfg.setdefault("heuristic_guidance_ratio", 0.0)
+    cfg.setdefault("heuristic_temperature", 0.0)
+    cfg.setdefault("training_filter_ratio", 0.0)
+    cfg.update(overrides)
+    return cfg
 
 
 # ---------------------------------------------------------------------------
@@ -58,7 +74,7 @@ def test_game_config_matches_engine(game_id):
 
 def test_selfplay_batch_returns_correct_count():
     """run_selfplay_batch should return exactly num_episodes results."""
-    cfg = {"simulations": 10, "max_game_plies": 9}
+    cfg = _selfplay_cfg("tictactoe", simulations=10, max_game_plies=9)
     results = run_selfplay_batch(
         "tictactoe", get_test_model("tictactoe"), num_episodes=5, base_seed=42,
         train_cfg=cfg, max_workers=1,
@@ -71,10 +87,10 @@ def test_selfplay_batch_returns_correct_count():
 
 def test_selfplay_batch_different_seeds():
     """Each episode in a batch should use a different seed."""
-    cfg = {
-        "simulations": 10, "max_game_plies": 50,
-        "dirichlet_alpha": 0.0, "dirichlet_epsilon": 0.0,
-    }
+    cfg = _selfplay_cfg(
+        "tictactoe", simulations=10, max_game_plies=50,
+        dirichlet_alpha=0.0, dirichlet_epsilon=0.0,
+    )
     results = run_selfplay_batch(
         "tictactoe", get_test_model("tictactoe"), num_episodes=10, base_seed=42,
         train_cfg=cfg, max_workers=1,
@@ -89,13 +105,12 @@ def test_selfplay_batch_different_seeds():
 
 def test_selfplay_batch_passes_tail_solve_config():
     """Tail solve config should propagate through batch."""
-    cfg = {
-        "simulations": 10, "max_game_plies": 200,
-        "tail_solve_enabled": True,
-        "tail_solve_start_ply": 1,
-        "tail_solve_depth_limit": 3,
-        "tail_solve_node_budget": 500,
-    }
+    cfg = _selfplay_cfg(
+        "quoridor", simulations=10, max_game_plies=200,
+        tail_solve_enabled=True,
+        tail_solve_depth_limit=3,
+        tail_solve_node_budget=500,
+    )
     results = run_selfplay_batch(
         "quoridor", get_test_model("quoridor"), num_episodes=3, base_seed=42,
         train_cfg=cfg, max_workers=1,
@@ -106,15 +121,15 @@ def test_selfplay_batch_passes_tail_solve_config():
 
 def test_selfplay_batch_passes_heuristic_guidance():
     """Heuristic guidance ratio should affect episode behavior."""
-    cfg_no_h = {
-        "simulations": 10, "max_game_plies": 50,
-        "heuristic_guidance_ratio": 0.0,
-    }
-    cfg_full_h = {
-        "simulations": 10, "max_game_plies": 50,
-        "heuristic_guidance_ratio": 1.0,
-        "heuristic_temperature": 0.0,
-    }
+    cfg_no_h = _selfplay_cfg(
+        "quoridor", simulations=10, max_game_plies=50,
+        heuristic_guidance_ratio=0.0,
+    )
+    cfg_full_h = _selfplay_cfg(
+        "quoridor", simulations=10, max_game_plies=50,
+        heuristic_guidance_ratio=1.0,
+        heuristic_temperature=0.0,
+    )
     ep_no = run_selfplay_batch(
         "quoridor", get_test_model("quoridor"), num_episodes=3, base_seed=42,
         train_cfg=cfg_no_h, max_workers=1,
@@ -130,12 +145,13 @@ def test_selfplay_batch_passes_heuristic_guidance():
 
 def test_selfplay_batch_passes_temperature_schedule():
     """Temperature schedule params should be passed through."""
-    cfg = {
-        "simulations": 10, "max_game_plies": 50,
-        "temperature_initial": 1.0,
-        "temperature_final": 0.01,
-        "temperature_decay_plies": 10,
-    }
+    cfg = _selfplay_cfg(
+        "tictactoe", simulations=10, max_game_plies=50,
+        temperature_schedule_enabled=True,
+        temperature_initial=1.0,
+        temperature_final=0.01,
+        temperature_decay_plies=10,
+    )
     results = run_selfplay_batch(
         "tictactoe", get_test_model("tictactoe"), num_episodes=3, base_seed=42,
         train_cfg=cfg, max_workers=1,
@@ -148,12 +164,27 @@ def test_selfplay_batch_passes_temperature_schedule():
 # Eval batch (arena)
 # ---------------------------------------------------------------------------
 
+def _arena_eval_kwargs(game_id: str) -> dict:
+    """Extra kwargs run_eval_batch now requires, sourced from the arena profile."""
+    p = resolve_profile(game_id, "arena")
+    return {
+        "max_plies": 50,
+        "temperature": p.temperature,
+        "opponent_selection": p.opponent_selection,
+        "tail_solve_enabled": p.tail_solve_enabled,
+        "tail_solve_depth_limit": p.tail_solve_depth_limit,
+        "tail_solve_node_budget": p.tail_solve_node_budget,
+        "tail_solve_margin_weight": p.tail_solve_margin_weight,
+    }
+
+
 def test_eval_batch_total_games_correct():
     """run_eval_batch should play exactly num_games."""
     model = get_test_model("tictactoe")
     r = run_eval_batch(
         "tictactoe", model, model, num_games=8, base_seed=42,
         sims_candidate=10, sims_opponent=10, max_workers=1,
+        **_arena_eval_kwargs("tictactoe"),
     )
     total = r["wins"] + r["losses"] + r["draws"]
     assert total == 8
@@ -165,6 +196,7 @@ def test_eval_batch_symmetric_uniform():
     r = run_eval_batch(
         "tictactoe", model, model, num_games=40, base_seed=42,
         sims_candidate=10, sims_opponent=10, max_workers=1,
+        **_arena_eval_kwargs("tictactoe"),
     )
     assert 0.2 <= r["win_rate"] <= 0.8, (
         f"two identical players should be roughly equal, got win_rate={r['win_rate']}"
@@ -181,6 +213,7 @@ def test_eval_vs_heuristic_total_games_correct():
         "quoridor", model, num_games=6, base_seed=42,
         simulations=10, constrained=True,
         heuristic_temperature=0.0, max_workers=1,
+        opponent_selection="puct",
     )
     total = r["wins"] + r["losses"] + r["draws"]
     assert total == 6
@@ -194,6 +227,7 @@ def test_eval_vs_heuristic_model_alternates_sides():
         "quoridor", model, num_games=10, base_seed=42,
         simulations=10, constrained=True,
         heuristic_temperature=0.0, max_workers=1,
+        opponent_selection="puct",
     )
     # At least one game should result in non-draw
     assert r["wins"] + r["losses"] > 0 or r["draws"] == 10
@@ -230,10 +264,10 @@ def test_schedule_ratio_training_filter():
 
 
 def test_simulation_rampup_formula():
-    """Simulation ramp from simulations_start to simulations over 30% of steps."""
+    """Simulation ramp from simulations_start to selfplay-profile simulations over 30% of steps."""
     train_cfg = load_game_config("quoridor")["training"]
-    sims_start = train_cfg.get("simulations_start", train_cfg["simulations"])
-    sims_full = train_cfg["simulations"]
+    sims_full = resolve_profile("quoridor", "selfplay").simulations
+    sims_start = train_cfg.get("simulations_start", sims_full)
     steps = train_cfg["steps"]
 
     # At step 1
@@ -307,7 +341,7 @@ def test_mini_training_loop(tmp_path):
     action_space = cfg["action_space"]
     feature_dim = cfg["feature_dim"]
     num_players = cfg["num_players"]
-    train_cfg = {"simulations": 10, "max_game_plies": 9}
+    train_cfg = _selfplay_cfg("tictactoe", simulations=10, max_game_plies=9)
 
     # Step 1: selfplay
     episodes = run_selfplay_batch(
@@ -362,6 +396,7 @@ def test_mini_training_loop(tmp_path):
         "tictactoe", str(onnx_path), opponent_model, num_games=4,
         base_seed=42, sims_candidate=10, sims_opponent=10,
         max_workers=1,
+        **_arena_eval_kwargs("tictactoe"),
     )
     assert r["wins"] + r["losses"] + r["draws"] == 4
 
@@ -380,9 +415,7 @@ def test_heuristic_guidance_hold_period(tmp_path):
     cfg = find_game_config("tictactoe")
     cfg["training"] = {
         **cfg.get("training", {}),
-        "simulations": 10,
         "simulations_start": 10,
-        "max_game_plies": 9,
         "steps": 6,
         "episodes_per_step": 3,
         "heuristic_guidance_hold_steps": 2,
@@ -391,7 +424,6 @@ def test_heuristic_guidance_hold_period(tmp_path):
         "heuristic_guidance_temperature": 1.0,
         "heuristic_temperature": 0.0,
         "training_filter_steps": 0,
-        "tail_solve_enabled": False,
     }
     run_training_loop(
         game_id="tictactoe",
@@ -418,14 +450,11 @@ def test_full_training_loop_with_eval(tmp_path):
     cfg = find_game_config("tictactoe")
     cfg["training"] = {
         **cfg.get("training", {}),
-        "simulations": 10,
         "simulations_start": 10,
-        "max_game_plies": 9,
         "steps": 3,
         "episodes_per_step": 5,
         "heuristic_guidance_steps": 0,
         "training_filter_steps": 0,
-        "tail_solve_enabled": False,
     }
     models_dir = tmp_path / "models"
 
@@ -524,24 +553,19 @@ def test_checkpoint_save_load(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Temperature key helper with real configs
+# Temperature schedule resolution via mcts_profiles
 # ---------------------------------------------------------------------------
 
-def test_splendor_temperature_extracted_correctly():
-    """Splendor's nested temperature_schedule should be read by helper."""
-    train_cfg = load_game_config("splendor")["training"]
-    initial = _get_temperature_key(train_cfg, "initial", -1.0)
-    final = _get_temperature_key(train_cfg, "final", -1.0)
-    decay = _get_temperature_key(train_cfg, "decay_plies", 0)
-    assert initial == 1.0
-    assert final == 0.1
-    assert decay == 30
+def test_splendor_selfplay_temperature_schedule_resolves():
+    """Splendor's selfplay profile should expose a fully-flattened temperature schedule."""
+    p = resolve_profile("splendor", "selfplay")
+    assert p.temperature_schedule_enabled
+    assert p.temperature_initial > 0
+    assert p.temperature_final >= 0
 
 
-def test_quoridor_temperature_extracted_correctly():
-    """Quoridor's flat temperature keys should be read directly."""
-    train_cfg = load_game_config("quoridor")["training"]
-    initial = _get_temperature_key(train_cfg, "initial", -1.0)
-    final = _get_temperature_key(train_cfg, "final", -1.0)
-    assert initial == 1.0
-    assert final == 0.15
+def test_quoridor_selfplay_temperature_schedule_resolves():
+    """Quoridor's selfplay profile should likewise expose a temperature schedule."""
+    p = resolve_profile("quoridor", "selfplay")
+    assert p.temperature_schedule_enabled
+    assert p.temperature_initial > p.temperature_final

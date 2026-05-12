@@ -10,6 +10,28 @@
 
 namespace board_ai::search {
 
+// Opponent-node selection mode (Smooth-UCT-style toggle).
+//
+// kPuct (default): every node — root and opponents — uses UCT2 + PUCT to
+// pick the next edge. Backwards-compatible.
+//
+// kFrozenPrior: descent on opponent nodes (cur_idx != 0 AND
+// to_play != root acting player) bypasses bandit and samples directly
+// from the policy head's prior, which was set at the node's expansion
+// and never updated. Mitigates ISMCTS strategy fusion / opponent
+// omniscience: with bandit on opponent nodes, the descent's repeated
+// visits accumulate Q toward "best response to this sim's sampled
+// truth" — leaking the root-player certainty fixed by determinization.
+// Frozen-prior makes the opponent's behavior a fixed mixed strategy
+// across descent visits, with no per-sim feedback to exploit.
+//
+// Root is ALWAYS PUCT regardless of this setting. Backup, DAG sharing,
+// hash, encoder, tracker, dirichlet, cover_root_edges all unaffected.
+enum class OpponentSelection {
+  kPuct = 0,
+  kFrozenPrior = 1,
+};
+
 // ISMCTS MCTS config. The hidden-info machinery is driven entirely by
 // root_belief_tracker:
 //   - If non-null, each simulation clones the root state and calls
@@ -48,6 +70,9 @@ struct NetMctsConfig {
   // analysis-pipeline path turns it on so action_values is dense over
   // the full legal set.
   bool cover_root_edges = false;
+
+  // See OpponentSelection comment above. Default kPuct.
+  OpponentSelection opponent_selection = OpponentSelection::kPuct;
 };
 
 struct NetMctsStats {

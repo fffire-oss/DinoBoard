@@ -1,6 +1,6 @@
 {
   "game_id": "azul",
-  "display_name": "\u82b1\u7816\u7269\u8bed",
+  "display_name": "花砖物语",
   "display_name_en": "Azul",
   "has_web": true,
   "players": {
@@ -9,23 +9,44 @@
   },
   "action_space": 180,
   "feature_dim": 163,
+  "max_game_plies": 500,
+  "mcts_profiles": {
+    "selfplay": {
+      "simulations": 400,
+      "c_puct": 1.4,
+      "temperature": 1.0,
+      "temperature_schedule": {"enabled": false, "initial": 1.0, "final": 0.1, "decay_plies": 0},
+      "dirichlet_alpha": 0.15,
+      "dirichlet_epsilon": 0.25,
+      "dirichlet_on_first_n_plies": 30,
+      "opponent_selection": "puct",
+      "tail_solve_enabled": false,
+      "tail_solve_depth_limit": 10,
+      "tail_solve_node_budget": 200000,
+      "tail_solve_margin_weight": 0.0,
+      "ai_use_action_filter": false,
+      "cover_root_edges": false
+    },
+    "arena": {
+      "inherits": "selfplay",
+      "temperature": 0.0,
+      "dirichlet_epsilon": 0.0,
+      "dirichlet_on_first_n_plies": 0
+    },
+    "eval": {
+      "inherits": "arena"
+    }
+  },
   "training": {
-    "simulations": 400,
-    "c_puct": 1.4,
-    "temperature": 1.0,
-    "dirichlet_alpha": 0.15,
-    "dirichlet_epsilon": 0.25,
-    "dirichlet_on_first_n_plies": 30,
-    "max_game_plies": 500,
     "episodes_per_step": 150,
     "batch_size": 512,
     "learning_rate": 0.001,
     "steps": 2000,
+    "heuristic_temperature": 0.0,
     "heuristic_guidance_hold_steps": 10,
     "heuristic_guidance_steps": 20,
     "heuristic_guidance_initial_ratio": 1.0,
-    "heuristic_guidance_temperature": 0.0,
-    "heuristic_temperature": 0.0
+    "heuristic_guidance_temperature": 0.0
   },
   "network": {
     "type": "mlp",

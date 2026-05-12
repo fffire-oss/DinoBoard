@@ -249,7 +249,7 @@ class TestTailSolver:
         ep = dinoboard_engine.run_selfplay_episode(
             game_id=GAME, seed=42, model_path=get_test_model(GAME),
             simulations=10, max_game_plies=200,
-            tail_solve_enabled=True, tail_solve_start_ply=1,
+            tail_solve_enabled=True,
             tail_solve_depth_limit=2, tail_solve_node_budget=500,
         )
         a = ep["tail_solve_attempts"]

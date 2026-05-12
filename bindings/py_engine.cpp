@@ -28,6 +28,19 @@ using namespace board_ai;
 
 namespace {
 
+// Parse the user-facing string into the OpponentSelection enum. Unknown
+// values raise — never silently fall back to puct (no_silent_degradation).
+inline search::OpponentSelection parse_opponent_selection(
+    const std::string& s) {
+  if (s == "puct") return search::OpponentSelection::kPuct;
+  if (s == "prior" || s == "frozen_prior") {
+    return search::OpponentSelection::kFrozenPrior;
+  }
+  throw std::invalid_argument(
+      "opponent_selection: unknown value '" + s +
+      "' (expected 'puct' or 'prior')");
+}
+
 // Tracker adapter helpers: convert the old (state_before, action, state_after)
 // trio into the tracker's new event-only input. Games with a registered
 // public_event_extractor produce the event stream; games without one pass
@@ -239,7 +252,6 @@ py::dict run_selfplay_episode_py(
     int dirichlet_on_first_n_plies,
     int max_game_plies,
     bool tail_solve_enabled,
-    int tail_solve_start_ply,
     int tail_solve_depth_limit,
     std::int64_t tail_solve_node_budget,
     float tail_solve_margin_weight,
@@ -249,7 +261,10 @@ py::dict run_selfplay_episode_py(
     double heuristic_guidance_ratio,
     double heuristic_temperature,
     double training_filter_ratio,
-    int trace_perspective) {
+    int trace_perspective,
+    const std::string& opponent_selection) {
+  // Validate before releasing the GIL — exception propagation is cleaner.
+  const auto opp_sel = parse_opponent_selection(opponent_selection);
   py::gil_scoped_release release;
 
   auto bundle = GameRegistry::instance().create_game(game_id, seed);
@@ -301,13 +316,13 @@ py::dict run_selfplay_episode_py(
   cfg.dirichlet_on_first_n_plies = dirichlet_on_first_n_plies;
   cfg.max_game_plies = max_game_plies;
   cfg.tail_solve_enabled = tail_solve_enabled;
-  cfg.tail_solve_start_ply = tail_solve_start_ply;
   cfg.tail_solve_config.depth_limit = tail_solve_depth_limit;
   cfg.tail_solve_config.node_budget = tail_solve_node_budget;
   cfg.tail_solve_config.margin_weight = tail_solve_margin_weight;
   cfg.heuristic_guidance_ratio = heuristic_guidance_ratio;
   cfg.heuristic_temperature = heuristic_temperature;
   cfg.training_filter_ratio = training_filter_ratio;
+  cfg.opponent_selection = opp_sel;
 
   if (temperature_initial >= 0.0 || temperature_final >= 0.0) {
     cfg.temperature_schedule.enabled = true;
@@ -387,7 +402,26 @@ py::dict run_arena_match_py(
     const std::vector<int>& simulations_list,
     double temperature,
     int max_game_plies,
-    bool tail_solve) {
+    bool tail_solve,
+    int tail_solve_depth_limit,
+    std::int64_t tail_solve_node_budget,
+    float tail_solve_margin_weight,
+    const std::vector<std::string>& opponent_selection_list) {
+  // Per-player opponent_selection. Empty list => all "puct". Non-empty
+  // must match model_paths size.
+  std::vector<search::OpponentSelection> opp_sel_per_player;
+  if (!opponent_selection_list.empty()) {
+    if (opponent_selection_list.size() != model_paths.size()) {
+      throw std::invalid_argument(
+          "run_arena_match: opponent_selection_list size " +
+          std::to_string(opponent_selection_list.size()) +
+          " != model_paths size " + std::to_string(model_paths.size()));
+    }
+    opp_sel_per_player.reserve(opponent_selection_list.size());
+    for (const auto& s : opponent_selection_list) {
+      opp_sel_per_player.push_back(parse_opponent_selection(s));
+    }
+  }
   py::gil_scoped_release release;
 
   auto bundle = GameRegistry::instance().create_game(game_id, seed);
@@ -421,10 +455,24 @@ py::dict run_arena_match_py(
     cfg.simulations = (i < simulations_list.size())
         ? simulations_list[i] : 200;
     cfg.temperature = temperature;
-    if (tail_solve && bundle.tail_solver) {
+    if (i < opp_sel_per_player.size()) {
+      cfg.opponent_selection = opp_sel_per_player[i];
+    }
+    if (tail_solve) {
+      if (!bundle.tail_solver) {
+        throw std::invalid_argument(
+            "run_arena_match: tail_solve=true but game " + game_id +
+            " has no tail_solver registered.");
+      }
+      if (!bundle.tail_solve_trigger) {
+        throw std::invalid_argument(
+            "run_arena_match: tail_solve=true but game " + game_id +
+            " has no tail_solve_trigger registered.");
+      }
       cfg.tail_solve_enabled = true;
-      cfg.tail_solve_config.depth_limit = 10;
-      cfg.tail_solve_config.node_budget = 200000;
+      cfg.tail_solve_config.depth_limit = tail_solve_depth_limit;
+      cfg.tail_solve_config.node_budget = tail_solve_node_budget;
+      cfg.tail_solve_config.margin_weight = tail_solve_margin_weight;
       cfg.tail_solver = bundle.tail_solver.get();
       cfg.tail_solve_trigger = bundle.tail_solve_trigger;
     }
@@ -501,7 +549,9 @@ py::dict run_constrained_eval_vs_heuristic_py(
     int simulations,
     int model_is_player,
     bool constrained,
-    double heuristic_temperature) {
+    double heuristic_temperature,
+    const std::string& opponent_selection) {
+  const auto opp_sel = parse_opponent_selection(opponent_selection);
   py::gil_scoped_release release;
 
   auto bundle = GameRegistry::instance().create_game(game_id, seed);
@@ -544,6 +594,7 @@ py::dict run_constrained_eval_vs_heuristic_py(
       search::NetMctsConfig mcts_cfg{};
       mcts_cfg.simulations = simulations;
       mcts_cfg.c_puct = 1.4f;
+      mcts_cfg.opponent_selection = opp_sel;
       if (bt) {
         mcts_cfg.root_belief_tracker = bt;
       }
@@ -1188,7 +1239,9 @@ class GameSessionWrapper {
   }
 
   py::dict get_ai_action(int simulations, double temperature,
-                         bool cover_root_edges = false) {
+                         bool cover_root_edges = false,
+                         std::string opponent_selection = "puct") {
+    const auto opp_sel = parse_opponent_selection(opponent_selection);
     py::gil_scoped_release release;
 
     const IGameRules& rules = filtered_rules_ ? *filtered_rules_ : *bundle_->rules;
@@ -1230,6 +1283,7 @@ class GameSessionWrapper {
     mcts_cfg.simulations = simulations;
     mcts_cfg.c_puct = 1.4f;
     mcts_cfg.cover_root_edges = cover_root_edges;
+    mcts_cfg.opponent_selection = opp_sel;
     if (search_bt) {
       mcts_cfg.root_belief_tracker = search_bt;
     }
@@ -1513,7 +1567,6 @@ PYBIND11_MODULE(dinoboard_engine, m) {
       py::arg("dirichlet_on_first_n_plies") = 30,
       py::arg("max_game_plies") = 500,
       py::arg("tail_solve_enabled") = false,
-      py::arg("tail_solve_start_ply") = 40,
       py::arg("tail_solve_depth_limit") = 5,
       py::arg("tail_solve_node_budget") = 10000000LL,
       py::arg("tail_solve_margin_weight") = 0.0f,
@@ -1523,7 +1576,8 @@ PYBIND11_MODULE(dinoboard_engine, m) {
       py::arg("heuristic_guidance_ratio") = 0.0,
       py::arg("heuristic_temperature") = 0.0,
       py::arg("training_filter_ratio") = 1.0,
-      py::arg("trace_perspective") = -1);
+      py::arg("trace_perspective") = -1,
+      py::arg("opponent_selection") = std::string("puct"));
 
   m.def("run_arena_match", &run_arena_match_py,
       py::arg("game_id"),
@@ -1532,7 +1586,11 @@ PYBIND11_MODULE(dinoboard_engine, m) {
       py::arg("simulations_list"),
       py::arg("temperature") = 0.0,
       py::arg("max_game_plies") = 500,
-      py::arg("tail_solve") = false);
+      py::arg("tail_solve") = false,
+      py::arg("tail_solve_depth_limit") = 10,
+      py::arg("tail_solve_node_budget") = std::int64_t{200000},
+      py::arg("tail_solve_margin_weight") = 0.0f,
+      py::arg("opponent_selection_list") = std::vector<std::string>{});
 
   m.def("run_constrained_eval_vs_heuristic", &run_constrained_eval_vs_heuristic_py,
       py::arg("game_id"),
@@ -1541,7 +1599,8 @@ PYBIND11_MODULE(dinoboard_engine, m) {
       py::arg("simulations") = 200,
       py::arg("model_is_player") = 0,
       py::arg("constrained") = true,
-      py::arg("heuristic_temperature") = 0.0);
+      py::arg("heuristic_temperature") = 0.0,
+      py::arg("opponent_selection") = std::string("puct"));
 
   m.def("run_heuristic_episode", &run_heuristic_episode_py,
       py::arg("game_id"),
@@ -1581,6 +1640,8 @@ PYBIND11_MODULE(dinoboard_engine, m) {
     const int feature_dim = bundle.encoder->feature_dim();
     const bool has_public_state_applier = static_cast<bool>(bundle.public_state_applier);
     const bool has_initial_observation_applier = static_cast<bool>(bundle.initial_observation_applier);
+    const bool has_tail_solver = static_cast<bool>(bundle.tail_solver);
+    const bool has_tail_solve_trigger = static_cast<bool>(bundle.tail_solve_trigger);
     py::gil_scoped_acquire acquire;
     py::dict out;
     out["num_players"] = num_players;
@@ -1592,6 +1653,8 @@ PYBIND11_MODULE(dinoboard_engine, m) {
     // between the action_id-only path and the full apply_observation path.
     out["has_public_state_applier"] = has_public_state_applier;
     out["has_initial_observation_applier"] = has_initial_observation_applier;
+    out["has_tail_solver"] = has_tail_solver;
+    out["has_tail_solve_trigger"] = has_tail_solve_trigger;
     return out;
   }, py::arg("game_id"));
 
@@ -1637,7 +1700,8 @@ PYBIND11_MODULE(dinoboard_engine, m) {
       .def("get_ai_action", &GameSessionWrapper::get_ai_action,
            py::arg("simulations") = 200,
            py::arg("temperature") = 0.0,
-           py::arg("cover_root_edges") = false)
+           py::arg("cover_root_edges") = false,
+           py::arg("opponent_selection") = std::string("puct"))
       .def("get_heuristic_action", &GameSessionWrapper::get_heuristic_action)
       .def("configure_tail_solve", &GameSessionWrapper::configure_tail_solve,
            py::arg("enabled"),

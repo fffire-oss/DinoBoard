@@ -63,6 +63,7 @@ def test_eval_vs_heuristic_win_count_adds_up():
         game_id="quoridor", model_path=model, num_games=num_games,
         base_seed=42, simulations=5, constrained=True,
         heuristic_temperature=0.0, max_workers=1,
+        opponent_selection="puct",
     )
     total = result["wins"] + result["losses"] + result["draws"]
     assert total == num_games, f"expected {num_games}, got {total}"

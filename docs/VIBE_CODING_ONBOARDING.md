@@ -27,7 +27,7 @@ games/<g>/
 `engine/` is fully game-agnostic. All game-specific logic lives behind these interfaces and is wired in by `<g>_register.cpp`.
 
 **Training pipeline shape** (config-driven via `game.json`, no per-run code changes):
-`selfplay → replay buffer → SGD → ONNX export → gating eval (latest vs best, ≥60% win rate updates best) → repeat`. Selfplay, arena, and gating eval all run in C++ via the same MCTS as serving. Python is the training loop and the network's SGD step. Optional `peek_steps` lets the first N training plies search with full ground truth (then ISMCTS resumes) to bootstrap the value head — **training-only, never used at serving time**.
+`selfplay → replay buffer → SGD → ONNX export → gating eval (latest vs best, ≥60% win rate updates best) → repeat`. Selfplay, arena, and gating eval all run in C++ via the same MCTS as serving. Python is the training loop and the network's SGD step.
 
 **Three serving surfaces, one stack**: web play, third-party `platform/ai_service` REST API (observation-only — see `docs/guide/AI_API.md`), and replay analysis all call the same C++ NetMCTS that selfplay does. The win-rate number a player sees on the web is literally the value head's output during training.
 

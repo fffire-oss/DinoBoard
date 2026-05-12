@@ -4,7 +4,7 @@ import pytest
 
 from conftest import FRAMEWORK_GAMES, load_game_config
 
-from training.pipeline import normalize_policy, compute_schedule_ratio, _get_temperature_key
+from training.pipeline import normalize_policy, compute_schedule_ratio
 from training.model import PVNet, create_model_from_config
 
 
@@ -69,33 +69,6 @@ def test_compute_schedule_ratio_linear():
 
 def test_compute_schedule_ratio_past_total():
     assert compute_schedule_ratio(200, 100, 0.8) == 0.0
-
-
-# ---------------------------------------------------------------------------
-# _get_temperature_key (flat vs nested config)
-# ---------------------------------------------------------------------------
-
-def test_get_temperature_key_flat():
-    cfg = {"temperature_initial": 0.5, "temperature_final": 0.05}
-    assert _get_temperature_key(cfg, "initial", -1.0) == 0.5
-    assert _get_temperature_key(cfg, "final", -1.0) == 0.05
-    assert _get_temperature_key(cfg, "decay_plies", 0) == 0
-
-
-def test_get_temperature_key_nested():
-    cfg = {"temperature_schedule": {"initial": 1.0, "final": 0.1, "decay_plies": 30}}
-    assert _get_temperature_key(cfg, "initial", -1.0) == 1.0
-    assert _get_temperature_key(cfg, "final", -1.0) == 0.1
-    assert _get_temperature_key(cfg, "decay_plies", 0) == 30
-
-
-def test_get_temperature_key_flat_takes_priority():
-    cfg = {"temperature_initial": 0.8, "temperature_schedule": {"initial": 1.0}}
-    assert _get_temperature_key(cfg, "initial", -1.0) == 0.8
-
-
-def test_get_temperature_key_default():
-    assert _get_temperature_key({}, "initial", -1.0) == -1.0
 
 
 # ---------------------------------------------------------------------------

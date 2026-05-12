@@ -1,7 +1,6 @@
 """AI-only session: observation-in, action-out. No state crosses the API boundary."""
 from __future__ import annotations
 
-import json
 import sys
 import threading
 import uuid
@@ -20,33 +19,18 @@ from model_paths import (  # noqa: E402
 )
 from session_factory import SessionConfig, SessionFactory  # noqa: E402
 
-
-# Server-controlled AI strength when web.json doesn't override.
-_DEFAULT_EXPERT_SIMULATIONS = 800
-_DEFAULT_EXPERT_TEMPERATURE = 0.0
+from training.mcts_profile import resolve_profile  # noqa: E402
 
 
-def _resolve_strength(game_id: str) -> tuple[int, float]:
-    """Read AI strength from per-game web.json `difficulty_overrides.expert`.
+def _resolve_strength(game_id: str) -> tuple[int, float, str]:
+    """Read AI strength from the `web_expert` MCTS profile.
 
-    AI API contract: strength = web expert difficulty, never client-supplied.
-    Falls back to module defaults when web.json or the override is missing.
+    AI API contract: strength = web_expert difficulty, never client-supplied.
+    Resolver raises if the profile is missing or malformed.
     """
     base = _base_game_id(game_id)
-    web_path = _PROJECT_ROOT / "games" / base / "config" / "web.json"
-    sims = _DEFAULT_EXPERT_SIMULATIONS
-    temp = _DEFAULT_EXPERT_TEMPERATURE
-    if web_path.exists():
-        try:
-            with open(web_path, encoding="utf-8") as f:
-                cfg = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            cfg = {}
-        expert = cfg.get("difficulty_overrides", {}).get("expert", {})
-        if isinstance(expert, dict):
-            sims = int(expert.get("simulations", sims))
-            temp = float(expert.get("temperature", temp))
-    return sims, temp
+    p = resolve_profile(base, "web_expert")
+    return p.simulations, p.temperature, p.opponent_selection
 
 
 @dataclass
@@ -68,6 +52,7 @@ class AISession:
     my_seat: int
     simulations: int
     temperature: float
+    opponent_selection: str
     has_public_state_applier: bool
 
     _gs: engine.GameSession = field(repr=False)
@@ -158,7 +143,10 @@ class AISession:
                     f"turn, but this session is configured for seat "
                     f"{self.my_seat}. The caller must have missed an observe()."
                 )
-            result = self._gs.get_ai_action(self.simulations, self.temperature)
+            result = self._gs.get_ai_action(
+                self.simulations, self.temperature,
+                opponent_selection=self.opponent_selection,
+            )
             action_id = result["action"]
             return {
                 "action_id": action_id,
@@ -252,7 +240,7 @@ class SessionStore:
         if has_public_state_applier and initial_observation is not None:
             gs.apply_initial_observation(my_seat, initial_observation)
 
-        simulations, temperature = _resolve_strength(game_id)
+        simulations, temperature, opponent_selection = _resolve_strength(game_id)
 
         session_id = uuid.uuid4().hex[:12]
         sess = AISession(
@@ -262,6 +250,7 @@ class SessionStore:
             my_seat=my_seat,
             simulations=simulations,
             temperature=temperature,
+            opponent_selection=opponent_selection,
             has_public_state_applier=has_public_state_applier,
             _gs=gs,
         )

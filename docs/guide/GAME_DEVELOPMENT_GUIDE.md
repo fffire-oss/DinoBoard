@@ -711,7 +711,7 @@ HeuristicResult heuristic_pick(IGameState& state, const IGameRules& rules,
 
 **用途**：在 MCTS 搜索之前，尝试用 alpha-beta 精确求解。如果证明了必赢（proven win），直接使用求解结果而非 MCTS。使用 paranoid 假设（所有对手联合针对当前玩家），支持任意玩家数。仅在 proven win 时替代 MCTS——proven loss 在多人场景下过于悲观（对手之间有利益冲突），不作为放弃搜索的依据。
 
-**触发条件**：通过 `tail_solve_trigger` 回调决定是否尝试求解。未注册时 fallback 到 `ply >= tail_solve_start_ply`。
+**触发条件**：通过 `tail_solve_trigger` 回调决定是否尝试求解。**注册 tail_solver 必须配套注册 trigger**——profile 启用 `tail_solve_enabled = true` 时，resolver 会校验 `game_metadata(...).has_tail_solve_trigger`，缺失则启动报错。
 
 **签名**：`(const IGameState& state, int ply) -> bool`
 
@@ -764,16 +764,21 @@ b.tail_solve_trigger = [](const board_ai::IGameState& state, int ply) -> bool {
 
 **采用条件**：求解返回的 `|value| >= 1.0`。只有证明了必赢/必输才替换 MCTS 结果；平局或搜索不完整（budget 耗尽）不会采用。
 
-需要在 game.json 中启用：
+需要在 game.json 的相关 profile 中启用（每个 profile 独立设置；典型场景 selfplay/arena/eval 关闭、`web_expert` 打开）：
+
 ```json
-"tail_solve_enabled": true,
-"tail_solve_start_ply": 30,
-"tail_solve_depth_limit": 10,
-"tail_solve_node_budget": 200000,
-"tail_solve_margin_weight": 0.01
+"mcts_profiles": {
+  "web_expert": {
+    "...": "...",
+    "tail_solve_enabled": true,
+    "tail_solve_depth_limit": 10,
+    "tail_solve_node_budget": 200000,
+    "tail_solve_margin_weight": 0.01
+  }
+}
 ```
 
-`tail_solve_start_ply` 仅在未注册 `tail_solve_trigger` 时作为 fallback 使用。
+触发由 `tail_solve_trigger` 决定，profile 不再有 `tail_solve_start_ply` 字段（已删除）。
 
 **分差偏好**：设置 `tail_solve_margin_weight` 可让 tail solver 在多条必赢路线中选择"赢得最多"的。终局节点的评估公式变为：
 
@@ -903,26 +908,6 @@ b.episode_stats_extractor = [](const IGameState&,
 ```
 
 这会在训练日志中产生 `turns=7.4` 这样的条目。
-
-### 9.7 Peek 模式 — 全知搜索训练增强
-
-**用途**：训练早期用全知状态搜索（忽略随机性和隐藏信息），帮助网络先学稳基本策略，后续切换到正式搜索模式。类似启发式引导的训练辅助手段。
-
-**仅在训练 selfplay 中使用，实战 AI 不使用。** 对局时 AI 必须通过正式 ISMCTS 搜索。
-
-**适用场景**：随机性或隐藏信息较复杂的游戏（如 Splendor），训练初期网络太弱、正式搜索噪声过大时，用 Peek 模式收集一批高质量样本快速建立基本策略。
-
-**配置**：通过 `game.json` 的 `training.peek_steps` 控制。前 `peek_steps` 个训练步使用 peek（selfplay 跳过 root 采样，MCTS 看 truth），之后自动切回 ISMCTS。默认 0（始终 ISMCTS）。Arena 和 eval 始终使用 ISMCTS，不受此参数影响。
-
-```json
-{
-  "training": {
-    "peek_steps": 500
-  }
-}
-```
-
----
 
 ## 10. 隐藏信息与 Belief Tracker（含物理随机性）
 

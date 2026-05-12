@@ -83,12 +83,17 @@ struct SelfplayConfig {
   int max_game_plies = 500;
 
   bool tail_solve_enabled = false;
-  int tail_solve_start_ply = 40;
   search::TailSolveConfig tail_solve_config{};
 
   double heuristic_guidance_ratio = 0.0;
   double heuristic_temperature = 0.0;
   double training_filter_ratio = 1.0;
+
+  // See OpponentSelection in net_mcts.h. Default kPuct is current
+  // behavior. kFrozenPrior turns descent on opponent nodes into a
+  // multinomial sample from the policy head's prior, mitigating
+  // strategy fusion in ISMCTS for hidden-info games.
+  search::OpponentSelection opponent_selection = search::OpponentSelection::kPuct;
 };
 
 using GameAdjudicator = board_ai::GameAdjudicator;

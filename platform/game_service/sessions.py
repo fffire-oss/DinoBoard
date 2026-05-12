@@ -16,12 +16,16 @@ import dinoboard_engine as engine
 from model_paths import base_game_id as _base_game_id, find_model_path  # noqa: E402
 from session_factory import SessionConfig, SessionFactory  # noqa: E402
 
+from training.mcts_profile import resolve_profile  # noqa: E402
+
 sessions: dict = {}
 
-DIFFICULTY_PRESETS = {
-    "heuristic": {"simulations": 1, "temperature": 0.0, "use_model": False},
-    "casual": {"simulations": 10, "temperature": 0.0, "use_model": True},
-    "expert": {"simulations": 5000, "temperature": 0.0, "use_model": True},
+# Map difficulty string to web profile name. "heuristic" stays out of MCTS
+# entirely (no model, no profile).
+_DIFFICULTY_TO_PROFILE = {
+    "heuristic": None,
+    "casual": "web_casual",
+    "expert": "web_expert",
 }
 
 
@@ -37,20 +41,7 @@ def load_game_configs() -> dict:
     return configs
 
 
-def load_web_configs() -> dict:
-    """Load per-game web.json configs. Games without web.json get an empty dict."""
-    configs = {}
-    games_dir = PROJECT_ROOT / "games"
-    for game_dir in sorted(games_dir.iterdir()):
-        web_path = game_dir / "config" / "web.json"
-        if web_path.exists():
-            with open(web_path, encoding="utf-8") as f:
-                configs[game_dir.name] = json.load(f)
-    return configs
-
-
 GAME_CONFIGS = load_game_configs()
-WEB_CONFIGS = load_web_configs()
 
 
 def get_session(session_id: str) -> dict:
@@ -85,9 +76,12 @@ def create_session(
     num_players: int,
     difficulty: str,
 ) -> tuple[str, dict]:
-    if difficulty not in DIFFICULTY_PRESETS:
-        raise ValueError(f"unknown difficulty {difficulty!r}, expected one of {list(DIFFICULTY_PRESETS)}")
-    preset = DIFFICULTY_PRESETS[difficulty]
+    if difficulty not in _DIFFICULTY_TO_PROFILE:
+        raise ValueError(
+            f"unknown difficulty {difficulty!r}, expected one of "
+            f"{list(_DIFFICULTY_TO_PROFILE)}")
+    profile_name = _DIFFICULTY_TO_PROFILE[difficulty]
+    use_model = profile_name is not None
 
     if game_id not in GAME_CONFIGS:
         raise ValueError(f"unknown game_id {game_id!r}, not found in GAME_CONFIGS")
@@ -104,7 +98,7 @@ def create_session(
             )
 
     model_path = ""
-    if preset["use_model"]:
+    if use_model:
         model_path = find_model_path(actual_id)
         if not model_path:
             base = _base_game_id(actual_id)
@@ -115,18 +109,27 @@ def create_session(
                 f"renaming to <variant>.onnx."
             )
 
-    web_cfg = WEB_CONFIGS.get(game_id, {})
-    ai_use_filter = bool(web_cfg.get("ai_use_action_filter", False))
-
-    diff_overrides = web_cfg.get("difficulty_overrides", {}).get(difficulty, {})
-    effective_sims = diff_overrides.get("simulations", preset["simulations"])
-    effective_temp = diff_overrides.get("temperature", preset["temperature"])
-    analysis_sims = web_cfg.get("analysis_simulations", 5000)
-
-    tail_cfg = web_cfg.get("tail_solve", {})
-    tail_solve_enabled = bool(tail_cfg.get("enabled", False))
-    tail_solve_depth = int(tail_cfg.get("depth_limit", 10))
-    tail_solve_budget = int(tail_cfg.get("node_budget", 200000))
+    if use_model:
+        live_profile = resolve_profile(game_id, profile_name)
+        analysis_profile = resolve_profile(game_id, "analysis")
+        effective_sims = live_profile.simulations
+        effective_temp = live_profile.temperature
+        effective_opp_sel = live_profile.opponent_selection
+        ai_use_filter = live_profile.ai_use_action_filter
+        tail_solve_enabled = live_profile.tail_solve_enabled
+        tail_solve_depth = live_profile.tail_solve_depth_limit
+        tail_solve_budget = live_profile.tail_solve_node_budget
+        analysis_sims = analysis_profile.simulations
+    else:
+        # Heuristic difficulty: no profile, no model, no MCTS knobs in play.
+        effective_sims = 1
+        effective_temp = 0.0
+        effective_opp_sel = "puct"
+        ai_use_filter = False
+        tail_solve_enabled = False
+        tail_solve_depth = 10
+        tail_solve_budget = 200000
+        analysis_sims = 0
 
     # Live web session uses no filter (filter is for training only); analysis
     # / precompute paths construct their own isolated sessions in pipeline.py.
@@ -160,8 +163,9 @@ def create_session(
         "difficulty": difficulty,
         "simulations": effective_sims,
         "temperature": effective_temp,
+        "opponent_selection": effective_opp_sel,
         "analysis_simulations": analysis_sims,
-        "use_model": preset["use_model"],
+        "use_model": use_model,
         "model_path": model_path,
         "ai_use_filter": ai_use_filter,
         "tail_solve_enabled": tail_solve_enabled,

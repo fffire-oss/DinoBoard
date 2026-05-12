@@ -20,6 +20,9 @@ struct ArenaPlayerConfig {
   search::TailSolveConfig tail_solve_config{};
   const search::ITailSolver* tail_solver = nullptr;
   TailSolveTrigger tail_solve_trigger = nullptr;
+  // See OpponentSelection in net_mcts.h. Per-player so candidate and
+  // opponent can be independently configured (A/B testing).
+  search::OpponentSelection opponent_selection = search::OpponentSelection::kPuct;
 };
 
 struct ArenaPlyStats {

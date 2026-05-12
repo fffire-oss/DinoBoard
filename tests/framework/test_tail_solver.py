@@ -43,7 +43,7 @@ def test_selfplay_tail_solve_stats_invariant_quoridor():
     """
     ep = dinoboard_engine.run_selfplay_episode(
         game_id="quoridor", seed=42, model_path=get_test_model("quoridor"), simulations=10,
-        max_game_plies=200, tail_solve_enabled=True, tail_solve_start_ply=1,
+        max_game_plies=200, tail_solve_enabled=True,
         tail_solve_depth_limit=3, tail_solve_node_budget=500,
     )
     a = ep["tail_solve_attempts"]

@@ -29,8 +29,6 @@ _PRECOMPUTE_WORKERS = int(os.environ.get("DINOBOARD_PRECOMPUTE_WORKERS", _PIPELI
 PIPELINE_EXECUTOR = ThreadPoolExecutor(max_workers=_PIPELINE_WORKERS, thread_name_prefix="pipeline")
 PRECOMPUTE_EXECUTOR = ThreadPoolExecutor(max_workers=_PRECOMPUTE_WORKERS, thread_name_prefix="precompute")
 
-DEFAULT_ANALYSIS_SIMULATIONS = 5000
-
 
 def _human_wr_from_stats(stats: dict, human_player: int) -> float:
     """Extract human player's win rate for the best action (absolute player ordering)."""
@@ -91,7 +89,7 @@ def _precompute_worker(sess: dict, ply_index: int, expected_hash: str) -> None:
         if gs.is_terminal:
             return
 
-        analysis_sims = sess.get("analysis_simulations", DEFAULT_ANALYSIS_SIMULATIONS)
+        analysis_sims = sess["analysis_simulations"]
         result = gs.get_ai_action(analysis_sims, 0.0, cover_root_edges=True)
 
         pc = sess["precompute"]
@@ -147,7 +145,9 @@ def _get_ai_move(gs: engine.GameSession, sess: dict) -> dict:
             return result
     simulations = sess["simulations"]
     temperature = sess["temperature"]
-    return gs.get_ai_action(simulations, temperature)
+    opp_sel = sess["opponent_selection"]
+    return gs.get_ai_action(simulations, temperature,
+                            opponent_selection=opp_sel)
 
 
 def _analyze_user_move(sess: dict) -> dict | None:
@@ -199,7 +199,7 @@ def _analyze_user_move(sess: dict) -> dict | None:
             sess, use_action_filter=False, history=pre_move_history)
         if gs_pre.is_terminal:
             return None
-        analysis_sims = sess.get("analysis_simulations", DEFAULT_ANALYSIS_SIMULATIONS)
+        analysis_sims = sess["analysis_simulations"]
         search_result = gs_pre.get_ai_action(analysis_sims, 0.0,
                                              cover_root_edges=True)
 

@@ -416,8 +416,7 @@ def test_tail_solve_stats_invariant():
     ep = dinoboard_engine.run_selfplay_episode(
         game_id=GAME_ID, seed=42, model_path="", simulations=10,
         max_game_plies=200, tail_solve_enabled=True,
-        tail_solve_start_ply=1, tail_solve_depth_limit=3,
-        tail_solve_node_budget=500,
+        tail_solve_depth_limit=3, tail_solve_node_budget=500,
     )
     a = ep["tail_solve_attempts"]
     c = ep["tail_solve_completed"]
@@ -604,20 +603,12 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "platform"))
 
-def test_web_config_loaded():
-    from game_service.sessions import load_web_configs
-    configs = load_web_configs()
-    assert GAME_ID in configs
-
-def test_difficulty_overrides_applied():
-    """difficulty_overrides 应正确覆盖默认 preset。"""
-    from game_service.sessions import WEB_CONFIGS, DIFFICULTY_PRESETS
-    web_cfg = WEB_CONFIGS.get(GAME_ID, {})
-    for diff_name in ["casual", "expert"]:
-        overrides = web_cfg.get("difficulty_overrides", {}).get(diff_name, {})
-        preset = DIFFICULTY_PRESETS[diff_name]
-        sims = overrides.get("simulations", preset["simulations"])
-        assert sims > 0
+def test_web_profiles_resolve():
+    """web.json 中三个 profile（web_expert / web_casual / analysis）必须能 resolve。"""
+    from training.mcts_profile import resolve_profile
+    for name in ("web_expert", "web_casual", "analysis"):
+        p = resolve_profile(GAME_ID, name)
+        assert p.simulations > 0
 ```
 
 ---

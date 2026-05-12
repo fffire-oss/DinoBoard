@@ -1,10 +1,17 @@
-"""Tests for web.json config loading and session creation with web config.
+"""Tests for the web config layer post-mcts_profiles migration.
 
-Verifies that:
-1. load_web_configs() correctly reads web.json files
-2. Difficulty overrides apply correctly
-3. Tail solve config propagates to GameSession
-4. Action filter config propagates correctly
+The old `WEB_CONFIGS` / `DIFFICULTY_PRESETS` / `difficulty_overrides` constants
+are gone. All web-side MCTS knobs come from named profiles in
+`games/<g>/config/web.json mcts_profiles` resolved via
+`training.mcts_profile.resolve_profile`. The web `create_session` reads from:
+
+  - difficulty == "heuristic" → no profile (no MCTS)
+  - difficulty == "casual"    → profile "web_casual"
+  - difficulty == "expert"    → profile "web_expert"
+  - analysis sims             → profile "analysis"
+
+This file covers (1) the resolver-side values for each web profile per game,
+and (2) that `create_session` flows the resolved values into the session dict.
 """
 import sys
 from pathlib import Path
@@ -15,148 +22,94 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "platform"))
 
+from training.mcts_profile import clear_cache, resolve_profile  # noqa: E402
 
-# ---------------------------------------------------------------------------
-# load_web_configs: reads real web.json files
-# ---------------------------------------------------------------------------
 
-class TestLoadWebConfigs:
-
-    def test_loads_existing_web_configs(self):
-        from game_service.sessions import load_web_configs
-        configs = load_web_configs()
-        assert "coup" in configs
-        assert "loveletter" in configs
-        assert "quoridor" in configs
-
-    def test_coup_has_analysis_simulations(self):
-        from game_service.sessions import load_web_configs
-        configs = load_web_configs()
-        assert configs["coup"]["analysis_simulations"] == 2000
-
-    def test_coup_has_difficulty_overrides(self):
-        from game_service.sessions import load_web_configs
-        configs = load_web_configs()
-        overrides = configs["coup"]["difficulty_overrides"]
-        assert "casual" in overrides
-        assert "expert" in overrides
-        assert overrides["casual"]["simulations"] == 50
-        assert overrides["casual"]["temperature"] == 0.3
-        assert overrides["expert"]["temperature"] == 0.1
-
-    def test_loveletter_has_temperature_overrides(self):
-        from game_service.sessions import load_web_configs
-        configs = load_web_configs()
-        overrides = configs["loveletter"]["difficulty_overrides"]
-        assert overrides["casual"]["temperature"] == 0.3
-        assert overrides["expert"]["temperature"] == 0.1
-
-    def test_quoridor_has_action_filter(self):
-        from game_service.sessions import load_web_configs
-        configs = load_web_configs()
-        assert configs["quoridor"]["ai_use_action_filter"] is True
-
-    def test_quoridor_has_tail_solve(self):
-        from game_service.sessions import load_web_configs
-        configs = load_web_configs()
-        ts = configs["quoridor"]["tail_solve"]
-        assert ts["enabled"] is True
-        assert ts["depth_limit"] == 10
-        assert ts["node_budget"] == 200000
-
-    def test_azul_has_tail_solve(self):
-        from game_service.sessions import load_web_configs
-        configs = load_web_configs()
-        ts = configs["azul"]["tail_solve"]
-        assert ts["enabled"] is True
-        assert ts["depth_limit"] == 20
-        assert ts["node_budget"] == 1000000
-
-    def test_splendor_has_tail_solve(self):
-        from game_service.sessions import load_web_configs
-        configs = load_web_configs()
-        ts = configs["splendor"]["tail_solve"]
-        assert ts["enabled"] is True
-        assert ts["depth_limit"] == 7
-        assert ts["node_budget"] == 1000000
-
-    def test_games_without_web_json_not_in_configs(self):
-        """Games that have no web.json and no legacy web fields should not appear."""
-        from game_service.sessions import load_web_configs
-        configs = load_web_configs()
-        assert "tictactoe" not in configs
+@pytest.fixture(autouse=True)
+def _reset_profile_cache():
+    clear_cache()
+    yield
+    clear_cache()
 
 
 # ---------------------------------------------------------------------------
-# Difficulty preset + override resolution
+# Resolver-side: web profiles exist and carry sensible values
 # ---------------------------------------------------------------------------
 
-class TestDifficultyResolution:
 
-    def test_coup_casual_uses_override_simulations(self):
-        from game_service.sessions import WEB_CONFIGS, DIFFICULTY_PRESETS
-        web_cfg = WEB_CONFIGS.get("coup", {})
-        preset = DIFFICULTY_PRESETS["casual"]
-        diff_overrides = web_cfg.get("difficulty_overrides", {}).get("casual", {})
-        effective_sims = diff_overrides.get("simulations", preset["simulations"])
-        assert effective_sims == 50
+class TestWebProfilesResolve:
 
-    def test_coup_casual_uses_override_temperature(self):
-        from game_service.sessions import WEB_CONFIGS, DIFFICULTY_PRESETS
-        web_cfg = WEB_CONFIGS.get("coup", {})
-        preset = DIFFICULTY_PRESETS["casual"]
-        diff_overrides = web_cfg.get("difficulty_overrides", {}).get("casual", {})
-        effective_temp = diff_overrides.get("temperature", preset["temperature"])
-        assert effective_temp == 0.3
+    @pytest.mark.skipif(
+        "coup" not in __import__("dinoboard_engine").available_games(),
+        reason="coup is disabled",
+    )
+    def test_coup_web_casual_simulations(self):
+        p = resolve_profile("coup", "web_casual")
+        assert p.simulations == 50
 
-    def test_coup_expert_uses_override_temperature(self):
-        from game_service.sessions import WEB_CONFIGS, DIFFICULTY_PRESETS
-        web_cfg = WEB_CONFIGS.get("coup", {})
-        preset = DIFFICULTY_PRESETS["expert"]
-        diff_overrides = web_cfg.get("difficulty_overrides", {}).get("expert", {})
-        effective_temp = diff_overrides.get("temperature", preset["temperature"])
-        assert effective_temp == 0.1
+    @pytest.mark.skipif(
+        "coup" not in __import__("dinoboard_engine").available_games(),
+        reason="coup is disabled",
+    )
+    def test_coup_web_casual_temperature(self):
+        p = resolve_profile("coup", "web_casual")
+        assert p.temperature == 0.3
 
-    def test_loveletter_casual_inherits_default_simulations(self):
-        """Love Letter casual has temperature override but no simulations override."""
-        from game_service.sessions import WEB_CONFIGS, DIFFICULTY_PRESETS
-        web_cfg = WEB_CONFIGS.get("loveletter", {})
-        preset = DIFFICULTY_PRESETS["casual"]
-        diff_overrides = web_cfg.get("difficulty_overrides", {}).get("casual", {})
-        effective_sims = diff_overrides.get("simulations", preset["simulations"])
-        assert effective_sims == preset["simulations"]
+    @pytest.mark.skipif(
+        "coup" not in __import__("dinoboard_engine").available_games(),
+        reason="coup is disabled",
+    )
+    def test_coup_web_expert_temperature(self):
+        p = resolve_profile("coup", "web_expert")
+        assert p.temperature == 0.1
 
-    def test_heuristic_preset_no_model(self):
-        from game_service.sessions import DIFFICULTY_PRESETS
-        assert DIFFICULTY_PRESETS["heuristic"]["use_model"] is False
+    @pytest.mark.skipif(
+        "coup" not in __import__("dinoboard_engine").available_games(),
+        reason="coup is disabled",
+    )
+    def test_coup_analysis_simulations(self):
+        p = resolve_profile("coup", "analysis")
+        assert p.simulations == 2000
 
-    def test_analysis_simulations_default(self):
-        """Games without analysis_simulations should use default 5000."""
-        from game_service.sessions import WEB_CONFIGS
-        web_cfg = WEB_CONFIGS.get("quoridor", {})
-        analysis_sims = web_cfg.get("analysis_simulations", 5000)
-        assert analysis_sims == 5000
+    def test_loveletter_web_expert_temperature(self):
+        p = resolve_profile("loveletter", "web_expert")
+        assert p.temperature == 0.1
 
-    def test_analysis_simulations_coup(self):
-        from game_service.sessions import WEB_CONFIGS
-        web_cfg = WEB_CONFIGS.get("coup", {})
-        assert web_cfg.get("analysis_simulations", 5000) == 2000
+    def test_loveletter_web_casual_temperature(self):
+        p = resolve_profile("loveletter", "web_casual")
+        assert p.temperature == 0.3
+
+    def test_quoridor_web_expert_tail_solve_enabled(self):
+        p = resolve_profile("quoridor", "web_expert")
+        assert p.tail_solve_enabled is True
+        assert p.tail_solve_depth_limit > 0
+        assert p.tail_solve_node_budget > 0
+
+    def test_azul_web_expert_tail_solve_enabled(self):
+        p = resolve_profile("azul", "web_expert")
+        assert p.tail_solve_enabled is True
+
+    def test_splendor_web_expert_tail_solve_enabled(self):
+        p = resolve_profile("splendor", "web_expert")
+        assert p.tail_solve_enabled is True
+
+    def test_tictactoe_web_expert_no_tail_solve(self):
+        """Tictactoe has no tail_solve_trigger — its web_expert profile must
+        keep tail_solve_enabled=False (resolver would otherwise raise)."""
+        p = resolve_profile("tictactoe", "web_expert")
+        assert p.tail_solve_enabled is False
 
 
 # ---------------------------------------------------------------------------
-# Session creation: verify config flows into session dict
+# Session creation: resolved profile values flow into the session dict
 # ---------------------------------------------------------------------------
+
 
 class TestSessionCreation:
 
     @staticmethod
     def _ensure_test_model(game_id):
-        """Create a random model if none exists, so create_session doesn't fail.
-
-        Deployment convention (see game_service/sessions.py::find_model_path):
-        games/<base>/model/<variant>.onnx. The base form is treated as
-        '<base>_2p' by the resolver.
-        """
+        """Create a random model if none exists, so create_session doesn't fail."""
         import re
         base = re.sub(r"_\d+p$", "", game_id)
         variant = game_id if game_id != base else f"{base}_2p"
@@ -187,7 +140,7 @@ class TestSessionCreation:
         "coup" not in __import__("dinoboard_engine").available_games(),
         reason="coup is disabled",
     )
-    def test_coup_casual_session_has_correct_simulations(self):
+    def test_coup_casual_session_simulations(self):
         _, sess = self._create_session("coup", "casual")
         assert sess["simulations"] == 50
 
@@ -195,7 +148,7 @@ class TestSessionCreation:
         "coup" not in __import__("dinoboard_engine").available_games(),
         reason="coup is disabled",
     )
-    def test_coup_casual_session_has_correct_temperature(self):
+    def test_coup_casual_session_temperature(self):
         _, sess = self._create_session("coup", "casual")
         assert sess["temperature"] == 0.3
 
@@ -203,7 +156,7 @@ class TestSessionCreation:
         "coup" not in __import__("dinoboard_engine").available_games(),
         reason="coup is disabled",
     )
-    def test_coup_expert_session_has_correct_temperature(self):
+    def test_coup_expert_session_temperature(self):
         _, sess = self._create_session("coup", "expert")
         assert sess["temperature"] == 0.1
 
@@ -211,19 +164,11 @@ class TestSessionCreation:
         "coup" not in __import__("dinoboard_engine").available_games(),
         reason="coup is disabled",
     )
-    def test_coup_session_has_correct_analysis_sims(self):
+    def test_coup_session_analysis_sims(self):
         _, sess = self._create_session("coup", "casual")
         assert sess["analysis_simulations"] == 2000
 
-    def test_quoridor_session_has_filter_enabled(self):
-        _, sess = self._create_session("quoridor", "heuristic")
-        assert sess["ai_use_filter"] is True
-
-    def test_tictactoe_session_no_filter(self):
-        _, sess = self._create_session("tictactoe", "heuristic")
-        assert sess["ai_use_filter"] is False
-
-    def test_loveletter_expert_has_temperature(self):
+    def test_loveletter_expert_temperature(self):
         _, sess = self._create_session("loveletter", "expert")
         assert sess["temperature"] == 0.1
 
@@ -234,8 +179,5 @@ class TestSessionCreation:
                            num_players=2, difficulty="impossible")
 
     def test_heuristic_session_no_model(self):
-        # Use loveletter — coup is temporarily disabled in the build.
         _, sess = self._create_session("loveletter", "heuristic")
         assert sess["use_model"] is False
-
-

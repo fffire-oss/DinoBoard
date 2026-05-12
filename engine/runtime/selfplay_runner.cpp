@@ -33,6 +33,12 @@ SelfplayEpisodeResult run_selfplay_episode(
     InitialObservationExtractor initial_observation_extractor) {
   SelfplayEpisodeResult result{};
 
+  if (config.tail_solve_enabled && (!tail_solver || !tail_solve_trigger)) {
+    throw std::invalid_argument(
+        "run_selfplay_episode: tail_solve_enabled=true requires both a "
+        "registered ITailSolver and a TailSolveTrigger; one or both are missing.");
+  }
+
   const bool tracing =
       trace_perspective >= 0 && public_event_extractor && trace_belief_tracker;
   if (tracing) {
@@ -343,7 +349,7 @@ SelfplayEpisodeResult run_selfplay_episode(
         config.dirichlet_on_first_n_plies, ply);
 
     const bool try_tail_solve = config.tail_solve_enabled && tail_solver &&
-        (tail_solve_trigger ? tail_solve_trigger(ai_view, ply) : ply >= config.tail_solve_start_ply);
+        tail_solve_trigger && tail_solve_trigger(ai_view, ply);
 
     search::NetMctsConfig mcts_cfg{};
     mcts_cfg.simulations = config.simulations;
@@ -352,6 +358,7 @@ SelfplayEpisodeResult run_selfplay_episode(
     mcts_cfg.value_clip = config.value_clip;
     mcts_cfg.root_dirichlet_alpha = noise.alpha;
     mcts_cfg.root_dirichlet_epsilon = noise.epsilon;
+    mcts_cfg.opponent_selection = config.opponent_selection;
     // ISMCTS: root-sampling hidden info + DAG per-acting-player keying.
     // MCTS uses the per-sim sampled world's rules.legal_actions at each node.
     if (mcts_tracker) {

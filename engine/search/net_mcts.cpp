@@ -76,6 +76,36 @@ static void apply_root_dirichlet_noise(Node& root, float alpha, float epsilon, s
   }
 }
 
+// Multinomial sample from edge priors. Used by kFrozenPrior on opponent
+// nodes — descent picks an edge proportional to the prior set at expand
+// time. Priors have already been validated finite/non-negative and
+// re-normalized to sum to 1.0 in expand_node, so accumulation is stable.
+// Falls back to argmax-of-prior if numeric drift makes the cumulative
+// sum non-positive (defensive — shouldn't happen given expand_node's
+// rejection of zero-mass priors).
+static int sample_index_by_prior(
+    const std::vector<Edge>& edges, std::mt19937_64& rng) {
+  float total = 0.0f;
+  for (const auto& e : edges) total += std::max(0.0f, e.prior);
+  if (!std::isfinite(total) || total <= 0.0f) {
+    int best = 0;
+    float best_p = -std::numeric_limits<float>::infinity();
+    for (size_t i = 0; i < edges.size(); ++i) {
+      const float p = edges[i].prior;
+      if (p > best_p) { best_p = p; best = static_cast<int>(i); }
+    }
+    return best;
+  }
+  std::uniform_real_distribution<float> u01(0.0f, total);
+  const float r = u01(rng);
+  float acc = 0.0f;
+  for (size_t i = 0; i < edges.size(); ++i) {
+    acc += std::max(0.0f, edges[i].prior);
+    if (r <= acc) return static_cast<int>(i);
+  }
+  return static_cast<int>(edges.size()) - 1;
+}
+
 static void validate_leaf_values(
     const std::vector<float>& values,
     int num_players,
@@ -294,7 +324,8 @@ ActionId NetMcts::search_root(
 
   auto root_masked = materialize_masked(root);
   const StateHash64 root_hash = hash_masked(*root_masked);
-  nodes.push_back(Node{root.current_player(), false, 0, 0.0f, {}});
+  const int root_player = root.current_player();
+  nodes.push_back(Node{root_player, false, 0, 0.0f, {}});
   node_index[root_hash] = 0;
 
   // Leaf expansion. Caller passes the live `state` (for legal_actions
@@ -471,19 +502,29 @@ ActionId NetMcts::search_root(
       }
 
       if (best_edge < 0) {
-        const float sqrt_parent = std::sqrt(
-            static_cast<float>(std::max(1, incoming_edge_visits)));
-        float best_score = -std::numeric_limits<float>::infinity();
-        for (int ei = 0; ei < static_cast<int>(nodes[cur_idx].edges.size()); ++ei) {
-          const Edge& e = nodes[cur_idx].edges[ei];
-          float q = 0.0f;
-          if (e.visit_count > 0) q = e.value_sum / static_cast<float>(e.visit_count);
-          const float u = cfg_.c_puct * e.prior * sqrt_parent /
-                          (1.0f + static_cast<float>(e.visit_count));
-          const float score = q + u;
-          if (score > best_score) {
-            best_score = score;
-            best_edge = ei;
+        // Frozen-prior on opponent nodes (Smooth-UCT-style). Root always
+        // PUCT regardless. See OpponentSelection comment in net_mcts.h.
+        const bool use_frozen_prior =
+            cfg_.opponent_selection == OpponentSelection::kFrozenPrior &&
+            cur_idx != 0 &&
+            nodes[cur_idx].to_play != root_player;
+        if (use_frozen_prior) {
+          best_edge = sample_index_by_prior(nodes[cur_idx].edges, sim_rng);
+        } else {
+          const float sqrt_parent = std::sqrt(
+              static_cast<float>(std::max(1, incoming_edge_visits)));
+          float best_score = -std::numeric_limits<float>::infinity();
+          for (int ei = 0; ei < static_cast<int>(nodes[cur_idx].edges.size()); ++ei) {
+            const Edge& e = nodes[cur_idx].edges[ei];
+            float q = 0.0f;
+            if (e.visit_count > 0) q = e.value_sum / static_cast<float>(e.visit_count);
+            const float u = cfg_.c_puct * e.prior * sqrt_parent /
+                            (1.0f + static_cast<float>(e.visit_count));
+            const float score = q + u;
+            if (score > best_score) {
+              best_score = score;
+              best_edge = ei;
+            }
           }
         }
       }

@@ -13,6 +13,7 @@ from typing import Any
 
 import torch
 
+from .mcts_profile import MctsProfile, max_game_plies, profile_as_dict, resolve_profile
 from .model import PVNet, create_model_from_config, export_onnx
 
 logger = logging.getLogger(__name__)
@@ -35,62 +36,74 @@ def _default_gating_threshold(num_players: int, eval_games: int) -> float:
     return baseline + z * se
 
 
-def _get_temperature_key(train_cfg: dict, key: str, default):
-    """Read temperature param from flat key or nested temperature_schedule."""
-    flat = train_cfg.get(f"temperature_{key}")
-    if flat is not None:
-        return flat
-    sched = train_cfg.get("temperature_schedule")
-    if isinstance(sched, dict):
-        return sched.get(key, default)
-    return default
-
-
 def _worker_selfplay(args: tuple) -> dict[str, Any]:
-    """Run a single selfplay episode in a worker process."""
+    """Run a single selfplay episode in a worker process.
+
+    `cfg` is a profile_as_dict() blob plus per-step overrides:
+        simulations (ramped), max_game_plies (game-level),
+        heuristic_guidance_ratio, heuristic_temperature,
+        training_filter_ratio (already gated by profile.ai_use_action_filter).
+    """
     import dinoboard_engine
     game_id, seed, model_path, cfg = args
+    # Bindings use -1.0 as "schedule off" sentinel for the flat
+    # temperature_initial / temperature_final args.
+    if cfg["temperature_schedule_enabled"]:
+        t_initial = cfg["temperature_initial"]
+        t_final = cfg["temperature_final"]
+        t_decay = cfg["temperature_decay_plies"]
+    else:
+        t_initial = -1.0
+        t_final = -1.0
+        t_decay = 0
     return dinoboard_engine.run_selfplay_episode(
         game_id=game_id,
         seed=seed,
         model_path=model_path,
         simulations=cfg["simulations"],
-        c_puct=cfg.get("c_puct", 1.4),
-        temperature=cfg.get("temperature", 1.0),
-        dirichlet_alpha=cfg.get("dirichlet_alpha", 0.3),
-        dirichlet_epsilon=cfg.get("dirichlet_epsilon", 0.25),
-        dirichlet_on_first_n_plies=cfg.get("dirichlet_on_first_n_plies", 30),
-        max_game_plies=cfg.get("max_game_plies", 500),
-        tail_solve_enabled=cfg.get("tail_solve_enabled", False),
-        tail_solve_start_ply=cfg.get("tail_solve_start_ply", 40),
-        tail_solve_depth_limit=cfg.get("tail_solve_depth_limit", 5),
-        tail_solve_node_budget=cfg.get("tail_solve_node_budget", 10000000),
-        tail_solve_margin_weight=cfg.get("tail_solve_margin_weight", 0.0),
-        temperature_initial=cfg.get("temperature_initial", -1.0),
-        temperature_final=cfg.get("temperature_final", -1.0),
-        temperature_decay_plies=cfg.get("temperature_decay_plies", 0),
-        heuristic_guidance_ratio=cfg.get("heuristic_guidance_ratio", 0.0),
-        heuristic_temperature=cfg.get("heuristic_temperature", 0.0),
-        training_filter_ratio=cfg.get("training_filter_ratio", 1.0),
+        c_puct=cfg["c_puct"],
+        temperature=cfg["temperature"],
+        dirichlet_alpha=cfg["dirichlet_alpha"],
+        dirichlet_epsilon=cfg["dirichlet_epsilon"],
+        dirichlet_on_first_n_plies=cfg["dirichlet_on_first_n_plies"],
+        max_game_plies=cfg["max_game_plies"],
+        tail_solve_enabled=cfg["tail_solve_enabled"],
+        tail_solve_depth_limit=cfg["tail_solve_depth_limit"],
+        tail_solve_node_budget=cfg["tail_solve_node_budget"],
+        tail_solve_margin_weight=cfg["tail_solve_margin_weight"],
+        temperature_initial=t_initial,
+        temperature_final=t_final,
+        temperature_decay_plies=t_decay,
+        heuristic_guidance_ratio=cfg["heuristic_guidance_ratio"],
+        heuristic_temperature=cfg["heuristic_temperature"],
+        training_filter_ratio=cfg["training_filter_ratio"],
+        opponent_selection=cfg["opponent_selection"],
     )
 
 
 def _worker_arena(args: tuple) -> dict[str, Any]:
     """Run a single arena match in a worker process."""
     import dinoboard_engine
-    game_id, seed, model_paths, sims_list, max_plies, temperature = args
+    game_id, seed, model_paths, sims_list, max_plies, temperature, opp_sel, \
+        ts_enabled, ts_depth, ts_budget, ts_margin = args
     return dinoboard_engine.run_arena_match(
         game_id=game_id, seed=seed,
         model_paths=model_paths, simulations_list=sims_list,
         temperature=temperature,
         max_game_plies=max_plies,
+        tail_solve=ts_enabled,
+        tail_solve_depth_limit=ts_depth,
+        tail_solve_node_budget=ts_budget,
+        tail_solve_margin_weight=ts_margin,
+        opponent_selection_list=[opp_sel] * len(model_paths),
     )
 
 
 def _worker_eval_vs_heuristic(args: tuple) -> dict[str, Any]:
     """Run a single eval game vs heuristic in a worker process."""
     import dinoboard_engine
-    game_id, seed, model_path, simulations, model_is_player, constrained, h_temp = args
+    (game_id, seed, model_path, simulations, model_is_player,
+     constrained, h_temp, opp_sel) = args
     return dinoboard_engine.run_constrained_eval_vs_heuristic(
         game_id=game_id,
         seed=seed,
@@ -99,6 +112,7 @@ def _worker_eval_vs_heuristic(args: tuple) -> dict[str, Any]:
         model_is_player=model_is_player,
         constrained=constrained,
         heuristic_temperature=h_temp,
+        opponent_selection=opp_sel,
     )
 
 
@@ -185,6 +199,7 @@ def run_eval_vs_heuristic(
     constrained: bool,
     heuristic_temperature: float,
     max_workers: int,
+    opponent_selection: str,
 ) -> dict[str, Any]:
     import dinoboard_engine
     num_players = dinoboard_engine.game_metadata(game_id)["num_players"]
@@ -197,6 +212,7 @@ def run_eval_vs_heuristic(
         tasks.append((
             game_id, base_seed + i, model_path, simulations,
             model_side, constrained, heuristic_temperature,
+            opponent_selection,
         ))
 
     wins = losses = draws = 0
@@ -225,8 +241,13 @@ def run_eval_batch(
     sims_candidate: int,
     sims_opponent: int,
     max_workers: int,
-    max_game_plies: int = 500,
-    temperature: float = 0.0,
+    max_plies: int,
+    temperature: float,
+    opponent_selection: str,
+    tail_solve_enabled: bool,
+    tail_solve_depth_limit: int,
+    tail_solve_node_budget: int,
+    tail_solve_margin_weight: float,
 ) -> dict[str, Any]:
     import dinoboard_engine
     meta = dinoboard_engine.game_metadata(game_id)
@@ -240,7 +261,12 @@ def run_eval_batch(
         sims = [sims_opponent] * num_players
         paths[seat] = candidate_path
         sims[seat] = sims_candidate
-        tasks.append((game_id, base_seed + i, paths, sims, max_game_plies, temperature))
+        tasks.append((
+            game_id, base_seed + i, paths, sims, max_plies,
+            temperature, opponent_selection,
+            tail_solve_enabled, tail_solve_depth_limit,
+            tail_solve_node_budget, tail_solve_margin_weight,
+        ))
         candidate_seats.append(seat)
 
     wins = losses = draws = 0
@@ -327,6 +353,13 @@ def run_training_loop(
     auxiliary_score = train_cfg.get("auxiliary_score", False)
     auxiliary_score_weight = train_cfg.get("auxiliary_score_weight", 0.5)
 
+    # MCTS profiles drive selfplay / arena (gating) / eval. Top-level
+    # max_game_plies is a game property shared across profiles.
+    selfplay_profile = resolve_profile(game_id, "selfplay")
+    arena_profile = resolve_profile(game_id, "arena")
+    eval_profile = resolve_profile(game_id, "eval")
+    game_max_plies = max_game_plies(game_id)
+
     if save_every <= 0:
         save_every = eval_every if eval_every > 0 else 50
 
@@ -350,8 +383,8 @@ def run_training_loop(
     training_filter_steps = train_cfg.get("training_filter_steps", 0)
     training_filter_initial = train_cfg.get("training_filter_initial_ratio", 0.5)
 
-    simulations_start = train_cfg.get("simulations_start", train_cfg.get("simulations", 200))
-    simulations_full = train_cfg.get("simulations", 200)
+    simulations_start = train_cfg.get("simulations_start", selfplay_profile.simulations)
+    simulations_full = selfplay_profile.simulations
 
     replay_buffer_size = episodes_per_step * 50 * 20
     replay_buffer: deque[tuple[list, list, list, list, float]] = deque(maxlen=replay_buffer_size)
@@ -366,7 +399,8 @@ def run_training_loop(
         f"decay_end={training_filter_steps}, initial_ratio={training_filter_initial}"
     )
     logger.info(f"  simulations: start={simulations_start}, full={simulations_full}")
-    logger.info(f"  tail_solve: enabled={train_cfg.get('tail_solve_enabled', False)}")
+    logger.info(f"  tail_solve (selfplay): enabled={selfplay_profile.tail_solve_enabled}")
+    logger.info(f"  opponent_selection (selfplay): {selfplay_profile.opponent_selection}")
     logger.info(f"  replay_buffer: maxlen={replay_buffer_size}")
 
     for step in range(1, steps + 1):
@@ -390,29 +424,23 @@ def run_training_loop(
         sim_frac = min(1.0, step / max(1, steps * 0.3))
         current_sims = int(simulations_start + (simulations_full - simulations_start) * sim_frac)
 
-        selfplay_cfg = {
-            "simulations": current_sims,
-            "c_puct": train_cfg.get("c_puct", 1.4),
-            "temperature": train_cfg.get("temperature", 1.0),
-            "dirichlet_alpha": train_cfg.get("dirichlet_alpha", 0.3),
-            "dirichlet_epsilon": train_cfg.get("dirichlet_epsilon", 0.25),
-            "dirichlet_on_first_n_plies": train_cfg.get("dirichlet_on_first_n_plies", 30),
-            "max_game_plies": train_cfg.get("max_game_plies", 500),
-            "tail_solve_enabled": train_cfg.get("tail_solve_enabled", False),
-            "tail_solve_start_ply": train_cfg.get("tail_solve_start_ply", 40),
-            "tail_solve_depth_limit": train_cfg.get("tail_solve_depth_limit", 5),
-            "tail_solve_node_budget": train_cfg.get("tail_solve_node_budget", 10000000),
-            "tail_solve_margin_weight": train_cfg.get("tail_solve_margin_weight", 0.0),
-            "temperature_initial": _get_temperature_key(train_cfg, "initial", -1.0),
-            "temperature_final": _get_temperature_key(train_cfg, "final", -1.0),
-            "temperature_decay_plies": _get_temperature_key(train_cfg, "decay_plies", 0),
-            "heuristic_guidance_ratio": heuristic_ratio,
-            # Selfplay heuristic branch uses guidance temperature (high = diverse
-            # exploration during warm period). Eval vs heuristic uses the
-            # separate `heuristic_temperature` (low = strength benchmark).
-            "heuristic_temperature": train_cfg.get("heuristic_guidance_temperature", 0.0),
-            "training_filter_ratio": filter_ratio,
-        }
+        # Action filter is bool-gated by profile; the schedule's effective
+        # ratio is zeroed when ai_use_action_filter=false (allows ablation
+        # without deleting the schedule config).
+        effective_filter_ratio = (
+            filter_ratio if selfplay_profile.ai_use_action_filter else 0.0
+        )
+
+        selfplay_cfg = profile_as_dict(selfplay_profile)
+        selfplay_cfg["simulations"] = current_sims
+        selfplay_cfg["max_game_plies"] = game_max_plies
+        selfplay_cfg["heuristic_guidance_ratio"] = heuristic_ratio
+        # Selfplay heuristic branch uses guidance temperature (high = diverse
+        # exploration during warm period). Eval vs heuristic uses the
+        # separate `heuristic_temperature` (low = strength benchmark).
+        selfplay_cfg["heuristic_temperature"] = train_cfg.get(
+            "heuristic_guidance_temperature", 0.0)
+        selfplay_cfg["training_filter_ratio"] = effective_filter_ratio
 
         episodes = run_selfplay_batch(
             game_id, current_model_path, episodes_per_step,
@@ -509,24 +537,24 @@ def run_training_loop(
 
         if eval_every > 0 and step % eval_every == 0:
             eval_model = current_model_path
-            eval_sims = train_cfg.get("simulations", 200)
             h_temp = train_cfg.get("heuristic_temperature", 0.0)
             free_h_temp = train_cfg.get("free_heuristic_temperature", h_temp)
-            eval_temp = train_cfg.get("eval_temperature", 0.0)
             benchmarks = eval_benchmarks or []
 
             for bench in benchmarks:
                 if bench == "heuristic_constrained":
                     r = run_eval_vs_heuristic(
                         game_id, eval_model, eval_games, seed + step * 100000,
-                        eval_sims, True, h_temp, max_workers)
+                        eval_profile.simulations, True, h_temp, max_workers,
+                        opponent_selection=eval_profile.opponent_selection)
                     logger.info(
                         f"  eval vs heuristic (constrained): win_rate={r['win_rate']:.1%} "
                         f"(W={r['wins']}, L={r['losses']}, D={r['draws']})")
                 elif bench == "heuristic_free":
                     r = run_eval_vs_heuristic(
                         game_id, eval_model, eval_games, seed + step * 100000 + 50000,
-                        eval_sims, False, free_h_temp, max_workers)
+                        eval_profile.simulations, False, free_h_temp, max_workers,
+                        opponent_selection=eval_profile.opponent_selection)
                     logger.info(
                         f"  eval vs heuristic (free): win_rate={r['win_rate']:.1%} "
                         f"(W={r['wins']}, L={r['losses']}, D={r['draws']})")
@@ -534,20 +562,33 @@ def run_training_loop(
                     bench_result = run_eval_batch(
                         game_id, eval_model, bench,
                         eval_games, seed + step * 100000 + 90000,
-                        eval_sims, eval_sims, max_workers,
-                        max_game_plies=train_cfg.get("max_game_plies", 500),
-                        temperature=eval_temp)
+                        eval_profile.simulations, eval_profile.simulations, max_workers,
+                        max_plies=game_max_plies,
+                        temperature=eval_profile.temperature,
+                        opponent_selection=eval_profile.opponent_selection,
+                        tail_solve_enabled=eval_profile.tail_solve_enabled,
+                        tail_solve_depth_limit=eval_profile.tail_solve_depth_limit,
+                        tail_solve_node_budget=eval_profile.tail_solve_node_budget,
+                        tail_solve_margin_weight=eval_profile.tail_solve_margin_weight,
+                    )
                     logger.info(
                         f"  eval vs {Path(bench).stem}: win_rate={bench_result['win_rate']:.1%} "
                         f"(W={bench_result['wins']}, L={bench_result['losses']}, D={bench_result['draws']})")
 
-            # Gating: latest vs best (always runs)
+            # Gating: latest vs best (always runs) — uses arena profile so
+            # gating and cross-ONNX arena measure the same MCTS behavior.
             gating_result = run_eval_batch(
                 game_id, eval_model, best_model_path,
                 eval_games, seed + step * 100000 + 80000,
-                eval_sims, eval_sims, max_workers,
-                max_game_plies=train_cfg.get("max_game_plies", 500),
-                temperature=eval_temp)
+                arena_profile.simulations, arena_profile.simulations, max_workers,
+                max_plies=game_max_plies,
+                temperature=arena_profile.temperature,
+                opponent_selection=arena_profile.opponent_selection,
+                tail_solve_enabled=arena_profile.tail_solve_enabled,
+                tail_solve_depth_limit=arena_profile.tail_solve_depth_limit,
+                tail_solve_node_budget=arena_profile.tail_solve_node_budget,
+                tail_solve_margin_weight=arena_profile.tail_solve_margin_weight,
+            )
             gating_wr = gating_result["win_rate"]
             logger.info(
                 f"  gating vs best: win_rate={gating_wr:.1%} "
