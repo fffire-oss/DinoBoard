@@ -35,7 +35,8 @@ sys.path.insert(0, str(PROJECT_ROOT / "platform"))
 import dinoboard_engine as engine
 
 
-ALL_GAMES = ["tictactoe", "quoridor", "azul", "loveletter", "splendor", "coup"]
+ALL_GAMES = [g for g in ["tictactoe", "quoridor", "azul", "loveletter", "splendor", "coup"]
+             if g in engine.available_games()]
 FULLY_PUBLIC_GAMES = ["tictactoe", "quoridor"]
 
 

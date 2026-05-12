@@ -11,7 +11,7 @@ Coup is asymmetric-hidden-info with bluffing. It exercises:
   - no tail_solver, no training_filter, no adjudicator, no aux_scorer
 
 Build status: Coup is temporarily disabled at the build level (see
-CMakeLists.txt / setup.py / docs/GAME_FEATURES_OVERVIEW.md "诈唬核心游戏"
+CMakeLists.txt / setup.py / FEATURES_OVERVIEW.md "诈唬核心游戏"
 Future Work). The whole file skips gracefully when the engine wasn't
 built with Coup. Once the build is restored, all tests should run.
 """

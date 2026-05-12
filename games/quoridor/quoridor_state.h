@@ -114,9 +114,10 @@ struct QuoridorState final : public CloneableState<QuoridorState> {
   // of it. Same all_public-only declaration pattern as tictactoe.
   static const viz::VisibilitySchema& schema();
 
-  StateHash64 state_hash(bool include_hidden_rng) const override;
-  void hash_public_fields(Hasher& h) const override;
-  void hash_private_fields(int player, Hasher& h) const override;
+  StateHash64 state_hash() const override;
+  void hash_field_slot(Hasher& h, const std::string& name,
+                       const std::vector<int>& idx) const override;
+  const viz::VisibilitySchema& schema_ref() const override { return schema(); }
   int current_player() const override { return current_player_; }
   bool is_terminal() const override { return terminal; }
   int num_players() const override { return kPlayers; }

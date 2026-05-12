@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <stdexcept>
 
+#include "../../engine/core/masked_state.h"
 #include "../../engine/core/schema_hash.h"
 #include "../../engine/core/viz_runtime.h"
 
@@ -141,10 +142,18 @@ void LoveLetterState<NPlayers>::reset_with_seed(std::uint64_t seed) {
   d.drawn_card = pop_top(d.deck);
 
   viz::init_viz(*this, schema());
+  // Start-of-game viz reveals (drawn_card → current_player) live in
+  // rules.cpp per I1 (rules are sole viz writer); they're invoked
+  // by the registrar's make_loveletter wrapper after this returns.
 }
 
 template <int NPlayers>
-StateHash64 LoveLetterState<NPlayers>::state_hash(bool include_hidden_rng) const {
+void LoveLetterState<NPlayers>::reseed_viz() {
+  viz::init_viz(*this, schema());
+}
+
+template <int NPlayers>
+StateHash64 LoveLetterState<NPlayers>::state_hash() const {
   const auto& d = data;
   std::size_t h = 0;
   hash_combine(h, static_cast<std::size_t>(d.current_player + 3));
@@ -156,7 +165,7 @@ StateHash64 LoveLetterState<NPlayers>::state_hash(bool include_hidden_rng) const
   for (int p = 0; p < Cfg::kPlayers; ++p) {
     hash_combine(h, static_cast<std::size_t>(d.alive[p] + 13));
     hash_combine(h, static_cast<std::size_t>(d.protected_flags[p] + 17));
-    if (p == d.current_player || include_hidden_rng) {
+    if (p == d.current_player) {
       hash_combine(h, static_cast<std::size_t>(d.hand[p] + 19));
     } else {
       hash_combine(h, static_cast<std::size_t>(0 + 19));
@@ -172,12 +181,6 @@ StateHash64 LoveLetterState<NPlayers>::state_hash(bool include_hidden_rng) const
   }
 
   hash_combine(h, static_cast<std::size_t>(d.deck.size() + 37));
-  if (include_hidden_rng) {
-    hash_combine(h, static_cast<std::size_t>(d.set_aside_card + 41));
-    for (auto c : d.deck) {
-      hash_combine(h, static_cast<std::size_t>(c + 43));
-    }
-  }
 
   for (auto c : d.face_up_removed) {
     hash_combine(h, static_cast<std::size_t>(c + 47));
@@ -187,12 +190,13 @@ StateHash64 LoveLetterState<NPlayers>::state_hash(bool include_hidden_rng) const
 }
 
 template <int NPlayers>
-void LoveLetterState<NPlayers>::hash_public_fields(Hasher& h) const {
-  // Schema-driven path: walker iterates declared fields, calls
-  // hash_field_slot for each slot whose runtime viz is 1 for every
-  // viewer. Variable-length vectors (discard_piles[p], deck size,
-  // face_up_removed) are NOT in schema and are appended manually.
-  framework::hash_public_via_schema(*this, schema(), h);
+void LoveLetterState<NPlayers>::hash_extra_state_fields(int perspective,
+                                                         Hasher& h) const {
+  // Off-schema state: variable-length public lists (discard_piles, deck
+  // size, face_up_removed) plus the actor-private drawn_card during
+  // their own turn. §G migrates these to schema variable_length / viz
+  // reveal; until then this hook preserves hash semantics.
+  if (perspective < 0 || perspective >= Cfg::kPlayers) return;
   const auto& d = data;
   for (int p = 0; p < Cfg::kPlayers; ++p) {
     for (auto c : d.discard_piles[static_cast<size_t>(p)]) h.add(c + 23);
@@ -200,18 +204,7 @@ void LoveLetterState<NPlayers>::hash_public_fields(Hasher& h) const {
   }
   h.add(d.deck.size() + 37);
   for (auto c : d.face_up_removed) h.add(c + 47);
-}
-
-template <int NPlayers>
-void LoveLetterState<NPlayers>::hash_private_fields(int player, Hasher& h) const {
-  if (player < 0 || player >= Cfg::kPlayers) return;
-  // Walker covers owner-only hand[player]. drawn_card is all_hidden in
-  // schema (no dynamic reveal_slot wiring this PR) and stays
-  // hand-written here under the legacy gate (only current_player's
-  // drawn_card is private to them).
-  framework::hash_private_via_schema(*this, schema(), player, h);
-  const auto& d = data;
-  if (d.current_player == player && d.drawn_card != 0) {
+  if (d.current_player == perspective && d.drawn_card != 0) {
     h.add(d.drawn_card + 31);
   }
 }
@@ -246,6 +239,114 @@ void LoveLetterState<NPlayers>::hash_field_slot(
   // permanently hidden and excluded from the hash entirely.
   if (name == "drawn_card") { return; }
   if (name == "set_aside_card") { return; }
+}
+
+// Walker-driven snapshot I/O. read_field_slot returns std::any of int /
+// bool for every all_public schema slot (Step 4 §G.1: replaces the
+// hand-rolled loveletter_snapshot_io). Hidden slots (hand / drawn_card
+// / set_aside_card) are never visited by the all_public walker.
+template <int NPlayers>
+std::any LoveLetterState<NPlayers>::read_field_slot(
+    const std::string& name, const std::vector<int>& idx) const {
+  const auto& d = data;
+  if (name == "current_player") return std::any(static_cast<int>(d.current_player));
+  if (name == "first_player") return std::any(static_cast<int>(d.first_player));
+  if (name == "winner") return std::any(static_cast<int>(d.winner));
+  if (name == "terminal") return std::any(static_cast<bool>(d.terminal));
+  if (name == "ply") return std::any(static_cast<int>(d.ply));
+  if (name == "alive") {
+    return std::any(static_cast<int>(d.alive[static_cast<size_t>(idx[0])]));
+  }
+  if (name == "protected_flags") {
+    return std::any(static_cast<int>(d.protected_flags[static_cast<size_t>(idx[0])]));
+  }
+  if (name == "hand_exposed") {
+    return std::any(static_cast<int>(d.hand_exposed[static_cast<size_t>(idx[0])]));
+  }
+  // hand[p] is owner_only_first_axis: when walker visits with viz=1 (the
+  // owner's perspective, or after rules' reveal_slot / reveal_slot_to),
+  // the underlying truth value is shipped.
+  if (name == "hand") {
+    return std::any(static_cast<int>(d.hand[static_cast<size_t>(idx[0])]));
+  }
+  if (name == "drawn_card") {
+    return std::any(static_cast<int>(d.drawn_card));
+  }
+  if (name == "set_aside_card") {
+    return std::any(static_cast<int>(d.set_aside_card));
+  }
+  return {};
+}
+
+template <int NPlayers>
+void LoveLetterState<NPlayers>::write_field_slot(
+    const std::string& name, const std::vector<int>& idx,
+    const std::any& value) {
+  auto& d = data;
+  auto as_int = [&]() -> int {
+    if (value.type() == typeid(int)) return std::any_cast<int>(value);
+    if (value.type() == typeid(bool)) return std::any_cast<bool>(value) ? 1 : 0;
+    return 0;
+  };
+  auto as_bool = [&]() -> bool {
+    if (value.type() == typeid(bool)) return std::any_cast<bool>(value);
+    if (value.type() == typeid(int)) return std::any_cast<int>(value) != 0;
+    return false;
+  };
+
+  if (name == "current_player") d.current_player = as_int();
+  else if (name == "first_player") d.first_player = static_cast<std::int8_t>(as_int());
+  else if (name == "winner") d.winner = as_int();
+  else if (name == "terminal") d.terminal = as_bool();
+  else if (name == "ply") d.ply = as_int();
+  else if (name == "alive") {
+    d.alive[static_cast<size_t>(idx[0])] = static_cast<std::int8_t>(as_int());
+  }
+  else if (name == "protected_flags") {
+    d.protected_flags[static_cast<size_t>(idx[0])] = static_cast<std::int8_t>(as_int());
+  }
+  else if (name == "hand_exposed") {
+    d.hand_exposed[static_cast<size_t>(idx[0])] = static_cast<std::int8_t>(as_int());
+  }
+  else if (name == "hand") {
+    d.hand[static_cast<size_t>(idx[0])] = static_cast<std::int8_t>(as_int());
+  }
+  else if (name == "drawn_card") {
+    d.drawn_card = static_cast<std::int8_t>(as_int());
+  }
+  else if (name == "set_aside_card") {
+    d.set_aside_card = static_cast<std::int8_t>(as_int());
+  }
+}
+
+template <int NPlayers>
+void LoveLetterState<NPlayers>::mask_field_slot(
+    const std::string& name, const std::vector<int>& idx) {
+  // Walker has already classified this slot as hidden. Write the
+  // type-matching kPlaceholder sentinel into the typed payload.
+  //
+  // Only schema-declared fields whose base viz can be 0 for some
+  // perspective ever reach here:
+  //   - hand[p]                : owner_only_first_axis. Hidden from
+  //                              every non-owner perspective.
+  //   - drawn_card             : all_hidden in schema (no dynamic
+  //                              reveal_slot wiring this PR), so the
+  //                              walker emits it for every viewer.
+  //   - set_aside_card         : permanently all_hidden.
+  //
+  // Public scalars / per-player public arrays never call here.
+  if (name == "hand") {
+    data.hand[static_cast<size_t>(idx[0])] = kPlaceholderInt8;
+    return;
+  }
+  if (name == "drawn_card") {
+    data.drawn_card = kPlaceholderInt8;
+    return;
+  }
+  if (name == "set_aside_card") {
+    data.set_aside_card = kPlaceholderInt8;
+    return;
+  }
 }
 
 template <int NPlayers>

@@ -1,7 +1,11 @@
 #include "splendor_net_adapter.h"
 
 #include <algorithm>
+#include <unordered_set>
 #include <vector>
+
+#include "../../engine/core/masked_state.h"
+#include "../../engine/core/viz_runtime.h"
 
 namespace board_ai::splendor {
 
@@ -55,6 +59,7 @@ template <int NPlayers>
 void SplendorFeatureEncoder<NPlayers>::encode_public(
     const IGameState& state,
     int perspective_player,
+    const IBeliefTracker* /*tracker*/,
     std::vector<float>* out) const {
   const auto* s = dynamic_cast<const SplendorState<NPlayers>*>(&state);
   if (!s || !out || perspective_player < 0 || perspective_player >= Cfg::kPlayers) return;
@@ -113,8 +118,11 @@ void SplendorFeatureEncoder<NPlayers>::encode_public(
     }
   }
 
-  // Non-perspective players' reserved slots (visible → card, hidden → placeholder).
-  // Perspective's own reserved is encoded in encode_private instead.
+  // Non-perspective players' reserved slots. The encoder reads the
+  // MaskedState's `reserved` field directly: face-down opp slots arrive
+  // as kPlaceholderInt32 (framework wrote it via mask_field_slot).
+  // Visible (face-up) opp slots carry the real cid. There is no viz
+  // query here — the placeholder IS the visibility signal.
   for (int pi = 1; pi < Cfg::kPlayers; ++pi) {
     const int pid = (perspective_player + pi) % Cfg::kPlayers;
     for (int slot = 0; slot < 3; ++slot) {
@@ -123,12 +131,11 @@ void SplendorFeatureEncoder<NPlayers>::encode_public(
         out->insert(out->end(), 13, 0.0f);
         continue;
       }
-      const bool visible = d.reserved_visible[pid][static_cast<size_t>(slot)] != 0;
-      if (!visible) {
+      const int cid = d.reserved[pid][static_cast<size_t>(slot)];
+      if (cid == static_cast<std::int16_t>(kPlaceholderInt32)) {
         encode_hidden_reserved_placeholder(out);
         continue;
       }
-      const int cid = d.reserved[pid][static_cast<size_t>(slot)];
       if (cid < 0 || cid >= static_cast<int>(cards.size())) {
         out->insert(out->end(), 13, 0.0f);
       } else {
@@ -151,6 +158,7 @@ template <int NPlayers>
 void SplendorFeatureEncoder<NPlayers>::encode_private(
     const IGameState& state,
     int player,
+    const IBeliefTracker* /*tracker*/,
     std::vector<float>* out) const {
   const auto* s = dynamic_cast<const SplendorState<NPlayers>*>(&state);
   if (!s || !out || player < 0 || player >= Cfg::kPlayers) return;
@@ -176,13 +184,11 @@ void SplendorFeatureEncoder<NPlayers>::encode_private(
 
 template <int NPlayers>
 void SplendorBeliefTracker<NPlayers>::init(
-    int perspective_player, const AnyMap& initial_observation) {
-  // Idempotent: if already initialized for this perspective, don't wipe
-  // accumulated seen_cards. Callers (selfplay/arena runners) re-init each
-  // ply to pick the current acting perspective; we only rebuild seen_cards
-  // on the first call.
-  if (initialized_ && perspective_player == perspective_player_) return;
-  perspective_player_ = perspective_player;
+    const AnyMap& initial_observation) {
+  // Perspective-agnostic: tracker holds only public card-multiset
+  // aggregates. Per-perspective private knowledge (own reserved card
+  // ids) is read from state.viz=1 slots in randomize_unseen, not here.
+  if (initialized_) return;
   seen_cards_.clear();
   initialized_ = true;
 
@@ -203,13 +209,18 @@ void SplendorBeliefTracker<NPlayers>::init(
 
 template <int NPlayers>
 void SplendorBeliefTracker<NPlayers>::observe_public_event(
-    int actor,
-    ActionId action,
+    int /*actor*/,
+    ActionId /*action*/,
     const std::vector<PublicEvent>& /*pre_events*/,
     const std::vector<PublicEvent>& post_events) {
-  // deck_flip post-events carry any new tableau card IDs revealed by
-  // drawing from the deck to replace a bought/reserved card. Perspective
-  // sees all tableau flips.
+  // deck_flip post-events carry tableau card IDs revealed by drawing
+  // from the deck to replace a bought/reserved card. Public to every
+  // observer, so accumulate unconditionally.
+  //
+  // No `self_reserve_deck` branch: the actor's new reserve cid is
+  // already on state.reserved with viz=1 for the owner — owners read
+  // it through state, not through the tracker. Other observers learn
+  // nothing from a blind reserve, which is correct.
   for (const auto& ev : post_events) {
     if (ev.first == "deck_flip") {
       auto cit = ev.second.find("card_id");
@@ -217,19 +228,8 @@ void SplendorBeliefTracker<NPlayers>::observe_public_event(
         const int cid = std::any_cast<int>(cit->second);
         if (cid >= 0) seen_cards_.insert(cid);
       }
-    } else if (ev.first == "self_reserve_deck") {
-      // Emitted only when perspective reserves from deck top; payload
-      // carries the now-known card_id for perspective's new reserved slot.
-      if (actor == perspective_player_) {
-        auto cit = ev.second.find("card_id");
-        if (cit != ev.second.end()) {
-          const int cid = std::any_cast<int>(cit->second);
-          if (cid >= 0) seen_cards_.insert(cid);
-        }
-      }
     }
   }
-  (void)action;
 }
 
 // randomize_unseen produces a world whose public fields are byte-equal
@@ -238,21 +238,27 @@ void SplendorBeliefTracker<NPlayers>::observe_public_event(
 // determinization, AND at the end of each apply_observation to re-sample
 // session state_'s hidden fields into a fresh tracker-consistent world.
 //
+// Canonical unseen-pool formula:
+//   unseen_pool = full_pool − seen_cards − observer's viz=1 reserved
+//
 // Algorithm:
-//   1. unseen_by_tier[t] = pool[t] - seen_cards  (canonical; same for
-//      every tracker with the same seen_cards).
-//   2. For each non-perspective hidden reserve slot: consume one card
-//      from unseen_by_tier[tier_of_slot]. Stale cards (current cid now
-//      in seen_cards) still yield the correct tier via card→tier lookup,
-//      so they get overwritten with a fresh unseen card.
+//   1. unseen_by_tier[t] = pool[t] − seen_cards − observer-known reserved
+//      (the observer's own reserved card ids, found via
+//      state.viz_["reserved"][p, slot, observer] == 1).
+//   2. For every reserved slot the observer cannot see (viz=0): consume
+//      one card from the matching tier of unseen_by_tier. The slot's
+//      current cid is unreliable (it may be a stale sample or the
+//      observer's already-known card under viewer rotation), so we
+//      derive the tier from `tier_idx` carried in state.tableau /
+//      schema separately — Splendor's reserved slots don't carry a
+//      tier label of their own, so we fall back to the slot's current
+//      cid → card.tier lookup. This is consistent with how the deck
+//      partitions cards into tiers.
 //   3. Remaining unseen_by_tier[t] → data.decks[t]. Size is exactly
-//      |unseen_by_tier[t]| − (opp_hidden_reserves of tier t), which
-//      equals truth's deck size by construction:
-//        truth_deck[t] = pool[t] − seen_cards − opp_hidden_reserves[t]
-//      (same formula). Do NOT preserve input state's deck size — that
-//      could carry accumulated drift from do_action_fast.
+//      |unseen_by_tier[t]| − (observer-hidden reserves of tier t),
+//      which equals truth's deck size by construction.
 template <int NPlayers>
-void SplendorBeliefTracker<NPlayers>::randomize_unseen(IGameState& state, std::mt19937& rng) const {
+void SplendorBeliefTracker<NPlayers>::randomize_unseen(IGameState& state, int observer, std::mt19937_64& rng) const {
   auto* s = dynamic_cast<SplendorState<NPlayers>*>(&state);
   if (!s) return;
 
@@ -260,13 +266,33 @@ void SplendorBeliefTracker<NPlayers>::randomize_unseen(IGameState& state, std::m
   const auto& cards = splendor_card_pool();
   const int total_cards = static_cast<int>(cards.size());
 
+  // Observer-known reserved cids: state.viz_["reserved"][p, slot, observer]==1.
+  // These are already-fixed in the produced world and must be excluded
+  // from the unseen pool so we don't double-deal them.
+  const auto& reserved_viz = viz::viz_get(state, "reserved");
+  std::unordered_set<int> observer_known;
+  observer_known.reserve(static_cast<size_t>(Cfg::kPlayers * 3));
+  auto is_visible_to_observer = [&](int p, int slot) -> bool {
+    const std::vector<int> idx_slot{p, slot};
+    const std::size_t base = viz::flat_offset_data_only(reserved_viz.shape, idx_slot);
+    return reserved_viz.data[base + static_cast<std::size_t>(observer)] != 0;
+  };
+  for (int p = 0; p < Cfg::kPlayers; ++p) {
+    for (int slot = 0; slot < data.reserved_size[p]; ++slot) {
+      if (is_visible_to_observer(p, slot)) {
+        const int cid = data.reserved[p][static_cast<size_t>(slot)];
+        if (cid >= 0 && cid < total_cards) observer_known.insert(cid);
+      }
+    }
+  }
+
   std::array<std::vector<int>, 3> unseen_by_tier{};
   for (int cid = 0; cid < total_cards; ++cid) {
-    if (seen_cards_.count(cid) == 0) {
-      const int tier_idx = cards[static_cast<size_t>(cid)].tier - 1;
-      if (tier_idx >= 0 && tier_idx < 3) {
-        unseen_by_tier[static_cast<size_t>(tier_idx)].push_back(cid);
-      }
+    if (seen_cards_.count(cid) != 0) continue;
+    if (observer_known.count(cid) != 0) continue;
+    const int tier_idx = cards[static_cast<size_t>(cid)].tier - 1;
+    if (tier_idx >= 0 && tier_idx < 3) {
+      unseen_by_tier[static_cast<size_t>(tier_idx)].push_back(cid);
     }
   }
 
@@ -277,21 +303,17 @@ void SplendorBeliefTracker<NPlayers>::randomize_unseen(IGameState& state, std::m
 
   std::array<size_t, 3> idx{0, 0, 0};
   for (int p = 0; p < Cfg::kPlayers; ++p) {
-    if (p == perspective_player_) continue;
     for (int slot = 0; slot < data.reserved_size[p]; ++slot) {
-      if (data.reserved_visible[p][static_cast<size_t>(slot)] == 0) {
-        const int cid = data.reserved[p][static_cast<size_t>(slot)];
-        if (cid >= 0 && cid < total_cards) {
-          const int tier_idx = cards[static_cast<size_t>(cid)].tier - 1;
-          if (tier_idx >= 0 && tier_idx < 3) {
-            auto& pool = unseen_by_tier[static_cast<size_t>(tier_idx)];
-            auto& i = idx[static_cast<size_t>(tier_idx)];
-            if (i < pool.size()) {
-              data.reserved[p][static_cast<size_t>(slot)] =
-                  static_cast<std::int16_t>(pool[i++]);
-            }
-          }
-        }
+      if (is_visible_to_observer(p, slot)) continue;  // observer-known, keep
+      const int cid = data.reserved[p][static_cast<size_t>(slot)];
+      if (cid < 0 || cid >= total_cards) continue;
+      const int tier_idx = cards[static_cast<size_t>(cid)].tier - 1;
+      if (tier_idx < 0 || tier_idx >= 3) continue;
+      auto& pool = unseen_by_tier[static_cast<size_t>(tier_idx)];
+      auto& i = idx[static_cast<size_t>(tier_idx)];
+      if (i < pool.size()) {
+        data.reserved[p][static_cast<size_t>(slot)] =
+            static_cast<std::int16_t>(pool[i++]);
       }
     }
   }
@@ -324,9 +346,10 @@ void SplendorBeliefTracker<NPlayers>::randomize_unseen(IGameState& state, std::m
 template <int NPlayers>
 AnyMap SplendorBeliefTracker<NPlayers>::serialize() const {
   AnyMap out;
-  out["perspective_player"] = perspective_player_;
   // Canonical form: sorted vector of seen card IDs (unordered_set iteration
   // order varies). Two trackers with the same seen set produce equal output.
+  // Perspective-agnostic: trackers fed the same observation stream from
+  // different seats produce equal output (no perspective_player field).
   std::vector<int> seen(seen_cards_.begin(), seen_cards_.end());
   std::sort(seen.begin(), seen.end());
   out["seen_cards"] = seen;

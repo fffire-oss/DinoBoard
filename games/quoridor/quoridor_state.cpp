@@ -54,7 +54,7 @@ void QuoridorState::reset_with_seed(std::uint64_t seed) {
   viz::init_viz(*this, schema());
 }
 
-StateHash64 QuoridorState::state_hash(bool include_hidden_rng) const {
+StateHash64 QuoridorState::state_hash() const {
   std::size_t h = 0;
 
   hash_combine(h,static_cast<std::size_t>(current_player_));
@@ -70,29 +70,37 @@ StateHash64 QuoridorState::state_hash(bool include_hidden_rng) const {
   }
   for (std::uint8_t w : h_walls) hash_combine(h,static_cast<std::size_t>(w));
   for (std::uint8_t w : v_walls) hash_combine(h,static_cast<std::size_t>(w));
-  (void)include_hidden_rng;  // RNG no longer on state.
   return static_cast<StateHash64>(h);
 }
 
-void QuoridorState::hash_public_fields(Hasher& h) const {
-  // Quoridor is fully public: board, walls, pawns, scores all visible.
-  h.add(current_player_);
-  h.add(winner_ + 1);
-  h.add(terminal ? 1 : 0);
-  h.add(move_count);
-  h.add(scores[0] + 2);
-  h.add(scores[1] + 2);
-  for (int p = 0; p < kPlayers; ++p) {
-    h.add(pawn_row[static_cast<size_t>(p)] + 1);
-    h.add(pawn_col[static_cast<size_t>(p)] + 1);
-    h.add(walls_remaining[static_cast<size_t>(p)] + 1);
+void QuoridorState::hash_field_slot(
+    Hasher& h, const std::string& name,
+    const std::vector<int>& idx) const {
+  // Schema declaration order: current_player, winner, terminal,
+  // move_count, scores, pawn_row, pawn_col, walls_remaining,
+  // h_walls, v_walls.
+  if (name == "current_player") { h.add(current_player_); return; }
+  if (name == "winner") { h.add(winner_ + 1); return; }
+  if (name == "terminal") { h.add(terminal ? 1 : 0); return; }
+  if (name == "move_count") { h.add(move_count); return; }
+  if (name == "scores") {
+    h.add(scores[static_cast<size_t>(idx[0])] + 2); return;
   }
-  for (std::uint8_t w : h_walls) h.add(w);
-  for (std::uint8_t w : v_walls) h.add(w);
-}
-
-void QuoridorState::hash_private_fields(int /*player*/, Hasher& /*h*/) const {
-  // Quoridor has no private info.
+  if (name == "pawn_row") {
+    h.add(static_cast<int>(pawn_row[static_cast<size_t>(idx[0])]) + 1); return;
+  }
+  if (name == "pawn_col") {
+    h.add(static_cast<int>(pawn_col[static_cast<size_t>(idx[0])]) + 1); return;
+  }
+  if (name == "walls_remaining") {
+    h.add(static_cast<int>(walls_remaining[static_cast<size_t>(idx[0])]) + 1); return;
+  }
+  if (name == "h_walls") {
+    h.add(static_cast<int>(h_walls[static_cast<size_t>(idx[0])])); return;
+  }
+  if (name == "v_walls") {
+    h.add(static_cast<int>(v_walls[static_cast<size_t>(idx[0])])); return;
+  }
 }
 
 }  // namespace board_ai::quoridor

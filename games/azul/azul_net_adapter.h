@@ -1,5 +1,6 @@
 #pragma once
 
+#include <memory>
 #include <random>
 #include <vector>
 
@@ -25,27 +26,30 @@ class AzulFeatureEncoder final : public IFeatureEncoder {
   void encode_public(
       const IGameState& state,
       int perspective_player,
+      const IBeliefTracker* tracker,
       std::vector<float>* out) const override;
 
   void encode_private(
       const IGameState& /*state*/,
       int /*player*/,
+      const IBeliefTracker* /*tracker*/,
       std::vector<float>* /*out*/) const override {}
 };
 
 template <int NPlayers>
 class AzulBeliefTracker final : public IBeliefTracker {
  public:
-  void init(int perspective_player, const AnyMap& initial_observation) override;
+  void init(const AnyMap& initial_observation) override;
   void observe_public_event(
       int actor,
       ActionId action,
       const std::vector<PublicEvent>& pre_events,
       const std::vector<PublicEvent>& post_events) override;
-  void randomize_unseen(IGameState& state, std::mt19937& rng) const override;
-
- private:
-  int perspective_player_ = -1;
+  void randomize_unseen(IGameState& state, int observer,
+                        std::mt19937_64& rng) const override;
+  std::unique_ptr<IBeliefTracker> clone() const override {
+    return std::make_unique<AzulBeliefTracker<NPlayers>>(*this);
+  }
 };
 
 extern template class AzulFeatureEncoder<2>;

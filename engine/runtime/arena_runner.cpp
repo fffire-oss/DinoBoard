@@ -4,6 +4,9 @@
 #include <array>
 #include <cmath>
 #include <random>
+#include <stdexcept>
+
+#include "../core/rng_salt.h"
 
 namespace board_ai::runtime {
 
@@ -18,18 +21,126 @@ ArenaMatchResult run_arena_match(
     IBeliefTracker* belief_tracker,
     GameAdjudicator adjudicator,
     PublicEventExtractor public_event_extractor,
-    InitialObservationExtractor initial_observation_extractor) {
+    InitialObservationExtractor initial_observation_extractor,
+    std::vector<IBeliefTracker*> per_perspective_trackers,
+    std::vector<IGameState*> per_seat_states,
+    PublicEventApplier public_event_applier,
+    PublicStateApplier public_state_applier) {
   ArenaMatchResult result{};
   auto state = initial_state.clone_state();
   int ply = 0;
 
-  // Step rng feeds do_action_fast hidden-info draws. Caller-owned now
-  // that RNG is no longer on state.
-  std::mt19937_64 step_rng(match_seed ^ 0xA17EBABEULL);
+  // GT step rng for do_action_fast on truth state. Seeded directly from
+  // match_seed so all GT runners (selfplay/arena/heuristic + API session)
+  // sharing the same episode seed produce identical truth draws.
+  std::mt19937_64 step_rng(match_seed);
+
+  // Per-seat session-state mode (mirrors selfplay_runner).
+  const bool use_per_seat_states = !per_seat_states.empty();
+  if (use_per_seat_states) {
+    const int num_players = state->num_players();
+    if (static_cast<int>(per_seat_states.size()) != num_players) {
+      throw std::runtime_error(
+          "run_arena_match: per_seat_states size != num_players");
+    }
+    for (int p = 0; p < num_players; ++p) {
+      if (per_seat_states[p] == nullptr) {
+        throw std::runtime_error(
+            "run_arena_match: per_seat_states[p] must not be null");
+      }
+    }
+  }
+
+  auto ai_view_for = [&](int seat) -> IGameState& {
+    if (use_per_seat_states) return *per_seat_states[seat];
+    return *state;
+  };
+
+  // Init each seat's tracker once at match start. Every public event is
+  // fed to every tracker in the main loop below.
+  const bool use_per_perspective = !per_perspective_trackers.empty();
+  if (use_per_perspective) {
+    const int num_players = state->num_players();
+    if (static_cast<int>(per_perspective_trackers.size()) != num_players) {
+      throw std::runtime_error(
+          "run_arena_match: per_perspective_trackers size != num_players");
+    }
+    for (int p = 0; p < num_players; ++p) {
+      if (per_perspective_trackers[p] && initial_observation_extractor) {
+        AnyMap p_init_obs = initial_observation_extractor(*state, p);
+        p_init_obs["__perspective_player"] = p;
+        per_perspective_trackers[p]->init(p_init_obs);
+      }
+    }
+  }
+
+  // Per-seat session-state freshening at match start.
+  if (use_per_seat_states) {
+    const int num_players = static_cast<int>(per_seat_states.size());
+    for (int p = 0; p < num_players; ++p) {
+      if (use_per_perspective && p < static_cast<int>(per_perspective_trackers.size()) &&
+          per_perspective_trackers[p]) {
+        const std::uint64_t seed_init = board_ai::rng::derive_subseed(
+            match_seed, "arena.view_freshen_init",
+            static_cast<std::uint64_t>(p));
+        std::mt19937_64 freshen_rng(seed_init);
+        per_perspective_trackers[p]->randomize_unseen(*per_seat_states[p], p, freshen_rng);
+      }
+    }
+  }
+
+  // Per-seat session-state advance: mirrors selfplay_runner's
+  // advance_per_seat_states.
+  auto advance_per_seat_states =
+      [&](const IGameState& truth_before, const IGameState& truth_after,
+          ActionId chosen, int /*actor*/) {
+    if (!use_per_seat_states) return;
+    const int num_players = static_cast<int>(per_seat_states.size());
+    for (int p = 0; p < num_players; ++p) {
+      IGameState& seat = *per_seat_states[p];
+      const std::uint64_t view_step_seed = board_ai::rng::derive_subseed(
+          match_seed, "arena.view_step",
+          static_cast<std::uint64_t>(ply) * 17ULL +
+              static_cast<std::uint64_t>(p));
+      std::mt19937_64 view_step_rng(view_step_seed);
+      if (!public_event_extractor || !public_event_applier) {
+        rules.do_action_fast(seat, chosen, view_step_rng);
+        continue;
+      }
+      PublicEventTrace evt_p = public_event_extractor(
+          truth_before, chosen, truth_after, p);
+      for (const auto& [kind, payload] : evt_p.pre_events) {
+        public_event_applier(seat, EventPhase::kPreAction, kind, payload);
+      }
+      rules.do_action_fast(seat, chosen, view_step_rng);
+      for (const auto& [kind, payload] : evt_p.post_events) {
+        public_event_applier(seat, EventPhase::kPostAction, kind, payload);
+      }
+      if (public_state_applier && !evt_p.public_snapshot.empty()) {
+        public_state_applier(seat, evt_p.public_snapshot);
+      }
+    }
+  };
+
+  auto freshen_per_seat_states = [&]() {
+    if (!use_per_seat_states || !use_per_perspective) return;
+    const int num_players = static_cast<int>(per_seat_states.size());
+    for (int p = 0; p < num_players; ++p) {
+      if (p >= static_cast<int>(per_perspective_trackers.size())) break;
+      if (!per_perspective_trackers[p]) continue;
+      const std::uint64_t freshen_seed = board_ai::rng::derive_subseed(
+          match_seed, "arena.view_freshen",
+          static_cast<std::uint64_t>(ply) * 17ULL +
+              static_cast<std::uint64_t>(p));
+      std::mt19937_64 freshen_rng(freshen_seed);
+      per_perspective_trackers[p]->randomize_unseen(*per_seat_states[p], p, freshen_rng);
+    }
+  };
 
   while (!state->is_terminal() && ply < max_game_plies) {
     const int player = state->current_player();
-    const auto legal = rules.legal_actions(*state);
+    IGameState& ai_view = ai_view_for(player);
+    const auto legal = rules.legal_actions(ai_view);
     if (legal.empty()) break;
 
     const size_t cfg_idx = player_configs.empty()
@@ -38,12 +149,21 @@ ArenaMatchResult run_arena_match(
         ? ArenaPlayerConfig{} : player_configs[cfg_idx];
     const search::IPolicyValueEvaluator& eval = evaluator_for_player(player);
 
-    if (belief_tracker) {
+    // MCTS tracker source: prefer per-seat trackers (in-scope games),
+    // otherwise fall back to legacy per-ply re-init of singular tracker
+    // (Coup pre-§G.2).
+    IBeliefTracker* mcts_tracker = nullptr;
+    if (use_per_perspective && player >= 0 &&
+        player < static_cast<int>(per_perspective_trackers.size())) {
+      mcts_tracker = per_perspective_trackers[player];
+    } else if (belief_tracker) {
       AnyMap init_obs;
       if (initial_observation_extractor) {
         init_obs = initial_observation_extractor(*state, player);
       }
-      belief_tracker->init(player, init_obs);
+      init_obs["__perspective_player"] = player;
+      belief_tracker->init(init_obs);
+      mcts_tracker = belief_tracker;
     }
 
     search::NetMctsConfig mcts_cfg{};
@@ -51,14 +171,14 @@ ArenaMatchResult run_arena_match(
     mcts_cfg.c_puct = pcfg.c_puct;
     mcts_cfg.max_depth = pcfg.max_depth;
     mcts_cfg.value_clip = pcfg.value_clip;
-    if (belief_tracker) {
-      mcts_cfg.root_belief_tracker = belief_tracker;
+    if (mcts_tracker) {
+      mcts_cfg.root_belief_tracker = mcts_tracker;
     }
 
     if (pcfg.tail_solve_enabled && pcfg.tail_solver) {
       bool try_ts = false;
       if (pcfg.tail_solve_trigger) {
-        try_ts = pcfg.tail_solve_trigger(*state, ply);
+        try_ts = pcfg.tail_solve_trigger(ai_view, ply);
       } else {
         try_ts = true;
       }
@@ -71,20 +191,34 @@ ArenaMatchResult run_arena_match(
 
     search::NetMcts mcts(mcts_cfg);
     search::NetMctsStats stats{};
-    const std::uint64_t mcts_seed = match_seed ^
-        (static_cast<std::uint64_t>(ply) * kGoldenRatio64) ^ 0x243F6A8885A308D3ULL;
-    mcts.search_root(*state, rules, value_model, eval, &stats, mcts_seed);
+    const std::uint64_t mcts_seed = board_ai::rng::derive_subseed(
+        match_seed, "arena.mcts", static_cast<std::uint64_t>(ply));
+    mcts.search_root(ai_view, rules, value_model, eval, &stats, mcts_seed);
 
-    const std::uint64_t action_seed = match_seed ^ (static_cast<std::uint64_t>(ply) * kGoldenRatio64);
+    const std::uint64_t action_seed = board_ai::rng::derive_subseed(
+        match_seed, "arena.action_pick", static_cast<std::uint64_t>(ply));
     const ActionId chosen = search::select_action_from_visits(
         stats.root_actions, stats.root_action_visits, pcfg.temperature, action_seed, legal[0]);
 
     result.action_history.push_back(chosen);
     result.ply_stats.push_back({stats.tail_solved, stats.tail_solve_value});
     std::unique_ptr<IGameState> state_before;
-    if (belief_tracker) state_before = state->clone_state();
+    const bool need_state_before =
+        belief_tracker || use_per_perspective || use_per_seat_states;
+    if (need_state_before) state_before = state->clone_state();
     rules.do_action_fast(*state, chosen, step_rng);
-    if (belief_tracker) {
+    if (use_per_perspective) {
+      const int num_players = static_cast<int>(per_perspective_trackers.size());
+      for (int p = 0; p < num_players; ++p) {
+        if (!per_perspective_trackers[p]) continue;
+        PublicEventTrace evt_p;
+        if (public_event_extractor) {
+          evt_p = public_event_extractor(*state_before, chosen, *state, p);
+        }
+        per_perspective_trackers[p]->observe_public_event(
+            player, chosen, evt_p.pre_events, evt_p.post_events);
+      }
+    } else if (belief_tracker) {
       PublicEventTrace evt;
       if (public_event_extractor) {
         evt = public_event_extractor(*state_before, chosen, *state, player);
@@ -92,6 +226,8 @@ ArenaMatchResult run_arena_match(
       belief_tracker->observe_public_event(
           player, chosen, evt.pre_events, evt.post_events);
     }
+    advance_per_seat_states(*state_before, *state, chosen, player);
+    freshen_per_seat_states();
     ply += 1;
   }
 

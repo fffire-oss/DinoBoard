@@ -29,7 +29,7 @@ DinoBoard walks it once and turns the result into **a reusable engine plus a cal
 
 ### ISMCTS: DAG search for hidden-information games
 
-A ground-up MCTS redesign for hidden-information games. **Root-sampling determinization + per-acting-player info-set keying + UCT2** — each simulation samples a full world from the belief, descent is fully deterministic afterward, and the same info set reached along different paths shares a DAG node. See [docs/guide/MCTS_ALGORITHM.md](docs/guide/MCTS_ALGORITHM.md).
+A ground-up MCTS redesign for hidden-information games. **Root-sampling determinization + per-acting-player info-set keying + UCT2** — each simulation samples a full world from the belief, descent is fully deterministic afterward, and the same info set reached along different paths shares a DAG node. See [ALGORITHM_OVERVIEW.md](ALGORITHM_OVERVIEW.md).
 
 ### Observation-only AI API: trained once, callable by anyone
 
@@ -187,7 +187,7 @@ python -m training.cli --game quoridor --output runs/quoridor_001 \
     --workers 4 --eval-every 25 --eval-games 40 --eval-benchmark heuristic
 ```
 
-Training is driven by `games/<game>/config/game.json` — no code changes, just JSON. See the [features overview § config quick reference](docs/GAME_FEATURES_OVERVIEW.md).
+Training is driven by `games/<game>/config/game.json` — no code changes, just JSON. See the [features overview § config quick reference](FEATURES_OVERVIEW.md).
 
 ### Web play
 
@@ -204,7 +204,7 @@ Features: 6 games, three difficulty tiers (Heuristic / Casual / Expert), seat se
 ## Core concepts
 
 - **GameBundle registration** — each game exposes a factory that returns state + rules + encoder + optional components. See the [game development guide](docs/guide/GAME_DEVELOPMENT_GUIDE.md).
-- **ISMCTS** — root sampling + DAG + UCT2. A native design for hidden-info games. See [docs/guide/MCTS_ALGORITHM.md](docs/guide/MCTS_ALGORITHM.md).
+- **ISMCTS** — root sampling + DAG + UCT2. A native design for hidden-info games. See [ALGORITHM_OVERVIEW.md](ALGORITHM_OVERVIEW.md).
 - **AI API** — observation-only REST interface that third-party apps consume directly, without embedding engine code. Doubles as an information-theoretic proof that the AI never cheats. See [game development guide § 14](docs/guide/GAME_DEVELOPMENT_GUIDE.md#14-ai-api-分离验收--信息泄漏的唯一证明).
 - **Training pipeline** — self-play → replay buffer → SGD → ONNX export → gating eval (≥60% win rate updates `best`). Includes heuristic guidance schedule (hold → linear decay → zero), auxiliary score, training action filter, MCTS schedule.
 
@@ -212,9 +212,9 @@ Features: 6 games, three difficulty tiers (Heuristic / Casual / Expert), seat se
 
 ## Docs
 
-- **[Features overview](docs/GAME_FEATURES_OVERVIEW.md)** — what the framework can do
+- **[Features overview](FEATURES_OVERVIEW.md)** — what the framework can do
 - **[Game development guide](docs/guide/GAME_DEVELOPMENT_GUIDE.md)** — single source of truth for adding a new game
-- **[MCTS algorithm](docs/guide/MCTS_ALGORITHM.md)** — the ISMCTS DAG-search derivation
+- **[Framework contract & MCTS algorithm](ALGORITHM_OVERVIEW.md)** — the framework's data-flow contract (schema → walker → MaskedState → three consumers) and the ISMCTS DAG-search derivation, in one canonical doc
 - **[New game test guide](docs/guide/NEW_GAME_TEST_GUIDE.md)** — 11-step acceptance workflow + the two-layer test architecture
 - **[Known issues & trade-offs](docs/KNOWN_ISSUES.md)** — BUG-001 through BUG-022 postmortems plus design decisions
 

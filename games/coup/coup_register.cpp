@@ -934,17 +934,23 @@ board_ai::GameBundle make_coup(const std::string& game_id, std::uint64_t seed) {
   return b;
 }
 
-board_ai::GameRegistrar reg_coup("coup", [](std::uint64_t seed) {
-  return make_coup<2>("coup", seed);
-});
-board_ai::GameRegistrar reg_coup_2p("coup_2p", [](std::uint64_t seed) {
-  return make_coup<2>("coup_2p", seed);
-});
-board_ai::GameRegistrar reg_coup_3p("coup_3p", [](std::uint64_t seed) {
-  return make_coup<3>("coup_3p", seed);
-});
-board_ai::GameRegistrar reg_coup_4p("coup_4p", [](std::uint64_t seed) {
-  return make_coup<4>("coup_4p", seed);
-});
+// Coup 注册暂时取消（pending §G.2: tracker 仍持 perspective-baked
+// signals_ / influence override，未迁移到 state.viz）。源码全部保留以便
+// §G.2 阶段直接复用——只把 GameRegistrar 实例化注释掉，coup 不出现在
+// 游戏列表里、不参与任何 framework / per-game 测试。等 §G.2 完成后把
+// 下面四行恢复即可。
+//
+// board_ai::GameRegistrar reg_coup("coup", [](std::uint64_t seed) {
+//   return make_coup<2>("coup", seed);
+// });
+// board_ai::GameRegistrar reg_coup_2p("coup_2p", [](std::uint64_t seed) {
+//   return make_coup<2>("coup_2p", seed);
+// });
+// board_ai::GameRegistrar reg_coup_3p("coup_3p", [](std::uint64_t seed) {
+//   return make_coup<3>("coup_3p", seed);
+// });
+// board_ai::GameRegistrar reg_coup_4p("coup_4p", [](std::uint64_t seed) {
+//   return make_coup<4>("coup_4p", seed);
+// });
 
 }  // namespace

@@ -67,11 +67,11 @@ float alpha_beta(
 
   // Mix current_player into TT key: a paranoid-search node's value depends on
   // whether we are maximizing (perspective player to move) or minimizing (any
-  // other player to move). If a game's state_hash(false) happens to collide
-  // across turns with different players-to-move, TT entries from one role
-  // would poison the other. We do not rely on game authors to encode
-  // current_player into state_hash — this mixes it in defensively.
-  const StateHash64 hash = state.state_hash(false) ^
+  // other player to move). If a game's state_hash() happens to collide across
+  // turns with different players-to-move, TT entries from one role would
+  // poison the other. We do not rely on game authors to encode current_player
+  // into state_hash — this mixes it in defensively.
+  const StateHash64 hash = state.state_hash() ^
       (static_cast<StateHash64>(state.current_player()) * kGoldenRatio64);
   auto tt_it = ctx.tt.find(hash);
   if (tt_it != ctx.tt.end()) {
@@ -199,7 +199,7 @@ TailSolveResult AlphaBetaTailSolver::solve(
     result_value = val;
 
     // Extract best action from TT for the root
-    const StateHash64 root_hash = state.state_hash(false) ^
+    const StateHash64 root_hash = state.state_hash() ^
         (static_cast<StateHash64>(state.current_player()) * kGoldenRatio64);
     auto it = ctx.tt.find(root_hash);
     if (it != ctx.tt.end() && it->second.best_action >= 0) {

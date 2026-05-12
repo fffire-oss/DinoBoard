@@ -17,6 +17,18 @@ class LoveLetterRules final : public IGameRules {
   UndoToken do_action_fast(IGameState& state, ActionId action,
                            std::mt19937_64& rng) const override;
   void undo_action(IGameState& state, const UndoToken& token) const override;
+
+  // Apply the start-of-game viz reveals: the seat starting as
+  // current_player has just drawn the top card and physically holds it.
+  // Mirrors what advance_turn does after every subsequent draw. Lives
+  // in rules so I1 (rules are sole viz writer) holds — called once
+  // from `reset_with_seed` (truth) and from `apply_initial_observation`
+  // (per-seat session) after init_viz seeds schema base.
+  static void reveal_starting_draw(IGameState& state, int starting_player);
+  // Reveal `drawn_card` only to the named viewer (used by API session
+  // restore: when perspective is the starting current_player, ship the
+  // truth card to them but leave it hidden to other potential viewers).
+  static void reveal_starting_draw_to(IGameState& state, int viewer);
 };
 
 extern template class LoveLetterRules<2>;

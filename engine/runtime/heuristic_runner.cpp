@@ -7,6 +7,8 @@
 #include <random>
 #include <stdexcept>
 
+#include "../core/rng_salt.h"
+
 namespace board_ai::runtime {
 
 std::size_t sample_heuristic_index(
@@ -68,36 +70,144 @@ SelfplayEpisodeResult run_heuristic_episode(
     int max_game_plies,
     std::uint64_t episode_seed,
     AuxiliaryScorer auxiliary_scorer,
-    GameAdjudicator adjudicator) {
+    GameAdjudicator adjudicator,
+    std::vector<IBeliefTracker*> per_perspective_trackers,
+    std::vector<IGameState*> per_seat_states,
+    PublicEventApplier public_event_applier,
+    PublicStateApplier public_state_applier,
+    PublicEventExtractor public_event_extractor,
+    InitialObservationExtractor initial_observation_extractor) {
   SelfplayEpisodeResult result{};
 
   auto state = initial_state.clone_state();
   int ply = 0;
 
-  std::uint64_t rng = episode_seed;
-  auto next_rng = [&rng]() -> std::uint64_t {
-    rng += 0x9e3779b97f4a7c15ULL;
-    std::uint64_t z = rng;
-    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
-    z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
-    return z ^ (z >> 31);
+  std::uint64_t rng_counter = 0;
+  auto next_rng = [&rng_counter, episode_seed]() -> std::uint64_t {
+    return board_ai::rng::derive_subseed(
+        episode_seed, "heuristic.draw", rng_counter++);
   };
 
-  // Step rng feeds do_action_fast hidden-info draws.
-  std::mt19937_64 step_rng(episode_seed ^ 0xA17EBABEULL);
+  // Step rng feeds do_action_fast hidden-info draws. Seeded directly from
+  // episode_seed so all GT runners sharing the same seed advance truth
+  // through identical draws.
+  std::mt19937_64 step_rng(episode_seed);
+
+  // Per-seat session-state mode (mirrors selfplay_runner / arena_runner).
+  const bool use_per_seat_states = !per_seat_states.empty();
+  if (use_per_seat_states) {
+    const int num_players = state->num_players();
+    if (static_cast<int>(per_seat_states.size()) != num_players) {
+      throw std::runtime_error(
+          "run_heuristic_episode: per_seat_states size != num_players");
+    }
+    for (int p = 0; p < num_players; ++p) {
+      if (per_seat_states[p] == nullptr) {
+        throw std::runtime_error(
+            "run_heuristic_episode: per_seat_states[p] must not be null");
+      }
+    }
+  }
+
+  auto ai_view_for = [&](int seat) -> IGameState& {
+    if (use_per_seat_states) return *per_seat_states[seat];
+    return *state;
+  };
+
+  const bool use_per_perspective = !per_perspective_trackers.empty();
+  if (use_per_perspective) {
+    const int num_players = state->num_players();
+    if (static_cast<int>(per_perspective_trackers.size()) != num_players) {
+      throw std::runtime_error(
+          "run_heuristic_episode: per_perspective_trackers size != num_players");
+    }
+    for (int p = 0; p < num_players; ++p) {
+      if (per_perspective_trackers[p] && initial_observation_extractor) {
+        AnyMap p_init_obs = initial_observation_extractor(*state, p);
+        p_init_obs["__perspective_player"] = p;
+        per_perspective_trackers[p]->init(p_init_obs);
+      }
+    }
+  }
+
+  if (use_per_seat_states) {
+    const int num_players = static_cast<int>(per_seat_states.size());
+    for (int p = 0; p < num_players; ++p) {
+      if (use_per_perspective && p < static_cast<int>(per_perspective_trackers.size()) &&
+          per_perspective_trackers[p]) {
+        const std::uint64_t seed_init = board_ai::rng::derive_subseed(
+            episode_seed, "heuristic.view_freshen_init",
+            static_cast<std::uint64_t>(p));
+        std::mt19937_64 freshen_rng(seed_init);
+        per_perspective_trackers[p]->randomize_unseen(*per_seat_states[p], p, freshen_rng);
+      }
+    }
+  }
+
+  auto advance_per_seat_states =
+      [&](const IGameState& truth_before, const IGameState& truth_after,
+          ActionId chosen, int /*actor*/) {
+    if (!use_per_seat_states) return;
+    const int num_players = static_cast<int>(per_seat_states.size());
+    for (int p = 0; p < num_players; ++p) {
+      IGameState& seat = *per_seat_states[p];
+      const std::uint64_t view_step_seed = board_ai::rng::derive_subseed(
+          episode_seed, "heuristic.view_step",
+          static_cast<std::uint64_t>(ply) * 17ULL +
+              static_cast<std::uint64_t>(p));
+      std::mt19937_64 view_step_rng(view_step_seed);
+      if (!public_event_extractor || !public_event_applier) {
+        rules.do_action_fast(seat, chosen, view_step_rng);
+        continue;
+      }
+      PublicEventTrace evt_p = public_event_extractor(
+          truth_before, chosen, truth_after, p);
+      for (const auto& [kind, payload] : evt_p.pre_events) {
+        public_event_applier(seat, EventPhase::kPreAction, kind, payload);
+      }
+      rules.do_action_fast(seat, chosen, view_step_rng);
+      for (const auto& [kind, payload] : evt_p.post_events) {
+        public_event_applier(seat, EventPhase::kPostAction, kind, payload);
+      }
+      if (public_state_applier && !evt_p.public_snapshot.empty()) {
+        public_state_applier(seat, evt_p.public_snapshot);
+      }
+    }
+  };
+
+  auto freshen_per_seat_states = [&]() {
+    if (!use_per_seat_states || !use_per_perspective) return;
+    const int num_players = static_cast<int>(per_seat_states.size());
+    for (int p = 0; p < num_players; ++p) {
+      if (p >= static_cast<int>(per_perspective_trackers.size())) break;
+      if (!per_perspective_trackers[p]) continue;
+      const std::uint64_t freshen_seed = board_ai::rng::derive_subseed(
+          episode_seed, "heuristic.view_freshen",
+          static_cast<std::uint64_t>(ply) * 17ULL +
+              static_cast<std::uint64_t>(p));
+      std::mt19937_64 freshen_rng(freshen_seed);
+      per_perspective_trackers[p]->randomize_unseen(*per_seat_states[p], p, freshen_rng);
+    }
+  };
 
   while (!state->is_terminal() && ply < max_game_plies) {
     const int player = state->current_player();
-    auto legal = rules.legal_actions(*state);
+    IGameState& ai_view = ai_view_for(player);
+    auto legal = rules.legal_actions(ai_view);
     if (legal.empty()) break;
 
     std::vector<float> features;
     std::vector<float> legal_mask;
     if (encoder) {
-      encoder->encode(*state, player, legal, &features, &legal_mask);
+      const IBeliefTracker* enc_tracker =
+          (use_per_perspective && player >= 0 &&
+           player < static_cast<int>(per_perspective_trackers.size()))
+              ? per_perspective_trackers[player]
+              : nullptr;
+      encoder->encode(ai_view, player, enc_tracker, legal, &features, &legal_mask);
     }
 
-    HeuristicResult hr = heuristic(*state, rules, next_rng());
+    HeuristicResult hr = heuristic(ai_view, rules, next_rng());
 
     if (hr.scores.empty() || hr.actions.empty()) {
       throw std::runtime_error(
@@ -139,12 +249,29 @@ SelfplayEpisodeResult run_heuristic_episode(
     sample.features = features;
     sample.legal_mask = legal_mask;
     if (auxiliary_scorer) {
-      sample.auxiliary_score = auxiliary_scorer(*state, player);
+      sample.auxiliary_score = auxiliary_scorer(ai_view, player);
       sample.has_auxiliary_score = true;
     }
     result.samples.push_back(std::move(sample));
 
+    std::unique_ptr<IGameState> state_before;
+    const bool need_state_before = use_per_perspective || use_per_seat_states;
+    if (need_state_before) state_before = state->clone_state();
     rules.do_action_fast(*state, chosen, step_rng);
+    if (use_per_perspective) {
+      const int num_players = static_cast<int>(per_perspective_trackers.size());
+      for (int p = 0; p < num_players; ++p) {
+        if (!per_perspective_trackers[p]) continue;
+        PublicEventTrace evt_p;
+        if (public_event_extractor) {
+          evt_p = public_event_extractor(*state_before, chosen, *state, p);
+        }
+        per_perspective_trackers[p]->observe_public_event(
+            player, chosen, evt_p.pre_events, evt_p.post_events);
+      }
+    }
+    advance_per_seat_states(state_before ? *state_before : *state, *state, chosen, player);
+    freshen_per_seat_states();
     ++ply;
   }
 

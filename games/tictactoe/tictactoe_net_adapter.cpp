@@ -5,6 +5,7 @@ namespace board_ai::tictactoe {
 void TicTacToeFeatureEncoder::encode_public(
     const IGameState& state,
     int perspective_player,
+    const IBeliefTracker* /*tracker*/,
     std::vector<float>* out) const {
   const auto* s = dynamic_cast<const TicTacToeState*>(&state);
   if (!s || !out || perspective_player < 0 || perspective_player >= kPlayers) {

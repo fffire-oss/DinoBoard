@@ -10,6 +10,8 @@
 #include <vector>
 
 #include "../engine/core/game_interfaces.h"
+#include "../engine/core/rng_salt.h"
+#include "../engine/core/schema_hash.h"
 #include "../engine/core/game_registry.h"
 #include "../engine/core/feature_encoder.h"
 #include "../engine/infer/onnx_policy_value_evaluator.h"
@@ -37,7 +39,11 @@ inline void tracker_init(IBeliefTracker& bt, const GameBundle& bundle,
   if (bundle.initial_observation_extractor) {
     obs = bundle.initial_observation_extractor(state, perspective);
   }
-  bt.init(perspective, obs);
+  // Pre-§G transitional: stash perspective in init obs for trackers
+  // that still branch on own_self vs opp seat. Removed once §G migrates
+  // perspective-private knowledge to state.viz.
+  obs["__perspective_player"] = perspective;
+  bt.init(obs);
 }
 
 inline void tracker_observe(IBeliefTracker& bt, const GameBundle& bundle,
@@ -253,7 +259,6 @@ py::dict run_selfplay_episode_py(
     double heuristic_guidance_ratio,
     double heuristic_temperature,
     double training_filter_ratio,
-    bool ismcts_enabled,
     int trace_perspective) {
   py::gil_scoped_release release;
 
@@ -328,14 +333,25 @@ py::dict run_selfplay_episode_py(
   }
 
   // Allocate one fresh tracker per seat so each perspective's belief
-  // accumulates monotonically across plies. Skipped when ISMCTS is off
-  // (peek mode — MCTS sees truth, used in early training steps gated by
-  // peek_steps before switching to proper hidden-info play) or when the
-  // game has no belief_tracker (perfect-information games).
+  // accumulates monotonically across plies. Skipped only for fully-public
+  // games (no belief_tracker registered).
+  //
+  // Per-seat session state (§A.a Phase 0 + §G.1): each pp_bundle's `state`
+  // doubles as that seat's session state. The runner advances each
+  // session state via the public-event protocol every ply so the AI path
+  // never reads truth. In scope: tictactoe / quoridor / azul / splendor
+  // (Phase 0) and loveletter (§G.1 — known_hand_[] migrated to viz reveals
+  // via reveal_slot_to). Coup is still carved out pending §G.2; for it we
+  // leave per_seat_states empty and the runner falls back to truth.
+  const bool per_seat_in_scope =
+      (game_id == "tictactoe" || game_id == "quoridor" ||
+       game_id == "azul" || game_id == "splendor" ||
+       game_id == "loveletter");
   std::vector<std::unique_ptr<GameBundle>> pp_bundles;
   std::vector<IBeliefTracker*> pp_trackers;
-  if (ismcts_enabled && bundle.belief_tracker) {
-    const int num_players = bundle.state->num_players();
+  std::vector<IGameState*> per_seat_states;
+  const int num_players = bundle.state->num_players();
+  if (bundle.belief_tracker || per_seat_in_scope) {
     pp_bundles.reserve(static_cast<size_t>(num_players));
     pp_trackers.reserve(static_cast<size_t>(num_players));
     for (int p = 0; p < num_players; ++p) {
@@ -345,10 +361,19 @@ py::dict run_selfplay_episode_py(
       pp_bundles.push_back(std::move(pb));
     }
   }
+  if (per_seat_in_scope && !pp_bundles.empty()) {
+    per_seat_states.reserve(static_cast<size_t>(num_players));
+    for (int p = 0; p < num_players; ++p) {
+      per_seat_states.push_back(pp_bundles[p]->state.get());
+    }
+  }
 
   auto result = runtime::run_selfplay_episode(
       *bundle.state, *bundle.rules, *bundle.value_model, *eval_ptr, cfg, seed,
       pp_trackers,
+      per_seat_states,
+      bundle.public_event_applier,
+      bundle.public_state_applier,
       bundle.encoder.get(),
       bundle.tail_solver.get(),
       bundle.adjudicator,
@@ -419,6 +444,35 @@ py::dict run_arena_match_py(
 
   IBeliefTracker* arena_bt = bundle.belief_tracker.get();
   const size_t n_eval = eval_ptrs.size();
+
+  // Per-seat session state (§A.a Phase 0 + §G.1): in scope for tictactoe /
+  // quoridor / azul / splendor (Phase 0) and loveletter (§G.1). Coup still
+  // falls back to the legacy single-tracker truth-state path pending §G.2.
+  const bool per_seat_in_scope =
+      (game_id == "tictactoe" || game_id == "quoridor" ||
+       game_id == "azul" || game_id == "splendor" ||
+       game_id == "loveletter");
+  std::vector<std::unique_ptr<GameBundle>> pp_bundles;
+  std::vector<IBeliefTracker*> pp_trackers;
+  std::vector<IGameState*> per_seat_states;
+  const int num_players_arena = bundle.state->num_players();
+  if (bundle.belief_tracker || per_seat_in_scope) {
+    pp_bundles.reserve(static_cast<size_t>(num_players_arena));
+    pp_trackers.reserve(static_cast<size_t>(num_players_arena));
+    for (int p = 0; p < num_players_arena; ++p) {
+      auto pb = std::make_unique<GameBundle>(
+          GameRegistry::instance().create_game(game_id, seed));
+      pp_trackers.push_back(pb->belief_tracker.get());
+      pp_bundles.push_back(std::move(pb));
+    }
+  }
+  if (per_seat_in_scope && !pp_bundles.empty()) {
+    per_seat_states.reserve(static_cast<size_t>(num_players_arena));
+    for (int p = 0; p < num_players_arena; ++p) {
+      per_seat_states.push_back(pp_bundles[p]->state.get());
+    }
+  }
+
   auto result = runtime::run_arena_match(
       *bundle.state, *bundle.rules, *bundle.value_model,
       [&eval_ptrs, n_eval](int player) -> const search::IPolicyValueEvaluator& {
@@ -427,7 +481,11 @@ py::dict run_arena_match_py(
       player_configs, max_game_plies, seed,
       arena_bt, bundle.adjudicator,
       bundle.public_event_extractor,
-      bundle.initial_observation_extractor);
+      bundle.initial_observation_extractor,
+      pp_trackers,
+      per_seat_states,
+      bundle.public_event_applier,
+      bundle.public_state_applier);
 
   py::gil_scoped_acquire acquire;
   py::dict out;
@@ -519,8 +577,8 @@ py::dict run_constrained_eval_vs_heuristic_py(
 
       search::NetMcts mcts(mcts_cfg);
       search::NetMctsStats stats{};
-      const std::uint64_t mcts_seed = seed ^
-          (static_cast<std::uint64_t>(ply) * kGoldenRatio64) ^ 0x243F6A8885A308D3ULL;
+      const std::uint64_t mcts_seed = board_ai::rng::derive_subseed(
+          seed, "py_engine.replay_mcts", static_cast<std::uint64_t>(ply));
       mcts.search_root(*state, rules_for_model, *bundle.value_model,
                         *eval_ptr, &stats, mcts_seed);
 
@@ -591,12 +649,46 @@ py::dict run_heuristic_episode_py(
 
   auto bundle = GameRegistry::instance().create_game(game_id, seed);
 
+  // Per-seat session state (§A.a Phase 0 + §G.1): in scope for tictactoe /
+  // quoridor / azul / splendor / loveletter. Coup falls back to truth path
+  // until §G.2.
+  const bool per_seat_in_scope =
+      (game_id == "tictactoe" || game_id == "quoridor" ||
+       game_id == "azul" || game_id == "splendor" ||
+       game_id == "loveletter");
+  std::vector<std::unique_ptr<GameBundle>> pp_bundles;
+  std::vector<IBeliefTracker*> pp_trackers;
+  std::vector<IGameState*> per_seat_states;
+  const int num_players_heur = bundle.state->num_players();
+  if (bundle.belief_tracker || per_seat_in_scope) {
+    pp_bundles.reserve(static_cast<size_t>(num_players_heur));
+    pp_trackers.reserve(static_cast<size_t>(num_players_heur));
+    for (int p = 0; p < num_players_heur; ++p) {
+      auto pb = std::make_unique<GameBundle>(
+          GameRegistry::instance().create_game(game_id, seed));
+      pp_trackers.push_back(pb->belief_tracker.get());
+      pp_bundles.push_back(std::move(pb));
+    }
+  }
+  if (per_seat_in_scope && !pp_bundles.empty()) {
+    per_seat_states.reserve(static_cast<size_t>(num_players_heur));
+    for (int p = 0; p < num_players_heur; ++p) {
+      per_seat_states.push_back(pp_bundles[p]->state.get());
+    }
+  }
+
   auto result = runtime::run_heuristic_episode(
       *bundle.state, *bundle.rules, *bundle.value_model,
       bundle.encoder.get(),
       bundle.heuristic_picker,
       temperature, max_game_plies, seed,
-      bundle.auxiliary_scorer, bundle.adjudicator);
+      bundle.auxiliary_scorer, bundle.adjudicator,
+      pp_trackers,
+      per_seat_states,
+      bundle.public_event_applier,
+      bundle.public_state_applier,
+      bundle.public_event_extractor,
+      bundle.initial_observation_extractor);
 
   py::gil_scoped_acquire acquire;
   return result_to_py(result);
@@ -630,7 +722,8 @@ py::dict encode_state_for_perspective_py(
   if (bundle.belief_tracker && tracker_perspective >= 0 &&
       bundle.initial_observation_extractor) {
     auto obs = bundle.initial_observation_extractor(*bundle.state, tracker_perspective);
-    bundle.belief_tracker->init(tracker_perspective, obs);
+    obs["__perspective_player"] = tracker_perspective;
+    bundle.belief_tracker->init(obs);
     tracker_init_done = true;
   }
 
@@ -643,7 +736,8 @@ py::dict encode_state_for_perspective_py(
   }
   py::gil_scoped_release release2;
 
-  std::mt19937_64 step_rng(seed ^ 0xA17EBABEULL);
+  std::mt19937_64 step_rng(
+      board_ai::rng::derive_subseed(seed, "py_engine.encode_replay_step"));
   for (const auto& [actor, action] : pairs) {
     auto before = bundle.state->clone_state();
     bundle.rules->do_action_fast(*bundle.state, action, step_rng);
@@ -654,15 +748,17 @@ py::dict encode_state_for_perspective_py(
   }
 
   std::vector<float> public_features, private_features;
-  bundle.encoder->encode_public(*bundle.state, encode_player, &public_features);
-  bundle.encoder->encode_private(*bundle.state, encode_player, &private_features);
+  auto masked = make_masked_state(*bundle.state,
+                                  bundle.state->schema_ref(), encode_player);
+  bundle.encoder->encode_public(*masked, encode_player, bundle.belief_tracker.get(), &public_features);
+  bundle.encoder->encode_private(*masked, encode_player, bundle.belief_tracker.get(), &private_features);
 
   py::gil_scoped_acquire acquire;
   py::dict out;
   out["public_features"] = public_features;
   out["private_features"] = private_features;
   out["tracker_perspective"] =
-      bundle.belief_tracker ? bundle.belief_tracker->perspective_player() : -1;
+      bundle.belief_tracker ? tracker_perspective : -1;
   return out;
 }
 
@@ -677,7 +773,7 @@ py::dict encode_state_py(
 
   std::vector<float> features;
   std::vector<float> legal_mask;
-  bundle.encoder->encode(*bundle.state, player, legal, &features, &legal_mask);
+  bundle.encoder->encode(*bundle.state, player, bundle.belief_tracker.get(), legal, &features, &legal_mask);
 
   const bool is_terminal = bundle.state->is_terminal();
   const int action_space = bundle.encoder->action_space();
@@ -687,8 +783,10 @@ py::dict encode_state_py(
   // structural invariant (changing an opp's private shouldn't affect
   // encode_private for perspective, etc.).
   std::vector<float> public_features, private_features;
-  bundle.encoder->encode_public(*bundle.state, player, &public_features);
-  bundle.encoder->encode_private(*bundle.state, player, &private_features);
+  auto masked = make_masked_state(*bundle.state,
+                                  bundle.state->schema_ref(), player);
+  bundle.encoder->encode_public(*masked, player, bundle.belief_tracker.get(), &public_features);
+  bundle.encoder->encode_private(*masked, player, bundle.belief_tracker.get(), &private_features);
   const int public_dim = bundle.encoder->public_feature_dim();
   const int private_dim = bundle.encoder->private_feature_dim();
 
@@ -817,9 +915,10 @@ class GameSessionWrapper {
     // public_snapshot + randomize_unseen below; their step rng must not be
     // shared with truth's step_rng_ or truth's draw sequence drifts (truth
     // consumes one draw per action; sharing would consume N+1).
-    const std::uint64_t view_step_seed = seed_ ^
-        (static_cast<std::uint64_t>(ply_count_) * kGoldenRatio64) ^
-        (static_cast<std::uint64_t>(perspective) * 0xA17EBABEULL);
+    const std::uint64_t view_step_seed = board_ai::rng::derive_subseed(
+        seed_, "session.view_step",
+        static_cast<std::uint64_t>(ply_count_) * 17ULL +
+            static_cast<std::uint64_t>(perspective));
     std::mt19937_64 view_step_rng(view_step_seed);
     if (!bundle_->public_event_extractor || !bundle_->public_event_applier) {
       // Fully-public game: just replay the action on ai_view, tracker
@@ -857,11 +956,12 @@ class GameSessionWrapper {
       // Re-sample ai_view's hidden fields from the tracker's current
       // information set. Deterministic RNG from (seed_, ply_count_,
       // perspective) so behavior is reproducible.
-      const std::uint64_t freshen_seed = seed_ ^
-          (static_cast<std::uint64_t>(ply_count_) * kGoldenRatio64) ^
-          (static_cast<std::uint64_t>(perspective) * 0xCAFEF00DD15EA5E5ULL);
-      std::mt19937 freshen_rng(static_cast<std::uint32_t>(freshen_seed));
-      ai_trackers_[perspective]->randomize_unseen(*ai_views_[perspective], freshen_rng);
+      const std::uint64_t freshen_seed = board_ai::rng::derive_subseed(
+          seed_, "session.view_freshen",
+          static_cast<std::uint64_t>(ply_count_) * 17ULL +
+              static_cast<std::uint64_t>(perspective));
+      std::mt19937_64 freshen_rng(freshen_seed);
+      ai_trackers_[perspective]->randomize_unseen(*ai_views_[perspective], perspective, freshen_rng);
     }
   }
 
@@ -1048,11 +1148,11 @@ class GameSessionWrapper {
       // Re-sample session state_'s hidden fields from the tracker's
       // information set. Deterministic RNG from (seed_, ply_count_) so
       // behavior is reproducible.
-      const std::uint64_t freshen_seed = seed_ ^
-          (static_cast<std::uint64_t>(ply_count_) * kGoldenRatio64) ^
-          0xCAFEF00DD15EA5E5ULL;
-      std::mt19937 freshen_rng(static_cast<std::uint32_t>(freshen_seed));
-      bt_->randomize_unseen(*bundle_->state, freshen_rng);
+      const std::uint64_t freshen_seed = board_ai::rng::derive_subseed(
+          seed_, "session.truth_freshen",
+          static_cast<std::uint64_t>(ply_count_));
+      std::mt19937_64 freshen_rng(freshen_seed);
+      bt_->randomize_unseen(*bundle_->state, api_perspective_, freshen_rng);
     }
     ++ply_count_;
   }
@@ -1179,8 +1279,12 @@ class GameSessionWrapper {
     AnyMap obs_map = py_dict_to_any_map(initial_obs);
     py::gil_scoped_release release;
     external_obs_mode_ = true;
+    api_perspective_ = perspective_player;
     bundle_->initial_observation_applier(*bundle_->state, perspective_player, obs_map);
-    if (bt_) bt_->init(perspective_player, obs_map);
+    if (bt_) {
+      obs_map["__perspective_player"] = perspective_player;
+      bt_->init(obs_map);
+    }
   }
 
   // Return the belief tracker's serialized state as a dict. Canonical form:
@@ -1265,8 +1369,8 @@ class GameSessionWrapper {
 
     search::NetMcts mcts(mcts_cfg);
     search::NetMctsStats stats{};
-    const std::uint64_t mcts_seed = seed_ ^
-        (static_cast<std::uint64_t>(ply_count_) * kGoldenRatio64) ^ 0x243F6A8885A308D3ULL;
+    const std::uint64_t mcts_seed = board_ai::rng::derive_subseed(
+        seed_, "session.mcts", static_cast<std::uint64_t>(ply_count_));
     mcts.search_root(*search_state, rules, *bundle_->value_model,
                       *eval_ptr, &stats, mcts_seed);
 
@@ -1373,8 +1477,18 @@ class GameSessionWrapper {
   std::unique_ptr<infer::OnnxPolicyValueEvaluator> evaluator_;
   std::unique_ptr<runtime::FilteredRulesWrapper> filtered_rules_;
   IBeliefTracker* bt_ = nullptr;
+  // Perspective seat that bt_ (the session-level tracker on bundle_->state)
+  // is bound to. Set by apply_initial_observation; defaults to 0 when the
+  // session was constructed without an external observation. Used as the
+  // observer argument to randomize_unseen on bundle_->state in
+  // external_obs_mode.
+  int api_perspective_ = 0;
   std::size_t ply_count_ = 0;
-  std::mt19937_64 step_rng_{seed_ ^ 0xA17EBABEULL};
+  // GT step rng. Seeded directly from seed_ (no subseed derivation) so
+  // selfplay's gt_step rng with the same episode_seed produces identical
+  // truth draws — `test_public_snapshot_round_trip` replays selfplay
+  // traces through GameSession.apply_action and depends on this match.
+  std::mt19937_64 step_rng_{seed_};
   bool ts_enabled_ = false;
   int ts_depth_limit_ = 10;
   std::int64_t ts_node_budget_ = 200000;
@@ -1408,7 +1522,8 @@ py::dict test_belief_tracker_py(
   tracker_init(*bt, bundle, *state, 0);
 
   std::mt19937_64 action_rng(seed);
-  std::mt19937_64 step_rng(seed ^ 0xA17EBABEULL);
+  std::mt19937_64 step_rng(
+      board_ai::rng::derive_subseed(seed, "test_belief_tracker.gt_step"));
   int actual_plies = 0;
   for (int i = 0; i < plies && !state->is_terminal(); ++i) {
     auto legal = bundle.rules->legal_actions(*state);
@@ -1458,8 +1573,9 @@ py::dict test_belief_tracker_py(
   trial_state_maps.reserve(static_cast<size_t>(randomize_trials));
   for (int t = 0; t < randomize_trials; ++t) {
     auto clone = state->clone_state();
-    std::mt19937 trial_rng(static_cast<unsigned>(seed ^ static_cast<std::uint64_t>(t + 1)));
-    bt->randomize_unseen(*clone, trial_rng);
+    std::mt19937_64 trial_rng(board_ai::rng::derive_subseed(
+        seed, "test_belief_tracker.trial", static_cast<std::uint64_t>(t + 1)));
+    bt->randomize_unseen(*clone, /*observer=*/0, trial_rng);
     trial_decks.push_back(extract_deck_ids(*clone));
     if (bundle.state_serializer) {
       trial_state_maps.push_back(bundle.state_serializer(*clone));
@@ -1524,7 +1640,6 @@ PYBIND11_MODULE(dinoboard_engine, m) {
       py::arg("heuristic_guidance_ratio") = 0.0,
       py::arg("heuristic_temperature") = 0.0,
       py::arg("training_filter_ratio") = 1.0,
-      py::arg("ismcts_enabled") = true,
       py::arg("trace_perspective") = -1);
 
   m.def("run_arena_match", &run_arena_match_py,

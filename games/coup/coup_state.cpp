@@ -3,6 +3,7 @@
 #include <functional>
 #include <random>
 
+#include "../../engine/core/masked_state.h"
 #include "../../engine/core/schema_hash.h"
 #include "../../engine/core/viz_runtime.h"
 
@@ -163,7 +164,7 @@ void CoupState<NPlayers>::reset_with_seed(std::uint64_t seed) {
 }
 
 template <int NPlayers>
-StateHash64 CoupState<NPlayers>::state_hash(bool include_hidden_rng) const {
+StateHash64 CoupState<NPlayers>::state_hash() const {
   std::size_t h = 0;
   auto combine = [&](std::size_t v) {
     h ^= v + 0x9e3779b9 + (h << 6) + (h >> 2);
@@ -196,34 +197,18 @@ StateHash64 CoupState<NPlayers>::state_hash(bool include_hidden_rng) const {
 
   combine(data.court_deck.size());
 
-  if (include_hidden_rng) {
-    for (int p = 0; p < NPlayers; ++p) {
-      for (int s = 0; s < 2; ++s) {
-        if (!data.revealed[p][s]) {
-          combine(static_cast<std::size_t>(data.influence[p][s] + 1));
-        }
-      }
-    }
-    for (auto c : data.court_deck) {
-      combine(static_cast<std::size_t>(c + 1));
-    }
-    for (int i = 0; i < 2; ++i) {
-      combine(static_cast<std::size_t>(data.exchange_drawn[i] + 1));
-    }
-  }
-
   return static_cast<StateHash64>(h);
 }
 
 template <int NPlayers>
-void CoupState<NPlayers>::hash_public_fields(Hasher& h) const {
-  // Schema-driven path: walker iterates declared fields, calls
-  // hash_field_slot for each slot whose runtime viz is 1 for every
-  // viewer. influence is owner_only base (no dynamic reveal_slot
-  // wiring this PR), so revealed-and-public influence cards are
-  // appended manually below. court_deck size is variable-length /
-  // off-schema and also appended manually.
-  framework::hash_public_via_schema(*this, schema(), h);
+void CoupState<NPlayers>::hash_extra_state_fields(int perspective,
+                                                   Hasher& h) const {
+  // Off-schema or conditionally-public state. §G migrates these into
+  // schema/viz; until then this hook keeps hash semantics intact.
+  if (perspective < 0 || perspective >= NPlayers) return;
+  // Conditionally-public: revealed influence cards (rules don't yet
+  // call viz::reveal_slot when revealed[p][s] flips, so the walker
+  // sees them as owner-only). Appended once per ply for every viewer.
   for (int p = 0; p < NPlayers; ++p) {
     for (int s = 0; s < 2; ++s) {
       if (data.revealed[p][s]) {
@@ -231,23 +216,15 @@ void CoupState<NPlayers>::hash_public_fields(Hasher& h) const {
       }
     }
   }
+  // Variable-length court_deck size (public count, hidden contents).
   h.add(data.court_deck.size());
-}
-
-template <int NPlayers>
-void CoupState<NPlayers>::hash_private_fields(int player, Hasher& h) const {
-  if (player < 0 || player >= NPlayers) return;
-  // Walker covers owner's unrevealed influence (owner_only viz). Slots
-  // already revealed are skipped inside hash_field_slot to avoid double
-  // counting with the manual append in hash_public_fields.
-  framework::hash_private_via_schema(*this, schema(), player, h);
-  // exchange_drawn is all_hidden: walker never emits it. Legacy gates
-  // it on (exchanging && active_player == player); preserve here until
-  // dynamic reveal_slot wiring lands.
+  // exchange_drawn is all_hidden in schema; the active player privately
+  // knows the two cards drawn during their exchange. Gate on stage +
+  // active_player so only the actor's hash includes it.
   const bool exchanging =
       data.stage == CoupStage::kExchangeReturn1 ||
       data.stage == CoupStage::kExchangeReturn2;
-  if (exchanging && data.active_player == player) {
+  if (exchanging && data.active_player == perspective) {
     for (int i = 0; i < 2; ++i) {
       h.add(data.exchange_drawn[i] + 200);
     }
@@ -310,6 +287,30 @@ void CoupState<NPlayers>::hash_field_slot(
   if (name == "exchange_drawn") {
     // all_hidden in schema → walker never visits. hash_private_fields
     // appends it manually under the legacy gating.
+    return;
+  }
+}
+
+template <int NPlayers>
+void CoupState<NPlayers>::mask_field_slot(
+    const std::string& name, const std::vector<int>& idx) {
+  // Walker only reaches here for slots whose viz is 0 for the
+  // perspective. Coup's hidden slots:
+  //   - influence[p][s] : owner_only_first_axis. Hidden from any
+  //                       non-owner viewer. Revealed slots (revealed
+  //                       flag is public) are still walker-visited
+  //                       from non-owner perspectives because base
+  //                       viz is owner_only — encoder/hash sites
+  //                       continue to gate on revealed[] until
+  //                       dynamic reveal_slot wiring lands.
+  //   - exchange_drawn[i] : all_hidden. Walker emits for every viewer.
+  if (name == "influence") {
+    data.influence[static_cast<size_t>(idx[0])]
+                  [static_cast<size_t>(idx[1])] = kPlaceholderInt8;
+    return;
+  }
+  if (name == "exchange_drawn") {
+    data.exchange_drawn[static_cast<size_t>(idx[0])] = kPlaceholderInt8;
     return;
   }
 }

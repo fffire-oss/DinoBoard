@@ -52,7 +52,8 @@ import dinoboard_engine as engine
 from conftest import get_test_model
 
 
-HIDDEN_INFO_GAMES = ["azul", "loveletter", "splendor", "coup"]
+HIDDEN_INFO_GAMES = [g for g in ["azul", "loveletter", "splendor", "coup"]
+                     if g in engine.available_games()]
 
 # Per-game hidden keys to compare. These are keys returned by
 # state_serializer whose values vary across randomize_unseen samples.
@@ -72,7 +73,8 @@ HIDDEN_KEYS_PER_GAME: dict[str, list[str]] = {
 # satisfied for these games and the contrast test (different seed →
 # different hidden) is not exercisable from Python. Covered indirectly by
 # test_public_hash_excludes_internal_rng (60-seed drift sweep).
-SEED_CONTRAST_GAMES = ["loveletter", "coup"]
+SEED_CONTRAST_GAMES = [g for g in ["loveletter", "coup"]
+                       if g in engine.available_games()]
 
 
 def _hidden_snapshot(state_dict: dict, keys: list[str]) -> tuple:

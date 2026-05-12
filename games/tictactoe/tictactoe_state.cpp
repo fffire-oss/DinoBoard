@@ -43,7 +43,7 @@ void TicTacToeState::reset_with_seed(std::uint64_t seed) {
   viz::init_viz(*this, schema());
 }
 
-StateHash64 TicTacToeState::state_hash(bool include_hidden_rng) const {
+StateHash64 TicTacToeState::state_hash() const {
   std::size_t h = 0;
   hash_combine(h, static_cast<std::size_t>(current_player_));
   hash_combine(h, static_cast<std::size_t>(winner_ + 1));
@@ -54,23 +54,25 @@ StateHash64 TicTacToeState::state_hash(bool include_hidden_rng) const {
   for (std::int8_t c : board) {
     hash_combine(h, static_cast<std::size_t>(c + 2));
   }
-  (void)include_hidden_rng;  // RNG no longer on state.
   return static_cast<StateHash64>(h);
 }
 
-void TicTacToeState::hash_public_fields(Hasher& h) const {
-  // TicTacToe is fully public: all board cells, scores, outcome are visible.
-  h.add(current_player_);
-  h.add(winner_ + 1);
-  h.add(terminal ? 1 : 0);
-  h.add(move_count);
-  h.add(scores[0] + 2);
-  h.add(scores[1] + 2);
-  for (std::int8_t c : board) h.add(c + 2);
-}
-
-void TicTacToeState::hash_private_fields(int /*player*/, Hasher& /*h*/) const {
-  // TicTacToe has no private info; nothing to hash per-player.
+void TicTacToeState::hash_field_slot(
+    Hasher& h, const std::string& name,
+    const std::vector<int>& idx) const {
+  // Mirrors the field declaration order in schema(): walker iterates,
+  // we answer per slot. All values shifted to match the legacy
+  // hash_public_fields encoding so the digest stays byte-equal.
+  if (name == "current_player") { h.add(current_player_); return; }
+  if (name == "winner") { h.add(winner_ + 1); return; }
+  if (name == "terminal") { h.add(terminal ? 1 : 0); return; }
+  if (name == "move_count") { h.add(move_count); return; }
+  if (name == "scores") {
+    h.add(scores[static_cast<size_t>(idx[0])] + 2); return;
+  }
+  if (name == "board") {
+    h.add(static_cast<int>(board[static_cast<size_t>(idx[0])]) + 2); return;
+  }
 }
 
 }  // namespace board_ai::tictactoe

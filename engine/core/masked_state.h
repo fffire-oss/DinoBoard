@@ -1,37 +1,21 @@
 #pragma once
 
-// Phase 1.4: masked state view + encoder input contract.
+// MaskedState — the encoder input contract (golden standard §2.5).
 //
-// `make_masked_state(state, perspective)` returns a clone of `state` with
-// every slot whose `viz[..., perspective] == 0` (or whose belief_filled
-// bit is set, when the caller threads one in) overwritten with the
-// kPlaceholder sentinel for that field's element type. Encoders read
-// the masked state with the same field-by-field syntax they always
-// have; the masking is enforced at the data layer, not via a
-// throw-on-access proxy.
+// `make_masked_state(state, schema, perspective, belief_filled)`
+// clones `state` and overwrites every slot whose
+// `viz[..., perspective] == 0` (or whose `belief_filled` bit is set)
+// with the kPlaceholder sentinel for that slot's element type.
 //
-// Lifecycle:
-//   - Phase 1.4 (this PR): kPlaceholder constants + the make_masked_state
-//     declaration + the seat-rotation helper. The body lands in Phase
-//     1.5 alongside viz_walker (the body needs the same per-field
-//     reflection machinery to walk slots and write the sentinel into
-//     each typed payload).
-//   - Phase 3 (per-game schema bring-up): each game's encoder switches
-//     to taking `const MaskedState&` instead of `const State&`, and
-//     emits placeholder features for slots whose value equals
-//     kPlaceholder.
-//   - Phase 5: the legacy "encoder reads state directly + fishes out
-//     hidden fields by ad-hoc viz checks" path is removed; encoders
-//     ONLY see the masked clone.
-//
-// Guard rationale (golden standard §6 / I13): even if an encoder
-// forgets a viz check, the worst it can read is kPlaceholder — never a
-// hidden truth value. This is information-theoretically equivalent to
-// a throw-on-access proxy but is dramatically simpler at the call
-// site (game encoders keep their existing `state.hand[p][i]` syntax).
+// MaskedState is the SINGLE encoder-input type — encoders read it with
+// the same field-by-field syntax they always have, with no viz query
+// needed. A slot whose value equals kPlaceholder is hidden (or belief-
+// sampled); anything else is truth. The walker over schema × viz lives
+// in viz_walker.h and feeds three consumers: hash, snapshot serializer,
+// and (via this MaskedState) encoder. They share one definition of
+// "visible to perspective p."
 
 #include <cstdint>
-#include <functional>
 #include <limits>
 #include <memory>
 
@@ -39,80 +23,40 @@
 
 namespace board_ai {
 
-// MaskedState is structurally `IGameState` — the same concrete subclass
-// the game allocated in reset_with_seed. The "masked" part is purely a
-// post-processing pass that overwrites hidden-slot values with
-// kPlaceholder. Aliased here so call sites can express intent without a
-// new type carrying its own vtable.
+// MaskedState is structurally identical to IGameState (typedef alias) —
+// the game's own concrete subclass, with a placeholder-only pass over
+// hidden slots. No new vtable.
 using MaskedState = IGameState;
 
-// kPlaceholder sentinels.
-//
-// Encoders treat any slot whose value EQUALS the corresponding
-// kPlaceholder as "hidden, emit placeholder feature." The values are
-// chosen to be distinguishable from any legitimate game value:
-//
-//   kPlaceholderInt32 = INT32_MIN: well outside any game's id range
-//                                   (cids, action ids are <= ~10^4).
-//   kPlaceholderInt8  = -1       : ALSO used by some games as a real
-//                                   "empty slot" marker (e.g. Coup
-//                                   influence == -1 means revealed).
-//                                   For those, the game's masking pass
-//                                   uses kPlaceholderInt8Alt below.
-//   kPlaceholderInt8Alt = INT8_MIN: -128, never a legitimate cid.
-//   kPlaceholderBool  = false    : safe default; bool fields with
-//                                   meaningful "hidden" state should
-//                                   carry an int viz-paired marker
-//                                   instead.
+// kPlaceholder sentinels — encoders treat any slot whose value equals
+// the corresponding sentinel as "hidden / belief-sampled." Values are
+// outside legitimate ranges:
+//   - kPlaceholderInt32 (INT32_MIN): outside cid / action-id ranges.
+//   - kPlaceholderInt8  (INT8_MIN, -128): distinguishable from -1
+//     (which is the publicly-observable "empty/revealed" marker).
+//   - kPlaceholderBool  (false): bool fields needing a "hidden" state
+//     should pair with an int viz-paired marker instead.
 constexpr std::int32_t kPlaceholderInt32 = std::numeric_limits<std::int32_t>::min();
 constexpr std::int8_t  kPlaceholderInt8  = std::numeric_limits<std::int8_t>::min();
 constexpr bool         kPlaceholderBool  = false;
 
-// Returns a fresh IGameState clone of `state` with every slot whose
-// `viz[..., perspective] == 0` (or whose belief_filled bit is set, when
-// the caller threads one in) overwritten with kPlaceholder for that
-// field's element type. Caller takes ownership.
+// Returns a fresh clone of `state` with every hidden slot overwritten
+// with kPlaceholder. `belief_filled`, if non-null, masks belief-
+// sampled slots in addition to viz=0 slots.
 //
-// `belief_filled` is optional. When non-null, slots whose belief_filled
-// bit is set along the perspective axis are ALSO masked (the encoder
-// must not treat sample-derived values as ground truth). When null,
-// only viz=0 slots are masked.
-//
-// The actual mask write is delegated to `state.apply_viz_mask(perspective)`
-// — only the game knows which C++ field a schema name maps to. The
-// framework here does the clone + the perspective dispatch; the game
-// does the typed write. See IGameState::apply_viz_mask for contract.
-//
-// belief_filled handling: if a future game wants belief-derived slots
-// masked too, its `apply_viz_mask` override will need access to the
-// belief_filled map. Phase 1.5 ships with the parameter wired through
-// to a thread-local channel that the game's override can consult; for
-// now no game overrides apply_viz_mask, so the parameter has no effect.
+// Body: clone, then call the cloned state's virtual
+// `mask_all_hidden_slots` — it walks the schema and dispatches each
+// hidden slot back to per-game `mask_field_slot(name, idx)` for the
+// placeholder write. Games whose state shares persistent immutable
+// data (e.g. Splendor's shared_ptr<const SplendorData>) override
+// `mask_all_hidden_slots` to detach a writable copy first.
 inline std::unique_ptr<IGameState> make_masked_state(
-    const IGameState& state, int perspective,
+    const IGameState& state, const viz::VisibilitySchema& schema,
+    int perspective,
     const std::unordered_map<std::string, viz::VizTensor>* belief_filled = nullptr) {
-  (void)belief_filled;  // wired in Phase 1.5+ once a game opts in
   auto cloned = state.clone_state();
-  cloned->apply_viz_mask(perspective);
+  cloned->mask_all_hidden_slots(schema, perspective, belief_filled);
   return cloned;
-}
-
-// Perspective-relative seat rotation helper.
-//
-// Encoders must lay out per-seat features in PERSPECTIVE-RELATIVE order:
-// seat 0 of the encoded tensor is `perspective`, seat 1 is the next
-// player to act, etc. This helper enforces a single canonical order so
-// migrated encoders all write `for_each_seat_in_perspective_order(p, ...)`
-// instead of hand-rolling `(s + perspective) % N`. Phase 3 grep'ing
-// every encoder for the manual modulo and replacing it with this helper
-// is part of the schema migration checklist.
-inline void for_each_seat_in_perspective_order(
-    int perspective, int n_players,
-    const std::function<void(int /*seat*/, int /*relative_index*/)>& fn) {
-  for (int rel = 0; rel < n_players; ++rel) {
-    const int seat = (perspective + rel) % n_players;
-    fn(seat, rel);
-  }
 }
 
 }  // namespace board_ai

@@ -44,6 +44,12 @@ SNAPSHOT_ONLY_KEYS: dict[str, set[str]] = {
         "deck_size",       # public size of hidden deck
         "discard_piles",   # all-public per-player vectors
         "face_up_removed",  # 2p-only public vector
+        # §G.1 partial-reveal sidecar: per-perspective overlay carrying
+        # truth values for hand[p] / drawn_card slots that are viz=1 to
+        # the receiver but not all_public (owner_only_first_axis hand,
+        # all_hidden drawn_card with rules-driven owner reveal).
+        "owner_overlay",
+        "__recv_perspective",  # receiver-axis stash for owner_overlay applier
     },
     "coup": {
         "court_deck_size",      # public size of hidden court deck
@@ -51,7 +57,6 @@ SNAPSHOT_ONLY_KEYS: dict[str, set[str]] = {
         "revealed_char_flat",   # partial-reveal: char id when revealed_flat[i]==1
     },
     "splendor": {
-        "deck_sizes",                 # public per-tier deck sizes
         "reserved_faceup_ids_flat",   # partial-reveal: id when reserved_visible
     },
     "azul": set(),
@@ -81,21 +86,29 @@ def _read(p: Path) -> str:
     return p.read_text(encoding="utf-8")
 
 
-def _extract_snapshot_keys(register_text: str) -> set[str]:
-    """Find every snapshot-key write in the register file. Matches both the
-    direct style `snap["name"] = ...` (used by games with hand-written
-    extractors: loveletter, coup, splendor) and the SnapshotIO style where
-    per-field emitter lambdas write into a generic `m` AnyMap via
-    `m["name"] = ...` or via `put_int(m, "name", v)` / `put_bool(m, "name",
-    v)` / `put_vec(m, "name", v)` helpers (used by azul after Phase 4 step
-    B). The lint cares about *what keys end up in the snapshot*, not about
-    the syntactic shape of the write."""
+def _extract_snapshot_keys(register_text: str, schema_fields: set[str]) -> set[str]:
+    """Find every snapshot-key write in the register file. Matches:
+
+    - Direct style: `snap["name"] = ...` (used by hand-written extractors:
+      loveletter, coup).
+    - SnapshotIO style: `put_int(m, "name", v)` / `put_bool(...)` / `put_vec(...)`
+      helpers (used by azul).
+    - Walker-driven style: `viz::serialize_public(after, schema, snap)` —
+      writes ALL schema all_public fields. When this call is present, the
+      union of schema fields (minus `skip` set) is the effective snap key
+      set (used by splendor).
+
+    The lint cares about *what keys end up in the snapshot*, not about the
+    syntactic shape of the write."""
     keys: set[str] = set()
     keys.update(re.findall(r'snap\[\s*"([^"]+)"\s*\]\s*=', register_text))
     keys.update(re.findall(
         r'\bput_(?:int|bool|vec)\s*\(\s*m\s*,\s*"([^"]+)"',
         register_text,
     ))
+    if re.search(r'\bviz::serialize_public\s*\(', register_text):
+        # Walker writes every all_public schema field.
+        keys.update(schema_fields)
     return keys
 
 
@@ -131,7 +144,7 @@ def test_every_snapshot_key_aligns_with_schema_or_is_whitelisted() -> None:
         state_text = _read(GAMES_DIR / game / f"{game}_state.cpp")
         register_text = _read(GAMES_DIR / game / f"{game}_register.cpp")
         schema_fields = _extract_all_public_fields(state_text)
-        snap_keys = _extract_snapshot_keys(register_text)
+        snap_keys = _extract_snapshot_keys(register_text, schema_fields)
         whitelist = SNAPSHOT_ONLY_KEYS.get(game, set())
         for k in sorted(snap_keys):
             if _matches_schema_field(k, schema_fields):
@@ -163,7 +176,7 @@ def test_every_schema_field_appears_in_snapshot() -> None:
         state_text = _read(GAMES_DIR / game / f"{game}_state.cpp")
         register_text = _read(GAMES_DIR / game / f"{game}_register.cpp")
         schema_fields = _extract_all_public_fields(state_text)
-        snap_keys = _extract_snapshot_keys(register_text)
+        snap_keys = _extract_snapshot_keys(register_text, schema_fields)
         skipped = SCHEMA_FIELDS_NOT_IN_SNAPSHOT.get(game, set())
         for f in sorted(schema_fields):
             if f in skipped:

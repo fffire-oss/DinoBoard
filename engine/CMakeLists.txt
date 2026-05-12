@@ -10,6 +10,7 @@ set(BOARD_AI_ONNXRUNTIME_ROOT "" CACHE PATH "Path to ONNX Runtime installation")
 # Core library (header-only interfaces + action_constraint)
 add_library(dinoboard_core STATIC
     core/action_constraint.cpp
+    core/mask_state_impl.cpp
 )
 target_include_directories(dinoboard_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 

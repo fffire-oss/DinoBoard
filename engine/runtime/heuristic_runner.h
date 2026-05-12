@@ -28,6 +28,18 @@ SelfplayEpisodeResult run_heuristic_episode(
     int max_game_plies,
     std::uint64_t episode_seed,
     AuxiliaryScorer auxiliary_scorer = nullptr,
-    GameAdjudicator adjudicator = nullptr);
+    GameAdjudicator adjudicator = nullptr,
+    // Per-seat session-state mode (mirrors selfplay/arena). When non-empty
+    // (size == num_players), the heuristic / encoder / legal-action
+    // queries on the AI path read from per_seat_states[player] instead of
+    // truth. Each seat's session state is advanced via the public-event
+    // protocol after each truth do_action_fast. Empty vector: AI path
+    // reads truth (LL/Coup pre-§G fallback).
+    std::vector<IBeliefTracker*> per_perspective_trackers = {},
+    std::vector<IGameState*> per_seat_states = {},
+    PublicEventApplier public_event_applier = nullptr,
+    PublicStateApplier public_state_applier = nullptr,
+    PublicEventExtractor public_event_extractor = nullptr,
+    InitialObservationExtractor initial_observation_extractor = nullptr);
 
 }  // namespace board_ai::runtime

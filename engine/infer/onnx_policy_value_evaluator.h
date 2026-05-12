@@ -28,8 +28,9 @@ class OnnxPolicyValueEvaluator final : public search::IPolicyValueEvaluator {
   const std::string& last_error() const { return last_error_; }
 
   bool evaluate(
-      const IGameState& state,
+      const MaskedState& masked,
       int perspective_player,
+      const IBeliefTracker* tracker,
       const std::vector<ActionId>& legal_actions,
       std::vector<float>* priors,
       std::vector<float>* values) const override;

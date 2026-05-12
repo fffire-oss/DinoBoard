@@ -5,6 +5,7 @@
 
 #include "../core/belief_tracker.h"
 #include "../core/game_interfaces.h"
+#include "../core/masked_state.h"
 #include "tail_solver.h"
 
 namespace board_ai::search {
@@ -31,7 +32,8 @@ struct NetMctsConfig {
 
   // Enables ISMCTS root-sampling. When non-null, each simulation clones
   // root and calls tracker->randomize_unseen(sim_state, rng) before descent.
-  // When null, search runs on root directly (fully-public games or peek mode).
+  // When null, search runs on root directly (fully-public games like
+  // TicTacToe / Quoridor / Azul, where there are no viz=0 slots to fill).
   const IBeliefTracker* root_belief_tracker = nullptr;
 
   bool tail_solve_enabled = false;
@@ -79,9 +81,21 @@ ActionId select_action_from_visits(
 class IPolicyValueEvaluator {
  public:
   virtual ~IPolicyValueEvaluator() = default;
+  // Mask-then-evaluate. Caller (NetMcts descent, externally-driven
+  // pipelines) materializes a MaskedState once via make_masked_state and
+  // hands it to both the hash and the evaluator — single walker pass per
+  // descent step (golden standard §2.5).
+  //
+  // `tracker` carries public-derived statistics the encoder may consume
+  // alongside the MaskedState (ALGORITHM_OVERVIEW §6 input surface).
+  // Pass null when the game has no tracker, or when the caller is on a
+  // path that doesn't track belief (e.g. analysis tooling that drives
+  // the evaluator directly off a state). The evaluator forwards the
+  // pointer to its underlying encoder unchanged.
   virtual bool evaluate(
-      const IGameState& state,
+      const MaskedState& masked,
       int perspective_player,
+      const IBeliefTracker* tracker,
       const std::vector<ActionId>& legal_actions,
       std::vector<float>* priors,
       std::vector<float>* values) const = 0;

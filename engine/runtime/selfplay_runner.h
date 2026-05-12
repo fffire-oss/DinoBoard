@@ -135,6 +135,8 @@ class FilteredRulesWrapper final : public IGameRules {
 };
 
 using PublicEventExtractor = board_ai::PublicEventExtractor;
+using PublicEventApplier = board_ai::PublicEventApplier;
+using PublicStateApplier = board_ai::PublicStateApplier;
 using InitialObservationExtractor = board_ai::InitialObservationExtractor;
 
 SelfplayEpisodeResult run_selfplay_episode(
@@ -150,6 +152,17 @@ SelfplayEpisodeResult run_selfplay_episode(
     // per_perspective_trackers[current_player]. For games without hidden info:
     // empty vector; the runner skips tracker wiring entirely.
     std::vector<IBeliefTracker*> per_perspective_trackers = {},
+    // Optional per-seat session state: when non-empty (size == num_players),
+    // MCTS/encoder/heuristic/legal_actions read from per_seat_states[player]
+    // instead of the truth state. Each seat's session state is advanced via
+    // the public-event protocol (do_action_fast on a sampled-hidden world,
+    // then public_state_applier overwrites public fields, then
+    // tracker.randomize_unseen freshens hidden) — never copied from truth.
+    // When empty: AI path reads truth state (legacy fallback for games whose
+    // tracker still holds perspective-baked knowledge, e.g. LL/Coup pre-§G).
+    std::vector<IGameState*> per_seat_states = {},
+    PublicEventApplier public_event_applier = nullptr,
+    PublicStateApplier public_state_applier = nullptr,
     const IFeatureEncoder* encoder = nullptr,
     const search::ITailSolver* tail_solver = nullptr,
     GameAdjudicator adjudicator = nullptr,

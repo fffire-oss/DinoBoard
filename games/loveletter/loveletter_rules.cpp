@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cstdint>
 
+#include "../../engine/core/viz_runtime.h"
+
 namespace board_ai::loveletter {
 
 namespace {
@@ -117,7 +119,7 @@ void add_actions_for_card(const LoveLetterData<NPlayers>& d, int me,
 }
 
 template <int NPlayers>
-void eliminate_player(LoveLetterData<NPlayers>& d, int player) {
+void eliminate_player(IGameState& state, LoveLetterData<NPlayers>& d, int player) {
   d.alive[player] = 0;
   d.protected_flags[player] = 0;
   d.hand_exposed[player] = 0;
@@ -125,6 +127,10 @@ void eliminate_player(LoveLetterData<NPlayers>& d, int player) {
     d.discard_piles[static_cast<size_t>(player)].push_back(d.hand[player]);
     d.hand[player] = 0;
   }
+  // Hand contents now 0; drop any in-round reveals so viz returns to
+  // owner_only_first_axis base (owner sees self, no other viewer sees).
+  viz::reset_to_base(state, "hand",
+                     LoveLetterState<NPlayers>::schema(), {player});
 }
 
 template <int NPlayers>
@@ -203,7 +209,7 @@ int next_alive_player(const LoveLetterData<NPlayers>& d, int from) {
 }
 
 template <int NPlayers>
-void advance_turn(LoveLetterData<NPlayers>& d) {
+void advance_turn(IGameState& state, LoveLetterData<NPlayers>& d) {
   check_end_game(d);
   if (d.terminal) return;
 
@@ -218,6 +224,11 @@ void advance_turn(LoveLetterData<NPlayers>& d) {
   }
 
   d.drawn_card = draw_from_deck_local(d.deck);
+  // drawn_card scalar holds the new card. Base viz is all_hidden; reveal
+  // only to the new current_player.
+  viz::reset_to_base(state, "drawn_card",
+                     LoveLetterState<NPlayers>::schema(), {});
+  viz::reveal_slot_to(state, "drawn_card", {}, next);
 }
 
 }  // namespace
@@ -279,8 +290,16 @@ UndoToken LoveLetterRules<NPlayers>::do_action_fast(IGameState& state, ActionId 
   bool played_from_hand = (d.hand[me] == played_card);
   if (played_from_hand) {
     d.hand[me] = d.drawn_card;
+    // hand[me] contents changed (now holds the drawn card). Drop any
+    // prior in-round reveals on hand[me] (King swaps, Priest peeks)
+    // since they were tied to the OLD cid.
+    viz::reset_to_base(state, "hand",
+                       LoveLetterState<NPlayers>::schema(), {me});
   }
   d.drawn_card = 0;
+  // drawn_card consumed → reset to base (all_hidden).
+  viz::reset_to_base(state, "drawn_card",
+                     LoveLetterState<NPlayers>::schema(), {});
   d.discard_piles[static_cast<size_t>(me)].push_back(played_card);
 
   if (played_from_hand) {
@@ -299,12 +318,14 @@ UndoToken LoveLetterRules<NPlayers>::do_action_fast(IGameState& state, ActionId 
       case kGuard:
         if (target >= 0 && target < NPlayers && d.alive[target] &&
             d.hand[target] == act.guess) {
-          eliminate_player(d, target);
+          eliminate_player(state, d, target);
         }
         break;
 
       case kPriest:
         if (target >= 0 && target < NPlayers && d.alive[target]) {
+          // Targeted private reveal: only actor learns target's hand cid.
+          viz::reveal_slot_to(state, "hand", {target}, me);
           d.hand_exposed[target] = 1;
         }
         break;
@@ -314,10 +335,24 @@ UndoToken LoveLetterRules<NPlayers>::do_action_fast(IGameState& state, ActionId 
           int my_card = d.hand[me];
           int their_card = d.hand[target];
           if (my_card < their_card) {
-            eliminate_player(d, me);
+            // Actor (me) loses. Loser's hand becomes fully public; loser
+            // also learns winner's hand (last-second info before
+            // elimination — keeps selfplay encoder's pre-death view
+            // accurate).
+            viz::reveal_slot(state, "hand", {me});
+            viz::reveal_slot_to(state, "hand", {target}, me);
+            eliminate_player(state, d, me);
           } else if (their_card < my_card) {
-            eliminate_player(d, target);
+            // Target loses.
+            viz::reveal_slot(state, "hand", {target});
+            viz::reveal_slot_to(state, "hand", {me}, target);
+            eliminate_player(state, d, target);
           } else {
+            // Tie: both learn the other's hand privately. Third
+            // perspective sees only the public "tie" event and remains
+            // viz=0 on both hands.
+            viz::reveal_slot_to(state, "hand", {me}, target);
+            viz::reveal_slot_to(state, "hand", {target}, me);
             d.hand_exposed[me] = 1;
             d.hand_exposed[target] = 1;
           }
@@ -334,8 +369,12 @@ UndoToken LoveLetterRules<NPlayers>::do_action_fast(IGameState& state, ActionId 
           d.discard_piles[static_cast<size_t>(target)].push_back(discarded);
           if (discarded == kPrincess) {
             d.hand[target] = 0;
-            eliminate_player(d, target);
+            eliminate_player(state, d, target);
           } else {
+            // hand[target] contents are about to change; drop prior
+            // reveals before redraw.
+            viz::reset_to_base(state, "hand",
+                               LoveLetterState<NPlayers>::schema(), {target});
             if (!d.deck.empty()) {
               d.hand[target] = draw_from_deck_local(d.deck);
             } else {
@@ -350,6 +389,11 @@ UndoToken LoveLetterRules<NPlayers>::do_action_fast(IGameState& state, ActionId 
       case kKing:
         if (target >= 0 && target < NPlayers && d.alive[target]) {
           std::swap(d.hand[me], d.hand[target]);
+          // viz follows content: each owner now sees their NEW card
+          // (the other player's old hand). The old viewer's reveal row
+          // travels with the cid, so observers who already saw a cid
+          // continue seeing it after the swap.
+          viz::swap_slot_owned(state, "hand", me, target);
           d.hand_exposed[me] = 1;
           d.hand_exposed[target] = 1;
         }
@@ -359,7 +403,7 @@ UndoToken LoveLetterRules<NPlayers>::do_action_fast(IGameState& state, ActionId 
         break;
 
       case kPrincess:
-        eliminate_player(d, me);
+        eliminate_player(state, d, me);
         break;
 
       default:
@@ -367,7 +411,7 @@ UndoToken LoveLetterRules<NPlayers>::do_action_fast(IGameState& state, ActionId 
     }
   }
 
-  advance_turn(d);
+  advance_turn(state, d);
 
   return UndoToken{static_cast<std::uint32_t>(s.undo_stack.size())};
 }
@@ -379,6 +423,18 @@ void LoveLetterRules<NPlayers>::undo_action(IGameState& state, const UndoToken& 
   s.data = std::move(s.undo_stack.back());
   s.undo_stack.pop_back();
   s.end_step();
+}
+
+template <int NPlayers>
+void LoveLetterRules<NPlayers>::reveal_starting_draw(
+    IGameState& state, int starting_player) {
+  viz::reveal_slot_to(state, "drawn_card", {}, starting_player);
+}
+
+template <int NPlayers>
+void LoveLetterRules<NPlayers>::reveal_starting_draw_to(
+    IGameState& state, int viewer) {
+  viz::reveal_slot_to(state, "drawn_card", {}, viewer);
 }
 
 template class LoveLetterRules<2>;

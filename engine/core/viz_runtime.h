@@ -1,22 +1,23 @@
 #pragma once
 
-// Runtime ops on state.viz_ (Phase 1.2 — storage + name-keyed primitives).
+// Runtime ops on state.viz_.
 //
-// Split from visibility_schema.h to avoid an include cycle: the schema
-// header is included by game_interfaces.h (so IGameState can have a
-// `std::unordered_map<std::string, VizTensor> viz_` member), and the
-// runtime helpers below need the concrete IGameState type.
+// Split from visibility_schema.h to break the include cycle: the schema
+// header is included by game_interfaces.h (so IGameState can carry
+// `std::unordered_map<std::string, VizTensor> viz_`), and the helpers
+// below need the concrete IGameState type.
 //
-// Per golden standard I1, the only callers of reveal_slot /
-// reveal_slot_to / reset_to_base are the rules' do_action_fast (and the
-// undo path that restores via UndoRecord). Tests + framework code that
-// READS state.viz_ (hash walker, encoder masker, snapshot extractor) do
-// so directly through the public viz_ accessor without going through
-// these mutators.
+// Golden standard I1: rules' do_action_fast is the SOLE writer of
+// state.viz_, calling reveal_slot / reveal_slot_to / reset_to_base.
+// Framework readers (hash walker, snapshot serializer) read state.viz_
+// directly; encoders never query viz at all (they read MaskedState
+// placeholders, see masked_state.h).
 
+#include <algorithm>
 #include <cstddef>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "game_interfaces.h"
@@ -26,11 +27,8 @@ namespace board_ai {
 namespace viz {
 
 // Initialize state.viz_ from a schema. Called from each game's
-// reset_with_seed override (Phase 3 wires this in for each game). For
-// every non-internal field in `schema.fields`, copies the field's
-// `base_viz` into `state.viz_[name]`. Internal fields are also stored
-// (their base_viz is empty by convention) so that lookup never returns
-// "missing key" — a missing key always indicates a schema bug.
+// reset_with_seed override. Copies every FieldDecl's base_viz into
+// state.viz_[name]; missing keys always indicate a schema bug.
 inline void init_viz(IGameState& state, const VisibilitySchema& schema) {
   state.viz_.clear();
   state.viz_.reserve(schema.fields.size());
@@ -118,14 +116,51 @@ inline void reset_to_base(IGameState& state, const std::string& name,
   }
 }
 
-// for_each_visible_slot — signature defined here (so other framework
-// headers that need the type can include only viz_runtime.h), body
-// lives in viz_walker.h. Hash + encoder + snapshot extractor share
-// the single traversal there.
-//
-// Semantics: for each non-internal field in `schema`, for each data-
-// axis slot whose viz[idx..., perspective]==1, invoke `fn(field_name,
-// idx, viz_tensor_ref)` in declaration / row-major order.
+// swap_slot(state, "field", {idx_a...}, {idx_b...}) — swap the entire
+// viewer-axis row between two slots. After the call, viz[a, :] holds
+// what was at viz[b, :] and vice versa. Used when rules swap the slot
+// CONTENTS — viz must follow content so "who has seen this cid" stays
+// attached to the cid (e.g. Love Letter King swap).
+inline void swap_slot(IGameState& state, const std::string& name,
+                      const std::vector<int>& idx_a,
+                      const std::vector<int>& idx_b) {
+  auto& v = viz_get(state, name);
+  const std::size_t base_a = flat_offset_data_only(v.shape, idx_a);
+  const std::size_t base_b = flat_offset_data_only(v.shape, idx_b);
+  if (base_a == base_b) return;
+  const int n_viewers = v.viewer_count();
+  for (int p = 0; p < n_viewers; ++p) {
+    std::swap(v.data[base_a + static_cast<std::size_t>(p)],
+              v.data[base_b + static_cast<std::size_t>(p)]);
+  }
+}
+
+// swap_slot_owned(state, "field", owner_a, owner_b) — convenience for
+// owner_only_first_axis fields whose first (and only) data axis is the
+// owner index (e.g. LL `hand[player]`). Equivalent to
+// swap_slot({owner_a}, {owner_b}) followed by reveal_slot_to(owner_a)
+// and reveal_slot_to(owner_b). Captures "swap two owner-held slots and
+// keep each owner seeing their new content" in one call.
+inline void swap_slot_owned(IGameState& state, const std::string& name,
+                            int owner_a, int owner_b) {
+  auto& v = viz_get(state, name);
+  // Owner-only-first-axis fields have data rank 1 (data shape = {N_owners}).
+  // The full viz tensor shape is {N_owners, N_viewers}.
+  if (v.shape.size() != 2) {
+    throw std::invalid_argument(
+        "viz::swap_slot_owned: field '" + name +
+        "' is not owner_only_first_axis (data rank != 1); use swap_slot + "
+        "manual reveal_slot_to for higher-rank fields");
+  }
+  if (owner_a == owner_b) return;
+  swap_slot(state, name, {owner_a}, {owner_b});
+  reveal_slot_to(state, name, {owner_a}, owner_a);
+  reveal_slot_to(state, name, {owner_b}, owner_b);
+}
+
+// SlotVisitor: callback type for the walker. Body of
+// for_each_visible_slot lives in viz_walker.h; the typedef is here so
+// other headers can include only viz_runtime.h.
 using SlotVisitor = std::function<void(
     const std::string& /*name*/, const std::vector<int>& /*idx*/,
     const VizTensor& /*viz*/)>;

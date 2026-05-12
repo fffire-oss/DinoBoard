@@ -37,7 +37,8 @@ from conftest import get_test_model
 # Every hidden-info game registers a public_state_applier and has its
 # extractor populate PublicEventTrace.public_snapshot. This list should
 # match that set.
-GAMES_WITH_APPLIER = ["loveletter", "splendor", "coup", "azul"]
+GAMES_WITH_APPLIER = [g for g in ["loveletter", "splendor", "coup", "azul"]
+                      if g in engine.available_games()]
 
 
 def _truth_hashes_after_trace(game_id: str, seed: int, trace):

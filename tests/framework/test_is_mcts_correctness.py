@@ -17,7 +17,7 @@ import pytest
 
 from conftest import get_test_model
 
-# Coup is temporarily disabled (see docs/GAME_FEATURES_OVERVIEW.md "Future Work：
+# Coup is temporarily disabled (see FEATURES_OVERVIEW.md "Future Work：
 # 概率化 Belief Tracking") pending the probabilistic belief network. Skip coup-
 # specific tests until it re-lands.
 _coup_disabled = "coup" not in dinoboard_engine.available_games()

@@ -68,7 +68,10 @@ namespace board_ai::mygame {
 class MyGameState final : public CloneableState<MyGameState> {
  public:
   // === 必须实现的方法 ===
-  StateHash64 state_hash(bool include_hidden_rng) const override;
+  StateHash64 state_hash() const override;        // 全字段 hash,tail solver / debug 用
+  void hash_field_slot(Hasher& h, const std::string& name,
+                       const std::vector<int>& idx) const override;
+  // (隐藏信息游戏额外:read_field_slot / write_field_slot / mask_field_slot)
   int current_player() const override;
   bool is_terminal() const override;
   int num_players() const override;
@@ -96,26 +99,39 @@ class MyGameState final : public CloneableState<MyGameState> {
 
 ### 2.2 各方法详解
 
-#### `state_hash(bool include_hidden_rng) -> StateHash64`
+#### `state_hash() -> StateHash64`
 
-返回当前状态的 64 位哈希。**仅用于 tail solver 和调试**——ISMCTS 不再用这个函数做节点 keying，节点 keying 走框架自动派生的 `state_hash_for_perspective(p)`（由 `hash_public_fields` + `hash_private_fields(p)` 组合而成）。
+返回当前状态的 64 位哈希(全字段)。**仅用于 tail solver 转置表和
+调试**——ISMCTS 不用这个函数做节点 keying。节点 keying 走框架内置的
+`state_hash_for_perspective(p)`(`engine/core/schema_hash.h`):按
+visibility schema 序遍历每个 slot,只对 `viz[..., p] = 1` 的槽位调
+游戏侧实现的 `hash_field_slot(h, name, idx)`,自动叠 `step_count`。
 
-**要求**：
-- 相同状态必须返回相同哈希
-- `include_hidden_rng=true`：等价于"全字段 hash"（包含所有玩家 hidden + 内部 RNG 等任何会影响后续推进的字段），tail solver 用它做转置表
-- `include_hidden_rng=false`：只哈希可观察字段，用于调试
+**`state_hash()` 要求**:
+- 相同状态(含所有 hidden)必须返回相同哈希
+- 内容覆盖完整,因为 tail solver 在解析路径上会同 hash 共享子树
 
-**注意**：`state_hash` 和 `hash_public_fields` 是两套独立的 API。前者服务 tail solver / debug，后者服务 ISMCTS 的 DAG keying，两者的"public 范围"概念不重合（`state_hash(false)` 可以更宽松）。新游戏只要保证 `state_hash` 正确就行，不需要和 `hash_public_fields` 对齐。
+**`hash_field_slot(Hasher& h, name, idx)` 要求**:
+- 一个 slot 一次 `h.add(...)`,内容 = 该 slot 的真值
+- schema 里声明的所有字段都要在 `if (name == "...")` 分支里覆盖
+- viz=0 的 slot 走框架自动写入的 sentinel 占位,**不要**在
+  `hash_field_slot` 里自己判 viz
 
-**示例**：
+**示例**:
 ```cpp
-StateHash64 state_hash(bool include_hidden_rng) const override {
-  StateHash64 h = 0;
-  hash_combine(h, current_player_);
-  hash_combine(h, move_count);
-  for (auto cell : board) hash_combine(h, cell);
-  if (include_hidden_rng) hash_combine(h, rng_salt);
-  return h;
+StateHash64 state_hash() const override {
+  Hasher h;
+  h.add(current_player_);
+  h.add(move_count);
+  for (auto cell : board) h.add(cell);
+  return h.digest();
+}
+
+void hash_field_slot(Hasher& h, const std::string& name,
+                     const std::vector<int>& idx) const override {
+  if (name == "board") { h.add(board[idx[0]]); return; }
+  if (name == "current_player") { h.add(current_player_); return; }
+  // ...
 }
 ```
 
@@ -296,9 +312,12 @@ void undo_action(IGameState& state, const UndoToken& token) const override {
 
 1. `do_action_fast` 直接消费真实 state 里的 RNG（抽牌从 deck top 弹、翻牌翻 tier deck 等），正常推进
 2. MCTS 每次 sim 开头先 `belief_tracker.randomize_unseen(sim_state, rng)` 把未知字段采样成具体值，之后 descent 完全 deterministic
-3. 不同 sim 采不同的世界，observer 能分辨的后继（如 Splendor 翻出的公开牌）通过 `hash_public_fields` 差异自然分叉，observer 不能分辨的后继（如 opp 抽的私牌）在观察者决策节点通过 hash 合并汇聚
+3. 不同 sim 采不同的世界,observer 能分辨的后继(如 Splendor 翻出的公开
+   牌)通过 `state_hash_for_perspective` 差异(viz=1 公开槽位变化)自然
+   分叉,observer 不能分辨的后继(如 opp 抽的私牌)在 observer 视角下
+   viz=0,hash 不变,自然在同一节点上汇聚
 
-开发者只需实现 `do_action_fast` / `undo_action` 时正确更新 `step_count_` 和 RNG 状态。**如果你的游戏需要 tail solver，额外实现 §3.2 的 `do_action_deterministic`**。详见 [MCTS_ALGORITHM.md §7](MCTS_ALGORITHM.md#7-物理随机不是-chance-node而是-sampled-world)。
+开发者只需实现 `do_action_fast` / `undo_action` 时正确更新 `step_count_` 和 RNG 状态。**如果你的游戏需要 tail solver，额外实现 §3.2 的 `do_action_deterministic`**。详见 [ALGORITHM_OVERVIEW.md §8.7](../../ALGORITHM_OVERVIEW.md#87-物理随机--sampled-world)。
 
 ---
 
@@ -308,7 +327,7 @@ void undo_action(IGameState& state, const UndoToken& token) const override {
 
 ### 4.1 必须实现的方法
 
-Encoder 接口按 hash scope 拆成 public / private 两半，**结构性约束**和 `hash_public_fields` / `hash_private_fields(p)` 完全对齐：
+Encoder 接口按 hash scope 拆成 public / private 两半，**结构性约束**和 walker 驱动的 `state_hash_for_perspective(p)` 完全对齐——encoder 输入是 `MaskedState`，slots 中 `viz[..., perspective]=0` 的位置已经被 framework 替换成 `kPlaceholder*`，encoder 物理上读不到 truth：
 
 ```cpp
 class MyGameFeatureEncoder final : public IFeatureEncoder {
@@ -318,20 +337,23 @@ class MyGameFeatureEncoder final : public IFeatureEncoder {
   int public_feature_dim() const override;    // 公开特征维度
   int private_feature_dim() const override;   // 一名玩家的私有特征维度（对所有玩家相同）
 
-  void encode_public(const IGameState& state,
+  void encode_public(const MaskedState& state,
                      int perspective_player,
+                     const IBeliefTracker* tracker,
                      std::vector<float>* out) const override;
 
-  void encode_private(const IGameState& state,
+  void encode_private(const MaskedState& state,
                       int player,
+                      const IBeliefTracker* tracker,
                       std::vector<float>* out) const override;
 };
 ```
 
 **硬约束**（`tests/framework/test_encoder_respects_hash_scope.py` 守护）：
-- `encode_public` 没有 player 所有权概念——即使带 `perspective_player` 参数（用来做"我 / 对手"的特征排序），也 **MUST NOT** 读任何玩家的 private 字段
-- `encode_private(p)` **MUST NOT** 读其他玩家的 private 字段，只读 player `p` 自己的 hidden 字段（手牌、盲压牌等）
-- 不需要自己实现 `encode(...)`——基类提供默认实现，会自动按 `[encode_public, encode_private(perspective)]` 顺序拼接，并填充 `legal_mask`。游戏直接 override `encode_public` + `encode_private` 即可
+- `encode_public` / `encode_private` 都从 `MaskedState` 读字段；`viz[..., perspective]=0` 的 slot 已经是 `kPlaceholder*`，encoder 必须分支处理 placeholder，**禁止查询 viz、禁止访问任何玩家的 private 字段绕过 mask**
+- `encode_private(p)` 由于 MaskedState 是按 `player` 视角构建的，其它玩家的 private slot 在 `MaskedState` 中天然是 placeholder——读它们结构上就是读 placeholder，不是泄露
+- `tracker` 可能为 nullptr（游戏没有注册 belief_tracker 时）；tracker 上只能读公开衍生统计（如 Coup 的 claim history、Splendor 的多重集统计），不要把"perspective 自己的 private 知识"塞到 tracker 里——那应该走 `state.viz_`
+- 不需要自己实现 `encode(...)`——基类提供默认实现，会自动 `make_masked_state` 一次、按 `[encode_public, encode_private(perspective)]` 顺序拼接，并填充 `legal_mask`。游戏直接 override `encode_public` + `encode_private` 即可
 
 #### `action_space() -> int`
 
@@ -373,7 +395,7 @@ void TicTacToeFeatureEncoder::encode_public(
 }
 ```
 
-**隐藏信息游戏的写法**：手牌、盲压牌、`tracker->known_hand(perspective)` 这些放进 `encode_private`；公开弃牌区、棋盘、当前玩家标记、tracker 公开知识放进 `encode_public`。两个函数被默认 `encode()` 自动按顺序拼接成单一 flat tensor 喂给网络——网络架构不变，纯粹是代码层面的强约束。
+**隐藏信息游戏的写法**：手牌、盲压牌、对手牌的私人确定知识（如 LL Priest 偷看后看到的 opp hand）这些都通过 `MaskedState` 的 `viz=1` 槽位读到——直接 `if (mstate.is_visible({...}, p)) ...` 即可，**不要**把这种 perspective-private 知识塞到 tracker 里。`encode_private` 拼自身手牌 + 通过 viz reveal 看到的 opp 槽位；`encode_public` 拼公开弃牌区、棋盘、当前玩家标记、tracker 公开知识聚合（如 Coup claim history、Splendor 多重集统计）。两个函数被默认 `encode()` 自动按顺序拼接成单一 flat tensor 喂给网络——网络架构不变，纯粹是代码层面的强约束。
 
 ### 4.2 视角处理
 
@@ -904,11 +926,11 @@ b.episode_stats_extractor = [](const IGameState&,
 
 ## 10. 隐藏信息与 Belief Tracker（含物理随机性）
 
-> **算法深入**：DAG 节点共享、UCT2、完整 search_root 流程、debug 指标——独立文档 [`docs/MCTS_ALGORITHM.md`](MCTS_ALGORITHM.md)。本节讲开发者接口。
+> **算法深入**：DAG 节点共享、UCT2、完整 search_root 流程、debug 指标——独立文档 [`ALGORITHM_OVERVIEW.md`](../../ALGORITHM_OVERVIEW.md)。本节讲开发者接口。
 
 隐藏信息指玩家间的**非对称**信息——某个玩家知道、其他玩家不知道的游戏状态。如 Splendor 的盲压暗牌（执行者知道是什么牌，对手不知道）。
 
-对称无知的随机（如 Azul 袋子未来抽取顺序）**也**走 belief_tracker 通道——`hash_private_fields` 可以为空，`randomize_unseen` 负责洗袋子。见 §10.1。
+对称无知的随机（如 Azul 袋子未来抽取顺序）走另一条路径：所有玩家对袋子里下一张牌的"已知"是同样的，没有 viz=0 槽位需要 tracker 来采样——物理随机走 descent 中 `sim_rng` 在 `do_action_fast` 里即时抽的路径，**不需要注册 `belief_tracker`**。见 §10.1。
 
 ### 10.1 物理随机性
 
@@ -918,15 +940,27 @@ b.episode_stats_extractor = [](const IGameState&,
 
 - Root 采样通过 `belief_tracker->randomize_unseen(sim_state, rng)` 一次性固定当前 sim 的"全部未来随机"（deck 顺序、未来翻牌结果等）
 - Descent 里 `do_action_fast` 照常从状态中读取随机源（如 `d.deck.top()` 或 `splitmix64(d.draw_nonce)`），每次 sim 拿到的值由 root 采样决定
-- 观察者可见的后果（Splendor 翻新卡到 tableau）自然通过 `hash_public_fields` 差异分化到不同 DAG 节点
-- 观察者不可见的后果（opp 抽牌）在 observer 视角 hash 下被合并
+- 观察者可见的后果(Splendor 翻新卡到 tableau)自然通过
+  `state_hash_for_perspective` 差异(即 `viz=1` 公开槽位变化)分化到不同
+  DAG 节点
+- 观察者不可见的后果(opp 抽牌)在 observer 视角下 viz=0,hash 不变,自然
+  在同一 DAG 节点上汇聚
 
-**开发者要做的**（对有物理随机的游戏）：
+**开发者要做的**(对有物理随机的游戏):
 
-1. `do_action_fast` 里用 `splitmix64(state.draw_nonce)` 或类似 PRNG 驱动随机抽取。保持 state 里的 deck 等随机源字段明确（这些字段会被 `randomize_unseen` 重写）
-2. 实现 `IBeliefTracker::randomize_unseen(state, rng)` —— 把 state 里的隐藏字段（deck 内容 + 对手 hidden）按 belief 一次性采样填入。**约束**：产出世界的 `hash_public_fields` 必须只取决于 tracker 的观察历史，不能依赖输入 state 的 hidden 内容或 RNG 特定值
+1. `do_action_fast` 接 `mt19937_64& rng`,从 rng 即时抽取(对完全公开的
+   袋子/盒盖,可以直接按 `bag_counts[color]` 抽色;对隐藏 deck,弹
+   `deck.top()`)。**rng 不在 state 上**——sim 入口由 caller 提供
+   `sim_rng`,GT 端提供 `gt_rng`,各自独立
+2. 实现 `IBeliefTracker::randomize_unseen(state, rng)`(仅在游戏有
+   asymmetric hidden info 时需要)—— 把 state 里 viz=0 的槽位按 belief
+   一次性采样填入。**约束**:产出世界中所有公开槽位(`viz=1` to anyone)
+   的内容只取决于 tracker 的观察历史,不依赖输入 state 的 hidden 内容
+   也不依赖调用者 RNG 特定值
 
-对**对称物理随机但无非对称 hidden info** 的游戏（如 Azul）：仍然要注册 `belief_tracker`，但 `hash_private_fields` 可空。`randomize_unseen` 只洗袋子。
+对**完全公开 + 物理随机** 的游戏(如 Azul):**不必注册 `belief_tracker`**——
+没有 viz=0 槽位需要采样。物理随机走 descent 中由 sim_rng 在
+`do_action_fast` 里即时抽的路径。
 
 ### 10.2 信息屏障：AI 链路从根源读不到真值
 完整论证见 [`CLAUDE.md` 「AI Pipeline Independence from Game State」](../CLAUDE.md#ai-pipeline-independence-from-game-state)：tracker 没有 `IGameState*`、session public 部分由 message 重建、session hidden 每步重新采样、selfplay/web/API 走同一套 per-perspective tracker——四条结构性约束让 AI 物理上没有路径可读真值。下文 §10.3 起讲各 hook 的具体签名与实装。
@@ -940,84 +974,101 @@ b.episode_stats_extractor = [](const IGameState&,
 
 **无 chance node 机制**——物理随机被 root 采样吞掉；observer-visible 后果通过 hash 自然分叉，observer-invisible 后果通过 hash 自然合并。
 
-**新游戏开发者要做**：
-- 覆盖 `IGameState::hash_public_fields` 和 `hash_private_fields(int player)`（§10.3b）——声明字段公开/私密归类
-- 实现 `IBeliefTracker`（§10.4）——`init` / `observe_public_event` / `randomize_unseen`
-- 实现 public-event protocol（`public_event_extractor` / `applier` / `initial_observation_extractor` / `applier`）
-- 框架自动接管 root 采样时机、DAG 节点复用、UCT2 UCB。**不需要**在 rules 里做任何防御性 nonce bump 或 hidden-info guard
+**新游戏开发者要做**:
+- 在 `<game>_state.cpp` 用 `viz::declare_field` 声明每个 state 字段的 name
+  + data shape + base viz tensor(`all_public` / `owner_only_first_axis` /
+  `all_hidden`)——schema 是 hash / encoder / snapshot 的单一事实源(§E.3)
+- 实现 `IGameState::hash_field_slot(h, name, idx)`——按 name 分支 emit
+  该 slot 的值。框架的 `state_hash_for_perspective(p)` 会按 schema 序遍历,
+  对 viz=1 的 slot 调本函数,viz=0 的 slot 自动 emit sentinel。游戏侧
+  **不要**自己判 viz、**不要**自己 hash step_count
+- 隐藏信息游戏额外实现 `read_field_slot` / `write_field_slot` /
+  `mask_field_slot`——对应 walker 物化 / wire 序列化 / 掩盖 placeholder
+- 实现 `IBeliefTracker`(§10.4)——`init` / `observe_public_event` /
+  `randomize_unseen`(仅 asymmetric hidden info 需要;Azul 这种完全公开
+  +物理随机不需要)
+- 实现 public-event protocol(`public_event_extractor` / `applier` /
+  `initial_observation_extractor` / `applier`)
+- 框架自动接管 root 采样时机、DAG 节点复用、UCT2 UCB。**不需要**在 rules
+  里做任何防御性 nonce bump 或 hidden-info guard
 
-### 10.3b 声明式 hash API：hash_public_fields / hash_private_fields
-每个 `IGameState` 子类实现两个虚方法：
+### 10.3b 声明式 hash API:`hash_field_slot` + visibility schema
+每个 `IGameState` 子类实现一个虚方法 + 一个静态 schema:
 
 ```cpp
-virtual void hash_public_fields(Hasher& h) const = 0;
-virtual void hash_private_fields(int player, Hasher& h) const = 0;
+// 静态 schema(每游戏一份):字段 name + 数据 shape + base viz
+static const viz::VisibilitySchema& schema() {
+  static const viz::VisibilitySchema s = [] {
+    viz::VisibilitySchema schema;
+    viz::declare_field(schema, "board",
+                       viz::all_public({9}, /*n_players=*/2));
+    viz::declare_field(schema, "current_player",
+                       viz::all_public({}, 2));
+    return schema;
+  }();
+  return s;
+}
+
+// per-slot hash dispatcher
+void hash_field_slot(Hasher& h, const std::string& name,
+                     const std::vector<int>& idx) const override;
 ```
 
-框架派生出：
+框架自动派生节点 hash:
 
 ```cpp
 StateHash64 state_hash_for_perspective(int player) const {
   Hasher h;
   h.add(step_count_);                 // DAG 结构性防环
-  hash_public_fields(h);
-  hash_private_fields(player, h);
+  for_each_visible_slot(schema_ref(), viz_, player,
+      [&](const std::string& name, const std::vector<int>& idx) {
+        hash_field_slot(h, name, idx);   // viz=1 槽位调真值 emit
+      },
+      [&](...) { h.add(/* sentinel */); }); // viz=0 槽位 emit sentinel
   return h.finalize();
 }
 ```
 
-**字段归类**：
-- **public**：所有玩家都能看见的字段。全部 hash 进去。弃牌堆、公开棋盘、分数、当前玩家、回合计数等
-- **private for player p**：只有 p 能看见的字段。**只在 `hash_private_fields(p)` 里 hash**，不在 `hash_public_fields` 里重复 hash
-- **完全隐藏（谁都看不见）**：deck 内容、set_aside、rng 种子——**任何地方都不 hash**。这些字段在不同 sim 的采样世界里会不同，但 DAG 节点不关心
+**字段归类(由 schema base viz 决定,运行时由 rules 通过 `viz::reveal_slot`
+/ `reveal_slot_to` / `reset_to_base` 改写 viz)**:
+- **`all_public`**:所有玩家都能看见的字段。弃牌堆、公开棋盘、分数、当前
+  玩家、回合计数等。所有 perspective 都看到 viz=1
+- **`owner_only_first_axis`**:第一维当 owner 轴。owner-only 手牌、影响牌
+  等——`viz[hand[p], p] = 1`(p 看见自己),`viz[hand[p], q != p] = 0`
+- **`all_hidden`**:对所有人都不可见的字段(初始 base)。rules 显式
+  `reveal_slot` / `reveal_slot_to` 后才对部分玩家可见
 
-**常见错误**：
-- ❌ 把 `hand[p] for all p` 都 hash 进 public → opp hand 进了 public，不同采样世界分叉到不同节点，DAG 共享失效
-- ❌ public 字段在 private 里又 hash 一遍 → hash 依赖 perspective，info set 边界混乱
-- ❌ **把内部 RNG / 未抽到的牌堆顺序 hash 进 public** → 这是本框架最隐蔽的失误模式。`rng_salt`、`bag` 的 vector 顺序、`box_lid` 的 vector 顺序、`mt19937` 快照、洗牌时存的 deck order 等，**没有任何玩家看得到**。把它们 hash 进去，会让本应该是同一个 DAG 节点的信息集，按"未来抽牌的具体顺序"分裂成 N 个不同节点；网络无法分辨它们，搜索的统计聚合被打散，每条 simulation 像在不同游戏里独立爬。**症状只是"AI 莫名变弱 / selfplay 与 API 路径策略不一致"，从不崩溃**——所以最难抓。Azul 的 BUG-028（`hash_public_fields` 里逐个 hash 了 `bag` / `box_lid` 的 vector 顺序）和 Splendor 的 `rng_salt` 都属此类。
-- ✓ `hand[observer]` 只在 `hash_private_fields(observer)` 里 hash；对手的 hand 只在他们自己的 private hash 里
-- ✓ 公开可推导的 multiset（袋子各色剩余数、牌堆大小）可以 hash；具体顺序 / 内部 RNG 不行
-- ✓ 写完 `hash_public_fields` 后通读一遍，问自己每个 `h.add(x)`：**"这个字段每个玩家都能从观察历史推出来吗？"** 如果答案是"不能，这是引擎实现细节"，就删掉
+**常见错误**:
+- ❌ 把不归任何玩家观察的字段(内部 RNG salt、未抽 deck 顺序等)放进
+  `viz=1` 路径 → 这是本框架最隐蔽的失误模式。会让本应该是同一个 DAG
+  节点的信息集,按"未来抽牌的具体顺序"分裂成 N 个不同节点;网络无法
+  分辨它们,搜索的统计聚合被打散。**症状只是"AI 莫名变弱 / selfplay 与
+  API 路径策略不一致",从不崩溃**——所以最难抓。Azul BUG-028
+  (`bag` / `box_lid` 的 vector 顺序进 public)和 Splendor 历史上的
+  `rng_salt` 都属此类。修法:**RNG 不进 state**(三类 RNG 由 caller 持
+  有,§3 ALGORITHM_OVERVIEW),deck 顺序属于 viz=0 的 hidden 内容
+- ❌ 在 `hash_field_slot` 里读 viz 自己判要不要 emit → 框架已经判过了,
+  双重判断容易写错
+- ✓ 公开可推导的 multiset(袋子各色剩余数、牌堆大小)进 schema 当
+  `all_public` 字段;具体顺序 / 内部 RNG 不进 state
+- ✓ 写完 `hash_field_slot` 分支后通读一遍,问自己每个 `h.add(x)`:**"这
+  个 slot 在所有 viz=1 的 perspective 看到的真值,在那位 perspective 的
+  观察历史里能复现吗?"** 如果答案是"不能,这是引擎实现细节",这个字
+  段就不该进 schema(应该改成 viz=0 的 hidden,或彻底从 state 移除)
 
-Love Letter 示例（`games/loveletter/loveletter_state.cpp` 实际代码）：
-
-```cpp
-void LoveLetterState<N>::hash_public_fields(Hasher& h) const {
-  const auto& d = data;
-  h.add(d.current_player);
-  h.add(d.ply);
-  h.add(d.winner + 11);
-  h.add(d.terminal ? 1 : 0);
-  for (int p = 0; p < N; ++p) {
-    h.add(d.alive[p]);
-    h.add(d.protected_flags[p]);
-    h.add(d.hand_exposed[p]);
-    for (auto c : d.discard_piles[p]) h.add(c);   // 弃牌堆公开
-  }
-  h.add(d.deck.size());                             // 大小公开，内容不是
-  for (auto c : d.face_up_removed) h.add(c);       // 2p 规则的 3 张公开移除
-}
-
-void LoveLetterState<N>::hash_private_fields(int player, Hasher& h) const {
-  const auto& d = data;
-  if (player >= 0 && player < N) {
-    h.add(d.hand[player]);                          // 只 hash 自己的手
-    if (d.current_player == player && d.drawn_card) {
-      h.add(d.drawn_card);                          // 自己回合的 drawn 也算
-    }
-  }
-  // opp hand / set_aside / deck 内容 / draw_nonce：不 hash（任何地方都不 hash）
-}
-```
-
-**Step counter**：`IGameState::step_count_` 由框架管理：
-- `do_action_fast` 里调 `s->begin_step()`（`s` 在 template 类里用 `this->begin_step()`）
+**Step counter**:`IGameState::step_count_` 由框架管理:
+- `do_action_fast` 里调 `s->begin_step()`(`s` 在 template 类里用
+  `this->begin_step()`)
 - `undo_action` 里调 `s->end_step()`
 - `reset_with_seed` 里重置为 0
 
-`state_hash_for_perspective` 自动把 step_count 计入 hash，保证 DAG 结构性 acyclic。**游戏开发者不要在 `hash_public_fields` 里重复 hash step_count**。
+`state_hash_for_perspective` 自动把 step_count 计入 hash,保证 DAG 结构性
+acyclic。**游戏开发者不要在 `hash_field_slot` 里重复 hash step_count**。
 
-**测试建议**：构造两个 state，public + 同 perspective 的 private 完全相同，但 opp private 不同；assert `state_hash_for_perspective(perspective)` 相等。这是 hash 归类正确性的基本检查，`tests/framework/test_encoder_respects_hash_scope.py` 提供模板。
+**测试建议**:构造两个 state,自己 perspective 的 viz=1 槽位完全相同,
+但 opp 私有(viz=0 to me)不同;assert
+`state_hash_for_perspective(self)` 相等。这是 hash 归类正确性的基本检查,
+`tests/framework/test_encoder_respects_hash_scope.py` 提供模板。
 
 ### 10.4 IBeliefTracker
 **用途**：维护当前玩家的信息认知，为 ISMCTS 根采样提供 prior。
@@ -1042,7 +1093,13 @@ virtual void randomize_unseen(IGameState& state, std::mt19937& rng) const = 0;
 
 `randomize_unseen(state, rng)` 是采样的**写入口**——可以读 state 的公开字段 + 观察者自己的字段（discard_piles、自己的 hand 等），但禁止读 opp 的 hidden 字段（对手手牌、deck 内容）。tracker 从自己累积的 belief 构建 unseen pool 和 known-hand 分配。
 
-**`randomize_unseen` 契约**：返回的世界必须满足所有公共不变量——`hash_public_fields` 的值在相同观测史、不同 RNG 采样下 byte-equal。隐藏多重集（deck size / bag size / court-deck size 等）必须由 tracker 的 seen 信息**推导**出来，不能保留输入 state 里的残值（输入里的残值本身就是采样结果，不是真值的副本）。Stale 采样（opp hidden 字段的旧 cid 现在已经被公开看到）必须从当前未见池重采。
+**`randomize_unseen` 契约**:返回的世界必须满足所有公共不变量——
+`state_hash_for_perspective(any p)` 在 viz=1 的所有公开槽位部分,在相同
+观测史下、不同 RNG 采样下 byte-equal。隐藏多重集(deck size / bag size /
+court-deck size 等)必须由 tracker 的 seen 信息**推导**出来,不能保留输
+入 state 里的残值(输入里的残值本身就是采样结果,不是真值的副本)。
+Stale 采样(opp hidden 字段的旧 cid 现在已经被公开看到)必须从当前未
+见池重采。
 
 **`randomize_unseen` 的两个调用点**：
 1. MCTS 根采样（per-sim determinization）：每次 sim 开头在 cloned state 上调用一次
@@ -1165,36 +1222,38 @@ if (!is_self) {
 这保证了 encoder 在训练和搜索中看到的信息结构完全一致——训练时每个玩家的 sample 也是从该玩家视角编码的，看不到对手隐藏信息。
 
 ### 10.8 框架限制
-ISMCTS 根采样 + encoder 信息屏障在双人游戏中完全自洽；多人游戏（3+）存在 determinization 方法的固有精度局限（无法建模"B 用 Priest 看了 C 的牌"等第三方私有知识）。完整说明见 [GAME_FEATURES_OVERVIEW.md「框架限制」](../GAME_FEATURES_OVERVIEW.md#框架限制)。
+ISMCTS 根采样 + encoder 信息屏障在双人游戏中完全自洽；多人游戏（3+）存在 determinization 方法的固有精度局限（无法建模"B 用 Priest 看了 C 的牌"等第三方私有知识）。完整说明见 [FEATURES_OVERVIEW.md「框架局限性」](../../FEATURES_OVERVIEW.md#框架局限性)。
 
 ### 10.9 开发者 Checklist
-1. 确认游戏是否有非对称隐藏信息（玩家间知道的不一样）。对称无知（如 Azul 的 bag）不需要 `hash_private_fields` 但仍然需要 `belief_tracker` 来驱动 `randomize_unseen`
-2. 实现 `IBeliefTracker` 的三个方法（`init` / `observe_public_event` / `randomize_unseen`），遵守"绝不读取隐藏字段"约束（§10.4）
-3. Encoder 中对非自身玩家的隐藏信息输出占位符（§10.7），严格只读 `public + current player's private` 范围的字段
-4. **实现 `hash_public_fields(Hasher&)` 和 `hash_private_fields(int player, Hasher&)`**（§10.3b）——声明式分离公开 / 玩家私有信息。框架用 `state_hash_for_perspective(p) = step_count + public + private(p)` 作 DAG 节点键，让信息集跨路径共享
+1. 确认游戏是否有非对称隐藏信息（玩家间知道的不一样）。**对称无知**（如 Azul 的 bag）不需要注册 `belief_tracker`——viz=0 槽位不存在，物理随机直接走 `do_action_fast` 里 `sim_rng` 即时抽。**只有非对称**才需要 tracker 来驱动 `randomize_unseen`
+2. 实现 `IBeliefTracker` 的三个方法（`init` / `observe_public_event` / `randomize_unseen`），遵守"接口签名根本拿不到 `IGameState*`"的结构性约束（§10.4）
+3. Encoder 接受 `MaskedState`——viz=0 槽位由 framework 替换为 `kPlaceholder`，encoder 必须分支处理 placeholder（§10.7），不要查询 viz、不要绕过 mask 读 truth
+4. **在 `<game>_state.cpp` 用 `viz::declare_field` 声明每个 state 字段的 name + data shape + base viz tensor**（`all_public` / `owner_only_first_axis` / `all_hidden`），实现 `hash_field_slot` / `read_field_slot` / `write_field_slot` / `mask_field_slot` 四个 per-slot dispatcher（§10.3b）。框架的 walker 按 schema 顺序遍历每个 slot——`viz[..., perspective]=1` 时调 `hash_field_slot` 把 truth mix 进 hash，`viz[..., perspective]=0` 时 mix `kPlaceholder` 哨兵——自动得到 `state_hash_for_perspective(p)` 作 DAG 节点键
 5. **在 `do_action_fast` 里调 `state.begin_step()`，在 `undo_action` 里调 `state.end_step()`**，`reset_with_seed` 里重置 `this->step_count_ = 0`。`step_count_` 单调递增保证 DAG 结构性 acyclic
-6. **实现 public-event protocol**（`extract_events` / `apply_event` / `extract_initial_observation` / `apply_initial_observation`）——框架用它在 `GameSessionWrapper` 里维护每个 perspective 的 ai_view，同时驱动外部 AI API 的观察流。详见 §14 事件协议章节（或直接参考 `games/loveletter/loveletter_register.cpp`）
-7. 在 `make_<game>` 里注册 `belief_tracker` + `public_event_extractor` + `public_event_applier` + `initial_observation_extractor` + `initial_observation_applier`
+6. **实现 message-driven snapshot 路径**：要么用 walker（`viz::serialize_public` / `viz::apply_public`，全 schema 字段自动同步），要么用 SnapshotIO（`emit_snapshot` / `apply_snapshot` 手写），把 GT 端的公开 state 序列化为 `AnyMap public_snapshot`，AI session 端 wholesale 替换。隐藏信息走 `pre_events` / `post_events` 在 message 流里增量传递。详见 §14 事件协议章节（或直接参考 `games/splendor/splendor_register.cpp` walker 路径，`games/loveletter/loveletter_register.cpp` SnapshotIO 路径）
+7. 在 `make_<game>` 里注册 `belief_tracker` + `public_event_extractor` + `public_state_applier`（+ `initial_observation_extractor` / `applier` 如果游戏开局有公开信息）
 8. **验证测试**：
    - `tests/framework/test_ai_api_separation.py::test_full_game_via_api[<game>]` 必须过（API 契约）
    - `tests/framework/test_api_belief_matches_selfplay.py::*[<game>]` 必须过（belief 等价）
+   - `tests/framework/test_public_snapshot_round_trip.py::*[<game>]` 必须过（observer apply snapshot 后 `state_hash_for_perspective(own)` 与 truth bit-equal）
    - `tests/framework/test_encoder_respects_hash_scope.py` 必须过（encoder 不越界读 opp private）
+   - `tests/framework/test_public_hash_excludes_internal_rng.py` 必须过（hash 不能依赖 RNG/未揭示 deck 等任何 viz=0 应该藏起来的内容）
    - 建议自己写黑盒统计测试（类似 `TestLoveLetterGuardAccuracy`）：在某个会读隐藏信息的决策点上，验证 AI 的选择分布和无先验情况下的基线一致
-   - 建议加 hash 单元测试：两个相同 info set 的 state（公开字段 + 视角玩家 private 字段全同，其他玩家 private 可不同）的 `state_hash_for_perspective(p)` 必须相等
 
 ### 10.9a 为什么这么多 hook
 ISMCTS 让开发者**不需要在游戏规则里做任何防御性代码**（没有 `++nonce`、没有 hidden-info guard、没有 MCTS 特殊路径）。所有隐藏信息处理都在框架层，代价是开发者要把"观察者视角下能看到什么"精确表达出来——这是 hook 列表看起来长的原因。每个 hook 的职责都有清晰语义：
 
 | Hook | 说什么 |
 |------|-------|
-| `hash_public_fields` | 哪些字段所有玩家都能看到（信息集的公共部分） |
-| `hash_private_fields(p)` | 玩家 p 的私有字段（进入 p 作 acting player 的节点 key） |
-| `initial_observation_extractor/applier` | 游戏开始时观察者看到什么 |
-| `public_event_extractor/applier` | 一次动作后观察者的知识增量 |
-| `belief_tracker` | 观察者基于历次观察累积的精确知识 + `randomize_unseen` |
-| encoder 的 `is_self` 逻辑 | 观察者不应看到的字段如何 mask |
+| `viz::declare_field` 的 base viz tensor | 字段的"出厂可见性"（全公开 / owner-only / 全隐藏） |
+| `do_action_fast` 中的 `viz::reveal_slot` / `reset_to_base` | 规则期间显式翻牌 / 槽位换内容时如何更新 viz |
+| `hash_field_slot` | 单个 slot 的 hash 贡献（被 walker 在 viz=1 时调用） |
+| `read/write/mask_field_slot` | 单个 slot 的序列化 / 反序列化 / placeholder 写入（被 walker 在 snapshot/AI session 端调用） |
+| `belief_tracker` | 观察者基于历次观察累积的精确知识 + `randomize_unseen`（仅非对称隐藏信息游戏需要） |
+| `public_event_extractor` / `public_state_applier`（+ optional `initial_observation_*`） | message 流的事件 + 公开 state 同步通道 |
+| encoder 对 placeholder 的分支 | viz=0 slot 已经被 framework 替换成 `kPlaceholder`，encoder 物理上读不到 truth |
 
-这六个加起来是"观察者视角"的完整规格。ISMCTS 的行为完全从这个规格推导——相同的 framework code 处理所有游戏，不需要 per-game 的 MCTS 特判。
+这套"schema + per-slot dispatchers + tracker（可选）+ message protocol"加起来是"观察者视角"的完整规格。ISMCTS 的行为完全从这个规格推导——相同的 framework code 处理所有游戏，不需要 per-game 的 MCTS 特判。
 
 ---
 

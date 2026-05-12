@@ -12,9 +12,17 @@ to pass `pre_events`, `post_events`, and `public_snapshot` on every observe
 call so the AI's belief tracker stays consistent with truth — the action_id
 alone is not enough information for the AI to update hidden state.
 Deterministic games (tictactoe / quoridor) only need `action_id`.
+
+AI strength is server-controlled — `simulations` and `temperature` are not
+wire fields. The server resolves them per-game from `web.json`
+`difficulty_overrides.expert` (with fallback `{simulations: 800,
+temperature: 0.0}`). `seed` is optional; omitting it lets the server pick
+a fresh `secrets.randbits(64)` value, which is the default for production
+clients. Tests may pass an explicit `seed` for reproducibility.
 """
 from __future__ import annotations
 
+import secrets
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -27,13 +35,15 @@ router = APIRouter(prefix="/ai/sessions", tags=["ai"])
 
 class CreateSessionRequest(BaseModel):
     game_id: str = Field(..., description="e.g. 'quoridor', 'splendor'")
-    seed: int = Field(..., description="RNG seed for internal belief sampling. "
-                                       "Independent from ground truth — the AI's "
-                                       "hidden state is re-sampled each ply from "
-                                       "the tracker's information set.")
+    seed: Optional[int] = Field(
+        None,
+        description="Optional RNG seed for internal belief sampling. If "
+                    "omitted, the server picks a fresh secrets.randbits(64) "
+                    "value. Independent from ground truth either way — the "
+                    "AI's hidden state is re-sampled each ply from the "
+                    "tracker's information set.",
+    )
     my_seat: int = Field(..., description="Which player the AI is playing as (0-indexed)")
-    simulations: int = Field(800, description="MCTS simulations per decision")
-    temperature: float = Field(0.0, description="Action selection temperature. 0 = greedy.")
     initial_observation: Optional[dict] = Field(
         None,
         description="Hidden-info games only: perspective-specific facts known at "
@@ -106,13 +116,12 @@ class StatusResponse(BaseModel):
 
 @router.post("", response_model=CreateSessionResponse)
 def create_session(req: CreateSessionRequest):
+    seed = req.seed if req.seed is not None else secrets.randbits(64)
     try:
         sess = get_store().create(
             game_id=req.game_id,
-            seed=req.seed,
+            seed=seed,
             my_seat=req.my_seat,
-            simulations=req.simulations,
-            temperature=req.temperature,
             initial_observation=req.initial_observation,
         )
     except (ValueError, FileNotFoundError) as e:

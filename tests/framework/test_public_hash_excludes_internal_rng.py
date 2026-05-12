@@ -50,7 +50,8 @@ from conftest import get_test_model
 # Games with hidden information AND a public_event_extractor (required to
 # drive the API session via apply_observation). Fully-public games
 # (tictactoe, quoridor) are trivially BUG-028-free by structure.
-HIDDEN_INFO_GAMES = ["azul", "loveletter", "splendor", "coup"]
+HIDDEN_INFO_GAMES = [g for g in ["azul", "loveletter", "splendor", "coup"]
+                     if g in engine.available_games()]
 
 
 # Sweep parameters tuned so the test reliably triggers BUG-028-class drifts

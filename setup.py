@@ -80,6 +80,7 @@ def _load_game_sources() -> list[str]:
 sources = [
     "bindings/py_engine.cpp",
     "engine/core/action_constraint.cpp",
+    "engine/core/mask_state_impl.cpp",
     "engine/search/net_mcts.cpp",
     "engine/search/tail_solver.cpp",
     "engine/infer/onnx_policy_value_evaluator.cpp",

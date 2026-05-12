@@ -260,10 +260,9 @@ void finalize_turn(SplendorData<NPlayers>& d, int actor) {
   clear_pending_nobles(d);
   update_terminal(d, actor);
   d.current_player = (actor + 1) % Cfg::kPlayers;
-  // Phase 2: SplendorData no longer carries a per-data draw_nonce. Turn
-  // discrimination in the MCTS DAG is provided by the framework's
-  // step_count (incremented by begin_step in do_action_fast / _deterministic),
-  // which is part of state_hash via game_interfaces.
+  // Turn discrimination in the MCTS DAG is provided by the framework's
+  // step_count (incremented by begin_step in do_action_fast /
+  // _deterministic), which is part of state_hash.
 }
 
 }  // namespace
@@ -534,7 +533,7 @@ std::vector<ActionId> SplendorRules<NPlayers>::legal_actions(const IGameState& s
   return legal_actions_data(s->persistent.data());
 }
 
-// Phase 3.3 reveal/reset wiring. Splendor's only viz transitions:
+// Splendor's only viz transitions:
 //   reserve-from-tableau → reserved[player][new_idx] becomes public.
 //   buy-reserved         → remove_reserved_at compacts the array, so
 //                          reset all 3 slots and re-reveal the ones

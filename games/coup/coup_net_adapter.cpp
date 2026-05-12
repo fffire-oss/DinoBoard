@@ -52,6 +52,7 @@ template <int NPlayers>
 void CoupFeatureEncoder<NPlayers>::encode_public(
     const IGameState& state,
     int perspective_player,
+    const IBeliefTracker* /*tracker*/,
     std::vector<float>* out) const {
   const auto* s = dynamic_cast<const CoupState<NPlayers>*>(&state);
   if (!s || !out || perspective_player < 0 || perspective_player >= NPlayers) return;
@@ -106,6 +107,7 @@ template <int NPlayers>
 void CoupFeatureEncoder<NPlayers>::encode_private(
     const IGameState& state,
     int player,
+    const IBeliefTracker* /*tracker*/,
     std::vector<float>* out) const {
   const auto* s = dynamic_cast<const CoupState<NPlayers>*>(&state);
   if (!s || !out || player < 0 || player >= NPlayers) return;
@@ -151,7 +153,15 @@ void CoupFeatureEncoder<NPlayers>::encode_private(
 
 template <int NPlayers>
 void CoupBeliefTracker<NPlayers>::init(
-    int perspective_player, const AnyMap& /*initial_observation*/) {
+    const AnyMap& initial_observation) {
+  // Pre-§G transitional: read perspective from `__perspective_player`.
+  // Coup's randomize_unseen branches on perspective_player_ for revealed/
+  // influence/exchange_drawn slot decisions; §G migrates these to viz.
+  int perspective_player = -1;
+  auto it_pp = initial_observation.find("__perspective_player");
+  if (it_pp != initial_observation.end()) {
+    perspective_player = std::any_cast<int>(it_pp->second);
+  }
   perspective_player_ = perspective_player;
   for (auto& row : signals_) row.fill(0);
   pending_claimer_ = -1;
@@ -245,7 +255,7 @@ void CoupBeliefTracker<NPlayers>::observe_public_event(
 
 template <int NPlayers>
 void CoupBeliefTracker<NPlayers>::randomize_unseen(
-    IGameState& state, std::mt19937& rng) const {
+    IGameState& state, int /*observer*/, std::mt19937_64& rng) const {
   auto* s = dynamic_cast<CoupState<NPlayers>*>(&state);
   if (!s) return;
   auto& d = s->data;

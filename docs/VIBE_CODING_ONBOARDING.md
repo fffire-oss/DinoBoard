@@ -1,6 +1,6 @@
 # DinoBoard — AI Onboarding
 
-> Read this **after** `README.md`. **This document already absorbs the necessary content from `docs/GAME_FEATURES_OVERVIEW.md`** (six-file game layout, ISMCTS properties, optional-component reference, two-layer testing, framework non-goals) — do not read that file, it is a human-facing capability tour that will burn context without telling you how to actually work in the repo. Everything an AI assistant needs to start working is below; deep-dive docs are linked per task.
+> Read this **after** `README.md`. **This document already absorbs the necessary content from `../FEATURES_OVERVIEW.md`** (six-file game layout, ISMCTS properties, optional-component reference, two-layer testing, framework non-goals) — do not read that file, it is a human-facing capability tour that will burn context without telling you how to actually work in the repo. Everything an AI assistant needs to start working is below; deep-dive docs are linked per task.
 
 Repo root: `/Users/chihchi/claude/DinoBoard`
 
@@ -46,7 +46,7 @@ games/<g>/
 - `IBeliefTracker::init` and `observe_public_event` signatures **do not take `IGameState*`** — never add one. The tracker physically cannot peek at truth.
 - `IFeatureEncoder::encode_public` cannot read any player's private fields.
 - `IFeatureEncoder::encode_private(p)` only reads p's own private.
-- `hash_public_fields` cannot hash anything no player can observe — including internal RNG state, unrevealed deck order. (BUG-028 is the canonical violation: hashing the deck-shuffle seed split the DAG along an invisible axis and silently weakened search. Symptom is "AI is mysteriously weak/inconsistent," never a crash.)
+- `state_hash_for_perspective(p)` walks the visibility schema and calls `hash_field_slot(h, name, idx)` for every slot with `viz[..., p] = 1`. Anything no player can observe — internal RNG state, unrevealed deck order — must not be reachable from any schema slot's viz=1 path; if it is, the DAG splits along an invisible axis and search silently weakens. (BUG-028 is the canonical violation: hashing the deck-shuffle seed; symptom is "AI is mysteriously weak/inconsistent," never a crash.)
 
 **Value head is N-dim perspective-relative.**
 - N = `num_players`, even for 2p. `values[0]` is the acting player. Targets and predictions both rotate against the encoder's perspective.
@@ -65,16 +65,16 @@ games/<g>/
 
 ## 3. ISMCTS in one screen
 
-You do not need to read `docs/guide/MCTS_ALGORITHM.md` unless you are modifying the search itself. But you must not break these properties when touching anything adjacent.
+You do not need to read `../ALGORITHM_OVERVIEW.md` unless you are modifying the framework / search itself. But you must not break these properties when touching anything adjacent.
 
 **Seven interlocking properties, all required:**
 
 1. **Root-sampling determinization.** Each simulation begins by `tracker->randomize_unseen(state, rng)` — a complete world is sampled from the observer's belief; descent is fully deterministic afterward. There are **no chance nodes**.
-2. **Per-acting-player node keying.** Each decision node is keyed by `state_hash_for_perspective(state.current_player())`. The key = `hash(public + acting-player's private)`.
+2. **Per-acting-player node keying.** Each decision node is keyed by `state_hash_for_perspective(state.current_player())` — a schema-driven walk over every slot whose `viz[..., acting-player] = 1`, plus `step_count`.
 3. **DAG, not tree.** A global `unordered_map<hash, node_idx>` shares info-set nodes across paths. Visit/Q stats aggregate naturally.
 4. **UCT2 UCB.** `sqrt()` numerator uses the **incoming edge's** visit count, not the DAG node's global visit count. Plain UCT1 over-explores in DAGs by ~√2.
-5. **Step-counter acyclicity.** `IGameState::step_count_` increments on every `do_action_fast` and is hashed into public fields. Two states never share a hash unless they share step count → DAG is structurally acyclic.
-6. **Encoder aligned with hash scope.** Encoder reads exactly `public + own private`. Same partition is hash scope and encoder scope; this keeps DAG nodes ⇄ network features 1:1.
+5. **Step-counter acyclicity.** `IGameState::step_count_` increments on every `do_action_fast` and is folded into `state_hash_for_perspective` automatically. Two states never share a hash unless they share step count → DAG is structurally acyclic.
+6. **Encoder aligned with hash scope.** Encoder reads exactly the slots that hash sees — i.e. those with `viz[..., perspective] = 1` in the MaskedState. Same partition is hash scope and encoder scope; DAG nodes ⇄ network features stay 1:1.
 7. **Same MCTS for selfplay, web, API.** Selfplay, arena, web AI, and the observation-only REST API all run the identical C++ search. Session state in the API is rebuilt from the message stream (public via `public_state_applier`, hidden via `randomize_unseen` per ply) — the API is **structurally unable to read truth**.
 
 **Three game types, one algorithm:**
@@ -82,8 +82,8 @@ You do not need to read `docs/guide/MCTS_ALGORITHM.md` unless you are modifying 
 | Type | Example | What gets registered |
 |------|---------|----------------------|
 | Public + deterministic | TicTacToe, Quoridor | state / rules / encoder only |
-| Public + symmetric random | Azul | + `belief_tracker` (`hash_private_fields` empty) |
-| Asymmetric hidden info | Splendor, Love Letter, Coup | + `belief_tracker` + non-empty `hash_private_fields` + `public_event_extractor` + `public_state_applier` + `initial_observation_extractor`/`applier` |
+| Public + symmetric random | Azul | state / rules / encoder; no tracker (physical randomness lives on public counts, sim_rng samples on the fly inside `do_action_fast`) |
+| Asymmetric hidden info | Splendor, Love Letter, Coup | + `belief_tracker` + visibility schema with owner-only fields + per-slot `hash_field_slot` / `mask_field_slot` / `read_field_slot` / `write_field_slot` dispatchers (Splendor: snapshot via walker; LL/Coup: still on `public_event_extractor` / `public_state_applier` / `initial_observation_extractor`/`applier` until next migration round) |
 
 ---
 
@@ -136,7 +136,7 @@ Baseline must be green before you start. **Never edit on a red baseline** — yo
 | Task | Required reading | Reference |
 |------|------------------|-----------|
 | **Add a new game** | `docs/guide/GAME_DEVELOPMENT_GUIDE.md` (search the relevant section, do not read top-to-bottom) | `docs/guide/CONFIG_REFERENCE.md`, `docs/guide/NEW_GAME_TEST_GUIDE.md`, `docs/KNOWN_ISSUES.md` (general pitfalls + BUG-017 + BUG-023) |
-| **Modify MCTS / search / belief** | `docs/guide/MCTS_ALGORITHM.md` + `CLAUDE.md` "AI Pipeline Independence" section | `docs/KNOWN_ISSUES.md` framework-layer BUGs and all DEC entries |
+| **Modify MCTS / search / belief / framework contract** | `../ALGORITHM_OVERVIEW.md` + `CLAUDE.md` "AI Pipeline Independence" section | `docs/KNOWN_ISSUES.md` framework-layer BUGs and all DEC entries |
 | **Modify training / ONNX / pipeline** | `CLAUDE.md` (full) | `docs/KNOWN_ISSUES.md` framework-layer BUGs |
 | **Modify web frontend** | `docs/guide/WEB_DESIGN_PRINCIPLES.md` + `docs/guide/WEB_DEVELOPMENT_GUIDE.md` | — |
 | **Modify AI API / third-party integration** | `docs/guide/AI_API.md` + `docs/games/<game>_api.md` for the relevant game | `CLAUDE.md` "AI Pipeline Independence" section |
@@ -221,7 +221,7 @@ Add or change a feature → update the relevant doc. Fix a bug → add a `docs/K
 - **Writing hundreds of lines before the first compile.** Scaffold, build, register, then fill.
 - **Deleting the legacy 2p scalar value-head branch.** Breaks every shipped 2p ONNX.
 - **Bypassing `gil_scoped_release` in pybind bindings.** Multi-second UI freezes per move.
-- **Hashing internal RNG state or unrevealed deck order into `hash_public_fields`.** Silently weakens search; no test catches it directly except `test_public_hash_excludes_internal_rng`. (BUG-028.)
+- **Letting a slot whose `hash_field_slot` reaches internal RNG state / unrevealed deck order be visible (`viz=1` to anyone).** Silently weakens search; no test catches it directly except `test_public_hash_excludes_internal_rng`. (BUG-028.)
 
 ---
 

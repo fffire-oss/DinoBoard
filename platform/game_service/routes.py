@@ -6,6 +6,8 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+import dinoboard_engine as engine
+
 from .sessions import (
     GAME_CONFIGS,
     create_session,
@@ -47,8 +49,14 @@ _GAME_DISPLAY_ORDER = ["azul", "splendor", "quoridor", "loveletter", "coup", "ti
 @router.get("/available")
 def available_games():
     order_index = {gid: i for i, gid in enumerate(_GAME_DISPLAY_ORDER)}
+    # Filter to only games whose engine bundle is registered. A game's
+    # config files (game.json / web.json) may exist on disk while its
+    # GameRegistrar is intentionally commented out (e.g. coup pending
+    # §G.2 viz migration); those games must not surface to the UI since
+    # the engine cannot create a session for them.
+    registered = set(engine.available_games())
     sorted_items = sorted(
-        GAME_CONFIGS.items(),
+        ((gid, cfg) for gid, cfg in GAME_CONFIGS.items() if gid in registered),
         key=lambda kv: (order_index.get(kv[0], len(_GAME_DISPLAY_ORDER)), kv[0]),
     )
     games = []

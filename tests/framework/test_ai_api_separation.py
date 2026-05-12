@@ -62,8 +62,14 @@ def client(monkeypatch):
     resolved internally from `games/<id>/model/`. We inject a fake resolver here
     so tests can run on throwaway ONNX files that always match the current
     feature_dim.
+
+    Strength (simulations / temperature) is server-controlled — clients cannot
+    tune it through the wire. The test fixture overrides `_resolve_strength`
+    to a small `simulations` so the suite stays fast; this is the same hook
+    the production server uses to read web.json's expert difficulty.
     """
     monkeypatch.setattr(ai_sessions, "_find_model_path", get_test_model)
+    monkeypatch.setattr(ai_sessions, "_resolve_strength", lambda game_id: (40, 0.0))
     # Fresh store each test so sessions don't leak between cases.
     monkeypatch.setattr(ai_sessions, "_STORE", None)
     return TestClient(app)
@@ -111,8 +117,6 @@ def _play_full_game(
         "game_id": game_id,
         "seed": seed_ai,
         "my_seat": ai_seat,
-        "simulations": 40,
-        "temperature": 0.0,
     }
     if initial_observation:
         create_payload["initial_observation"] = initial_observation
@@ -267,6 +271,61 @@ def test_decide_rejects_wrong_turn(client):
         assert "seat" in resp.text or "seat" in resp.json().get("detail", "")
     finally:
         client.delete(f"/ai/sessions/{session_id}")
+
+
+def test_create_session_ignores_client_strength_params(client, monkeypatch):
+    """Strength params (`simulations` / `temperature`) are NOT wire fields.
+
+    AI strength is server-controlled — resolved from web.json
+    `difficulty_overrides.expert`. Even if a client smuggles `simulations` /
+    `temperature` into the body, they must not influence the session: pydantic
+    drops unknown fields, and the server-side `_resolve_strength` is the only
+    source. We assert by stubbing `_resolve_strength` and checking the AISession
+    actually carries the resolved values, not the client's.
+    """
+    sentinel = (123, 0.7)
+    monkeypatch.setattr(ai_sessions, "_resolve_strength", lambda game_id: sentinel)
+
+    resp = client.post("/ai/sessions", json={
+        "game_id": "tictactoe",
+        "seed": 42,
+        "my_seat": 0,
+        "simulations": 9999,   # client tries to override; must be ignored
+        "temperature": 1.5,
+    })
+    assert resp.status_code == 200, resp.text
+    session_id = resp.json()["session_id"]
+    try:
+        sess = ai_sessions.get_store().get(session_id)
+        assert (sess.simulations, sess.temperature) == sentinel
+    finally:
+        client.delete(f"/ai/sessions/{session_id}")
+
+
+def test_create_session_omitted_seed_picks_fresh(client, monkeypatch):
+    """`seed` is optional; omission triggers `secrets.randbits(64)`.
+
+    Two sessions created without a seed must independently draw — we assert by
+    spying on `secrets.randbits` and checking it is called per-create.
+    """
+    import secrets as _secrets
+    calls: list[int] = []
+    real = _secrets.randbits
+
+    def spy(n: int) -> int:
+        calls.append(n)
+        return real(n)
+
+    from ai_service import routes as ai_routes
+    monkeypatch.setattr(ai_routes.secrets, "randbits", spy)
+
+    for _ in range(2):
+        resp = client.post("/ai/sessions", json={
+            "game_id": "tictactoe", "my_seat": 0,
+        })
+        assert resp.status_code == 200, resp.text
+        client.delete(f"/ai/sessions/{resp.json()['session_id']}")
+    assert calls == [64, 64]
 
 
 def test_session_not_found(client):

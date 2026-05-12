@@ -3,25 +3,31 @@
 #include <vector>
 
 #include "game_interfaces.h"
+#include "masked_state.h"
 
 namespace board_ai {
 
-// Feature encoder split into public / private halves.
+class IBeliefTracker;
+
+
+// Feature encoder split into public / private halves, both reading a
+// MaskedState (golden standard §2.5 / I13).
 //
-// Motivation: the hash API already splits state into `hash_public_fields`
-// and `hash_private_fields(p)`. The encoder must respect the same scope
-// (only `public + current_player's private` may be read for the network
-// input). Previously this was a convention enforced by code review and
-// the black-box `test_encoder_respects_hash_scope`. Phase 6 promotes it
-// to a structural invariant: `encode_public` has no player argument and
-// MUST NOT read any player's private fields; `encode_private(p)` MUST NOT
-// read any other player's private fields.
+// Input surface = MaskedState + tracker (ALGORITHM_OVERVIEW §6). The
+// MaskedState carries every state field perspective can legally see;
+// the optional `tracker` carries public derived statistics the network
+// wants but the rules engine doesn't (e.g. claim history, multiset
+// summaries). Games that don't need tracker-sourced features ignore
+// the parameter; the tracker pointer may be null when no tracker is
+// registered for the game (TicTacToe / Quoridor / Azul today).
 //
-// Composition is provided by `encode` (non-virtual here): it assembles
-// `[encode_public, encode_private(perspective)]` into the flat feature
-// vector that the network consumes. Network architecture is unchanged —
-// a single flat input tensor. The split is purely a code-structure
-// guarantee.
+// `encode` materializes a MaskedState once via `make_masked_state(state,
+// schema, perspective)` and feeds the same masked clone to both halves.
+// Encoders read the masked state by field name; any slot whose runtime
+// viz hides it from `perspective` shows up as `kPlaceholder*` and the
+// encoder branches on the placeholder value, not on a viz query. There
+// is no path by which an encoder can observe another perspective's
+// private truth — the placeholder write is the structural barrier.
 class IFeatureEncoder {
  public:
   virtual ~IFeatureEncoder() = default;
@@ -35,36 +41,68 @@ class IFeatureEncoder {
   // Size of one player's private half (same for all players).
   virtual int private_feature_dim() const = 0;
 
-  // Encode fields visible to all players. May use `perspective_player`
-  // for perspective-relative ordering (e.g. "is_self" flag on each
-  // player slot), but MUST NOT read any player's private fields.
+  // Encode fields visible to all players, reading from a MaskedState.
+  // May use `perspective_player` for perspective-relative ordering
+  // (e.g. "is_self" flag on each player slot). Slots hidden from
+  // `perspective_player` arrive as kPlaceholder* — encoder must branch
+  // on placeholder, never query viz.
+  //
+  // `tracker` is the perspective's belief tracker (or null if the game
+  // didn't register one). Encoders may read public-derived statistics
+  // off it; perspective-private knowledge does NOT live on the tracker
+  // (it lives on `state.viz_`), so tracker reads here are structurally
+  // public.
   virtual void encode_public(
-      const IGameState& state,
+      const MaskedState& state,
       int perspective_player,
+      const IBeliefTracker* tracker,
       std::vector<float>* out) const = 0;
 
-  // Encode fields visible only to `player`. MUST read only fields owned
-  // by `player` (own hand, own reserved cards, etc.). Reading another
-  // player's private fields — even if they happen to be sampled into
-  // state — is a separation violation.
+  // Encode the perspective's own private fields. The MaskedState was
+  // built for `player`, so own-private slots are real and other
+  // perspectives' private slots are kPlaceholder — reading a non-self
+  // private slot here is structurally a placeholder read, not a leak.
+  // `tracker` may be null when no tracker is registered.
   virtual void encode_private(
-      const IGameState& state,
+      const MaskedState& state,
       int player,
+      const IBeliefTracker* tracker,
       std::vector<float>* out) const = 0;
 
   // Composes public + perspective's private + legal mask into the flat
-  // feature vector consumed by the network. Games should NOT override
-  // this — override encode_public / encode_private instead.
+  // feature vector consumed by the network. Materializes MaskedState
+  // once and shares it with both halves. Games override
+  // encode_public / encode_private, not this.
   bool encode(
       const IGameState& state,
       int perspective_player,
+      const IBeliefTracker* tracker,
+      const std::vector<ActionId>& legal_actions,
+      std::vector<float>* features,
+      std::vector<float>* legal_mask) const {
+    auto masked = make_masked_state(state, state.schema_ref(),
+                                    perspective_player);
+    features->clear();
+    features->reserve(static_cast<size_t>(feature_dim()));
+    encode_public(*masked, perspective_player, tracker, features);
+    encode_private(*masked, perspective_player, tracker, features);
+    fill_legal_mask_impl(legal_actions, legal_mask);
+    return static_cast<int>(features->size()) == feature_dim();
+  }
+
+  // Caller already has a MaskedState (e.g. MCTS descent that masked
+  // once for hashing). Skips the second clone+mask.
+  bool encode_with_masked(
+      const MaskedState& masked,
+      int perspective_player,
+      const IBeliefTracker* tracker,
       const std::vector<ActionId>& legal_actions,
       std::vector<float>* features,
       std::vector<float>* legal_mask) const {
     features->clear();
     features->reserve(static_cast<size_t>(feature_dim()));
-    encode_public(state, perspective_player, features);
-    encode_private(state, perspective_player, features);
+    encode_public(masked, perspective_player, tracker, features);
+    encode_private(masked, perspective_player, tracker, features);
     fill_legal_mask_impl(legal_actions, legal_mask);
     return static_cast<int>(features->size()) == feature_dim();
   }

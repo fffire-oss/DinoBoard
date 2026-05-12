@@ -1810,3 +1810,36 @@ popup 循环改用 `floorCounts[pi]`。逻辑等价于"在 prev 上模拟 do_act
 
 ---
 
+## [BUG-036] LoveLetter `known_hand_[]` / `hand_override` 平行通道把 perspective 私人推断塞进 tracker 与 wire（§G.1 清理）
+
+### 背景
+
+- 落地于 2026-05-12，详见 `docs/plans/LL_LANDING.md`。
+- LoveLetter `LoveLetterBeliefTracker` 历史上持 `perspective_player_` + `known_hand_[Cfg::kPlayers]`：Priest 偷看 / Baron 比较 / King 交换后把 opp 的 cid 塞进 `known_hand_[opp]`，encoder 通过 `tracker_->known_hand(perspective)` 读出来拼进特征。
+- 同一对私人字段在 wire 上还有第二条通道：`loveletter_register.cpp` 的 `extract_events` 给每个 perspective 各自塞 `hand_override` / `drawn_override` 平行 event，receiver `apply_public_event` 反向写回 session state。
+
+### 根因
+
+CLAUDE.md 的「AI Pipeline Independence」第二条（session 公开字段被 message 重建覆盖）要求所有 perspective-private 知识活在 `state.viz` 上、由 rules 通过 `viz::reveal_slot_to` 维护，而不是绕过 viz 走 tracker 私字段或 wire 平行通道——后者会导致：
+
+1. 同一 perspective 的"知道 opp 手牌"事实在两份地方记账（tracker `known_hand_` 与 viz reveal），更新时机一旦不同步就会让 encoder 与 hash 漂移。
+2. tracker 持 `perspective_player_` 等于把 perspective 烙进 belief 内容，破坏 §B 「tracker perspective-agnostic」的不变式——两个 session 喂同一观察流应得 byte-equal belief，烙了 perspective 就做不到。
+3. wire 上多一条 `hand_override` 通道，受 `test_snapshot_keys_match_schema` 之类 lint 拦截不到，是潜在的"wire 多塞了真值"漏洞面。
+
+### 修复
+
+- LL rules 在 Priest peek / King swap / Baron compare / 抽牌 / 弃牌 / 淘汰 全部改用 `viz::reveal_slot_to(observer)` / `viz::swap_slot_owned(a, b)` / `viz::reset_to_base(slot)`，rules 是唯一的 viz writer（I1 lint 由 `test_rules_sole_viz_writer[loveletter]` 守护）。
+- `LoveLetterBeliefTracker` 退化为公开聚合 + uniform `randomize_unseen`，不再持 `perspective_player_` / `known_hand_[]`。
+- `loveletter_net_adapter` encoder 改读 `MaskedState` 的 `hand[p]` 槽位——viz=1 的 opp hand 槽本来就有真值，placeholder 走零编码。
+- `loveletter_register.cpp` 删 `hand_override` / `drawn_override` 平行通道，`public_state_applier` 走 `viz::apply_public` walker；私人 reveal 字段（owner-visible `hand[p]`、actor-visible `drawn_card`）走新的 partial-reveal sidecar `owner_overlay`（仿 Splendor `reserved_faceup_ids_flat`），receiver 写回真值并翻 viz bit。
+- `bindings/py_engine.cpp` 把 `loveletter` 加进 `per_seat_in_scope`（per-seat session 路径），`test_selfplay_no_truth_in_ai_path` 矩阵把 LL 加进 PUBLIC_KEYS。
+- `engine/core/belief_tracker.h` class doc 更新："perspective-baked private fields → state.viz" 现在只剩 Coup（待 §G.2）。
+
+### 教训
+
+1. **wire 上每多一条平行通道都要在 schema lint 里登记**。`hand_override` 走的是 `PublicEvent` 而不是 `public_snapshot["..."]`，所以 `test_snapshot_keys_match_schema` 对它无感——同样的盲区出现在 Coup 的 `hand_override`、未来任何"私人 patch event"。后续若再加私人事件通道，必须同步加 lint。
+2. **partial-reveal sidecar 是 per-perspective 私人字段进入 walker 路径的标准做法**。基线 schema 不能表达"对 receiver 这个 perspective viz=1，其它 perspective viz=0"的字段（schema 是单一基线 + rules 动态写 viz），wire 必须额外 ship 一条 perspective-aware 的 sidecar 让 receiver 写回真值并翻 viz——否则 walker 的 `serialize_public` 永远拿不到 owner-visible 真值，receiver 就只能用 belief sample 替代，DAG 会因 hash 不一致漂掉。这条经验同时复用于 Splendor `reserved_faceup_ids_flat` 和 LL `owner_overlay`，未来的私人 reveal 字段都走这个 pattern。
+3. **encoder 不再读 tracker 私字段是 §G 的硬指标**。任何"tracker 上有 perspective-private 数据"都是 §G 没收尾的信号——§G.2 Coup 收尾时同样适用。
+
+---
+

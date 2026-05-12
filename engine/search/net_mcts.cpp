@@ -4,9 +4,13 @@
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <memory>
 #include <random>
 #include <stdexcept>
 #include <unordered_map>
+
+#include "../core/rng_salt.h"
+#include "../core/schema_hash.h"
 
 namespace board_ai::search {
 
@@ -268,17 +272,46 @@ ActionId NetMcts::search_root(
   // hash would separate states from different sessions anyway).
   std::unordered_map<StateHash64, int> node_index;
 
-  // Compute node key from a sampled world's current state, using the
-  // acting player's information set.
-  auto compute_hash = [](const IGameState& s) -> StateHash64 {
-    return s.state_hash_for_perspective(s.current_player());
+  // Per-step MaskedState: clone live state with hidden slots overwritten
+  // by kPlaceholder for the acting perspective. ALGORITHM_OVERVIEW §5.2
+  // contract — sim descent every step masks once, then both the DAG
+  // hash lookup and (if the resulting node is unexpanded) the encoder
+  // read from the SAME MaskedState copy.
+  //
+  // For TTT / Quoridor / Azul / Splendor the per-perspective walker
+  // filter (`for_each_visible_slot` only visits viz=1 slots) makes
+  // hash-from-masked equivalent to hash-from-live: viz=0 slots never
+  // entered the digest on either path.
+  //
+  // For LoveLetter / Coup the off-schema `hash_extra_state_fields`
+  // hook reads live-state fields directly (drawn_card is all_hidden in
+  // schema, gets placeholder in MaskedState even for the actor) — DAG
+  // node identity changes when hashing the masked clone instead of
+  // truth. Per OVERVIEW_LANDING §A range constraint LL/Coup are out of
+  // scope until §G migrates their hidden state to viz reveals; they
+  // ride on this change as a fallback consequence rather than getting
+  // their own special path.
+  auto materialize_masked = [](const IGameState& s) -> std::unique_ptr<MaskedState> {
+    return make_masked_state(s, s.schema_ref(), s.current_player());
   };
 
-  const StateHash64 root_hash = compute_hash(root);
+  auto hash_masked = [](const MaskedState& m) -> StateHash64 {
+    return m.state_hash_for_perspective(m.current_player());
+  };
+
+  auto root_masked = materialize_masked(root);
+  const StateHash64 root_hash = hash_masked(*root_masked);
   nodes.push_back(Node{root.current_player(), false, 0, 0.0f, {}});
   node_index[root_hash] = 0;
 
-  auto expand_node = [&](Node& node, const IGameState& state) -> std::vector<float> {
+  // Leaf expansion. Caller passes the live `state` (for legal_actions
+  // and terminal_values, which need ground truth), a MaskedState
+  // already built for the acting player (for the encoder), and the
+  // tracker for the same perspective (or null when no tracker is
+  // registered for the game).
+  auto expand_node = [&](Node& node, const IGameState& state,
+                         const MaskedState& masked,
+                         const IBeliefTracker* tracker) -> std::vector<float> {
     const auto legal = rules.legal_actions(state);
     if (legal.empty()) {
       if (!state.is_terminal()) {
@@ -292,7 +325,7 @@ ActionId NetMcts::search_root(
 
     std::vector<float> priors;
     std::vector<float> values;
-    const bool ok = evaluator.evaluate(state, node.to_play, legal, &priors, &values);
+    const bool ok = evaluator.evaluate(masked, node.to_play, tracker, legal, &priors, &values);
     if (!ok) {
       throw std::runtime_error("MCTS: evaluator.evaluate() failed — model not loaded or inference error");
     }
@@ -335,12 +368,15 @@ ActionId NetMcts::search_root(
     return values;
   };
 
-  (void)expand_node(nodes[0], root);
-  const std::uint64_t dirichlet_seed = (seed != 0)
-      ? (seed ^ 0xA076178CDFB1AC2DULL ^
-         static_cast<std::uint64_t>(root.current_player() + 13))
-      : (static_cast<std::uint64_t>(t0.time_since_epoch().count()) ^
-         static_cast<std::uint64_t>(root.current_player() + 13));
+  // Root expansion uses the session-shared tracker directly — no sim is
+  // active yet, so there's nothing to clone.
+  (void)expand_node(nodes[0], root, *root_masked, cfg_.root_belief_tracker);
+  const std::uint64_t parent_seed = (seed != 0)
+      ? seed
+      : static_cast<std::uint64_t>(t0.time_since_epoch().count());
+  const std::uint64_t dirichlet_seed = board_ai::rng::derive_subseed(
+      parent_seed, "mcts.dirichlet",
+      static_cast<std::uint64_t>(root.current_player()));
   apply_root_dirichlet_noise(
       nodes[0],
       cfg_.root_dirichlet_alpha,
@@ -353,24 +389,26 @@ ActionId NetMcts::search_root(
 
   const int simulations = std::max(1, cfg_.simulations);
 
-  // Per-sim RNG for root determinization. Each sim picks a distinct world.
-  std::mt19937 root_sample_rng(
-      seed ^ 0x51ED270FABCDEF01ULL ^ static_cast<std::uint64_t>(simulations));
-
   std::int64_t dag_reuse_hits = 0;
 
   for (int sim = 0; sim < simulations; ++sim) {
     std::unique_ptr<IGameState> sim_state = root.clone_state();
-    if (cfg_.root_belief_tracker != nullptr) {
-      std::mt19937 per_sim_rng(static_cast<std::uint32_t>(root_sample_rng()));
-      cfg_.root_belief_tracker->randomize_unseen(*sim_state, per_sim_rng);
-    }
 
-    // Per-sim step rng. Each simulation derives its own seed from the
-    // root rng so descents through hidden-info games (azul refills,
-    // splendor tableau replenishes) get an independent stream — without
-    // it the rules cannot proceed past a draw.
-    std::mt19937_64 sim_step_rng(root_sample_rng() ^ 0xA17EBABEULL);
+    // Single per-sim RNG drives both root determinization (clone tracker +
+    // randomize_unseen) and descent's do_action_fast draws. Independent
+    // streams across sims via per-sim subseed; merging the prior three
+    // layers (root_sample / per_sim / sim_step) eliminates magic XOR salts.
+    std::mt19937_64 sim_rng(board_ai::rng::derive_subseed(
+        parent_seed, "mcts.sim", static_cast<std::uint64_t>(sim)));
+
+    // Clone tracker so descent-time observe_public_event (if added later)
+    // doesn't pollute the session-shared root tracker.
+    std::unique_ptr<IBeliefTracker> sim_tracker;
+    if (cfg_.root_belief_tracker != nullptr) {
+      sim_tracker = cfg_.root_belief_tracker->clone();
+      sim_tracker->randomize_unseen(*sim_state, root.current_player(), sim_rng);
+    }
+    auto& sim_step_rng = sim_rng;
 
     // Path records for backup. For UCT2 we also track which edge we came
     // through INTO each node on the path; the sqrt() in UCB uses that edge's
@@ -391,13 +429,28 @@ ActionId NetMcts::search_root(
     // sqrt argument (equals sim count so far).
     int incoming_edge_visits = nodes[0].visit_count;
 
+    // MaskedState for the current sim_state. §5.2: one mask per step,
+    // shared by the DAG hash lookup and (if the node turns out
+    // unexpanded) the encoder. Materialized lazily because the very
+    // first iteration of each sim sits on the root, which was already
+    // hashed + expanded above before this loop began.
+    std::unique_ptr<MaskedState> step_masked;
+
     while (depth < cfg_.max_depth) {
       if (sim_state->is_terminal()) {
         leaf_values = value_model.terminal_values(*sim_state);
         break;
       }
       if (!nodes[cur_idx].expanded) {
-        leaf_values = expand_node(nodes[cur_idx], *sim_state);
+        if (!step_masked) step_masked = materialize_masked(*sim_state);
+        // Sim-local tracker (clone of root) is what the encoder reads —
+        // pollution from descent-time observe_public_event stays inside
+        // this sim. Falls back to the session-shared tracker if no clone
+        // exists (game has no tracker registered).
+        const IBeliefTracker* encoder_tracker = sim_tracker
+            ? sim_tracker.get() : cfg_.root_belief_tracker;
+        leaf_values = expand_node(nodes[cur_idx], *sim_state, *step_masked,
+                                  encoder_tracker);
         break;
       }
       if (nodes[cur_idx].edges.empty()) {
@@ -462,10 +515,10 @@ ActionId NetMcts::search_root(
           if (!legal_str.empty()) legal_str += ",";
           legal_str += std::to_string(a);
         }
-        // Dump state_hash to correlate with independent debugging +
-        // sim_state's include_hidden hash to differentiate sampled worlds.
-        const auto h_pub = compute_hash(*sim_state);
-        const auto h_full = sim_state->state_hash(true);
+        // Dump state_hash to correlate with independent debugging.
+        // Error path — ok to mask one more time for the dump.
+        const auto h_pub = hash_masked(*materialize_masked(*sim_state));
+        const auto h_full = sim_state->state_hash();
         throw std::runtime_error(
             "MCTS: DAG node legal-action mismatch; selected action " +
             std::to_string(chosen_action) + " is not legal in current state. "
@@ -483,9 +536,12 @@ ActionId NetMcts::search_root(
       const ActionId final_action = nodes[cur_idx].edges[best_edge].action;
       rules.do_action_fast(*sim_state, final_action, sim_step_rng);
 
-      // DAG node lookup: after do_action, compute hash under the NEW
-      // current_player's perspective (decision node = acting-player view).
-      const StateHash64 next_hash = compute_hash(*sim_state);
+      // After do_action: rebuild MaskedState for the new state, then
+      // hash it (§5.2 — one mask per step, shared with the encoder).
+      // The same masked copy is reused if the resulting node turns
+      // out to be unexpanded — expand_node reads it next iteration.
+      step_masked = materialize_masked(*sim_state);
+      const StateHash64 next_hash = hash_masked(*step_masked);
       int next_idx = -1;
       auto it = node_index.find(next_hash);
       if (it != node_index.end()) {
@@ -564,7 +620,8 @@ ActionId NetMcts::search_root(
   if (tied_edges.size() == 1) {
     best_edge = tied_edges.front();
   } else if (!tied_edges.empty()) {
-    SplitMix64Engine tiebreak_rng(seed ^ 0xCC9E2D51FBF7B96DULL);
+    SplitMix64Engine tiebreak_rng(
+        board_ai::rng::derive_subseed(parent_seed, "mcts.tiebreak"));
     std::uniform_int_distribution<size_t> pick(0, tied_edges.size() - 1);
     best_edge = tied_edges[pick(tiebreak_rng)];
   }

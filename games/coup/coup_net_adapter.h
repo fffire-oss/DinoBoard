@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <memory>
 #include <random>
 #include <vector>
 
@@ -23,11 +24,13 @@ class CoupFeatureEncoder final : public IFeatureEncoder {
   void encode_public(
       const IGameState& state,
       int perspective_player,
+      const IBeliefTracker* tracker,
       std::vector<float>* out) const override;
 
   void encode_private(
       const IGameState& state,
       int player,
+      const IBeliefTracker* tracker,
       std::vector<float>* out) const override;
 };
 
@@ -40,13 +43,17 @@ template <int NPlayers>
 class CoupBeliefTracker final : public IBeliefTracker {
  public:
   using Cfg = CoupConfig<NPlayers>;
-  void init(int perspective_player, const AnyMap& initial_observation) override;
+  void init(const AnyMap& initial_observation) override;
   void observe_public_event(
       int actor,
       ActionId action,
       const std::vector<PublicEvent>& pre_events,
       const std::vector<PublicEvent>& post_events) override;
-  void randomize_unseen(IGameState& state, std::mt19937& rng) const override;
+  void randomize_unseen(IGameState& state, int observer,
+                        std::mt19937_64& rng) const override;
+  std::unique_ptr<IBeliefTracker> clone() const override {
+    return std::make_unique<CoupBeliefTracker<NPlayers>>(*this);
+  }
 
   // For tests: expose signal counts.
   int signal_count(int player, int role) const {

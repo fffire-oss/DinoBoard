@@ -21,11 +21,13 @@ class QuoridorFeatureEncoder final : public IFeatureEncoder {
   void encode_public(
       const IGameState& state,
       int perspective_player,
+      const IBeliefTracker* tracker,
       std::vector<float>* out) const override;
 
   void encode_private(
       const IGameState& /*state*/,
       int /*player*/,
+      const IBeliefTracker* /*tracker*/,
       std::vector<float>* /*out*/) const override {}
 };
 

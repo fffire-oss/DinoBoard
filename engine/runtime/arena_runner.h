@@ -53,6 +53,23 @@ ArenaMatchResult run_arena_match(
     // input from initial_observation_extractor — state reads never pass
     // through the tracker interface.
     PublicEventExtractor public_event_extractor = nullptr,
-    InitialObservationExtractor initial_observation_extractor = nullptr);
+    InitialObservationExtractor initial_observation_extractor = nullptr,
+    // Per-seat trackers for in-scope games (TTT/Quoridor/Azul/Splendor).
+    // When non-empty (size == num_players), the legacy per-ply re-init of
+    // the singular `belief_tracker` is bypassed: each seat's tracker is
+    // init'd once at match start and accumulates the full observation
+    // history, exactly like selfplay. MCTS root for the acting player
+    // reads from per_perspective_trackers[player]. Empty vector falls
+    // back to the legacy `belief_tracker` path (LL/Coup pre-§G).
+    std::vector<IBeliefTracker*> per_perspective_trackers = {},
+    // Optional per-seat session state. When non-empty (size ==
+    // num_players), MCTS / encoder / legal_actions read from
+    // per_seat_states[player] instead of the truth state. Each seat's
+    // session state is advanced via the public-event protocol (mirrors
+    // selfplay_runner / py_engine::advance_ai_view_) — never copied from
+    // truth. Empty vector: AI path reads truth (LL/Coup pre-§G fallback).
+    std::vector<IGameState*> per_seat_states = {},
+    PublicEventApplier public_event_applier = nullptr,
+    PublicStateApplier public_state_applier = nullptr);
 
 }  // namespace board_ai::runtime

@@ -38,7 +38,6 @@ def test_schema_header_has_phase_1_2_surface() -> None:
     assert "struct VizTensor" in text
     assert "struct FieldDecl" in text
     assert "struct VisibilitySchema" in text
-    assert "struct EventDecl" in text
     # Static base-viz builders.
     for sym in ("all_public", "all_hidden", "owner_only_first_axis"):
         assert f"VizTensor {sym}(" in text or f" {sym}(" in text, f"missing {sym}"
@@ -79,7 +78,8 @@ def test_runtime_header_has_phase_1_2_helpers() -> None:
     smaller header."""
     text = _read(RUNTIME_HEADER)
     for sym in ("init_viz", "reveal_slot", "reveal_slot_to",
-                "reset_to_base", "SlotVisitor"):
+                "reset_to_base", "swap_slot", "swap_slot_owned",
+                "SlotVisitor"):
         assert sym in text, f"viz_runtime.h missing {sym}"
 
 

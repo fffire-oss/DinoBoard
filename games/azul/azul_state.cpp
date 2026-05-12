@@ -184,7 +184,7 @@ bool AzulState<NPlayers>::is_tree_cache_consistent() const {
 }
 
 template <int NPlayers>
-StateHash64 AzulState<NPlayers>::state_hash(bool include_hidden_rng) const {
+StateHash64 AzulState<NPlayers>::state_hash() const {
   std::size_t h = 0;
   hash_combine(h,static_cast<std::size_t>(current_player_));
   hash_combine(h,static_cast<std::size_t>(first_player_next_round));
@@ -224,27 +224,7 @@ StateHash64 AzulState<NPlayers>::state_hash(bool include_hidden_rng) const {
     }
     hash_combine(h,static_cast<std::size_t>(p.score));
   }
-  (void)include_hidden_rng;  // RNG is no longer state.
   return static_cast<StateHash64>(h);
-}
-
-template <int NPlayers>
-void AzulState<NPlayers>::hash_public_fields(Hasher& h) const {
-  // Azul is symmetric-random but fully PUBLIC with respect to composition:
-  // everyone sees factory contents, center pile, each player's board, and
-  // knows the bag composition derivably (bag = all tiles − placed − discarded).
-  // The only thing nobody knows is the future draw ORDER, so hash bag/box
-  // as multisets rather than vector order. Schema declares every field as
-  // all_public, so the framework walker emits them all here; the per-slot
-  // typed dispatch lives in hash_field_slot.
-  framework::hash_public_via_schema(*this, schema(), h);
-}
-
-template <int NPlayers>
-void AzulState<NPlayers>::hash_private_fields(int /*player*/, Hasher& /*h*/) const {
-  // Azul has no non-symmetric private info. Schema has no owner_only or
-  // hidden fields, so the framework walker emits nothing here — every
-  // visible slot was already covered by hash_public_via_schema above.
 }
 
 template <int NPlayers>

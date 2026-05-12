@@ -22,7 +22,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 import dinoboard_engine as engine
 
 
-DEPLOYED_MODEL_GAMES = ["tictactoe", "quoridor", "splendor", "azul", "loveletter", "coup"]
+DEPLOYED_MODEL_GAMES = [g for g in ["tictactoe", "quoridor", "splendor", "azul", "loveletter", "coup"]
+                        if g in engine.available_games()]
 
 
 def _deployed_model_path(game_id: str) -> Path | None:

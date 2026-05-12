@@ -58,56 +58,63 @@ class IGameState {
 
   // Legacy full-state hash. Retained for non-ISMCTS paths (tail solver,
   // transposition debug). New code paths use state_hash_for_perspective.
-  virtual StateHash64 state_hash(bool include_hidden_rng) const = 0;
+  virtual StateHash64 state_hash() const = 0;
 
-  // ========== Public/private hash API ==========
+  // ========== Schema-driven hash API ==========
   //
-  // Game declares which fields are public and which are private per-player.
-  // Framework derives state_hash_for_perspective(p) by combining:
-  //   step_count, then hash_public_fields(h), then hash_private_fields(p, h).
+  // `state_hash_for_perspective(player)` walks the visibility schema in
+  // declaration order and dispatches `hash_field_slot(h, name, idx)`
+  // for every slot whose runtime viz is 1 for `player`. The visited
+  // set IS `player`'s information set — schema + viz tensor define
+  // both public and private partitions; the framework needs no separate
+  // hash_public/private API.
   //
-  // Contract:
-  //   - hash_public_fields: hash every field that ALL players can see
-  //   - hash_private_fields(p): hash every field that ONLY player p can see
-  //     (plus p's own knowledge/belief-derived info that p is allowed to have)
-  //   - Do NOT hash fields belonging to players other than p in
-  //     hash_private_fields. Do NOT hash private fields in hash_public_fields.
-  //
-  // The same partition drives MCTS node keying, encoder feature extraction,
-  // and the AI-pipeline-no-leak test suite. Keeping the two methods aligned
-  // with encoder scope is the game author's responsibility; the framework
-  // enforces the partition is well-defined via hash tests.
-  virtual void hash_public_fields(Hasher& h) const = 0;
-  virtual void hash_private_fields(int player, Hasher& h) const = 0;
+  // Off-schema state (variable-length lists, conditionally-public slots
+  // not yet wired through `viz::reveal_slot`) folds in via the optional
+  // `hash_extra_state_fields` hook, called after the walker pass.
+  // LoveLetter / Coup currently use this for `discard_piles` / deck
+  // size / revealed-influence patches; once those are schema-driven
+  // (Phase 3 §G), the hook drops to no-op and its overrides delete.
 
-  // Phase 3.6.a hook: typed value emission for one schema slot.
-  //
-  // Used by `framework::hash_public_via_schema` / `hash_private_via_schema`
-  // (engine/core/schema_hash.h) when a game's hash_public_fields /
-  // hash_private_fields delegate to the framework walker. Implementations
-  // dispatch on `name` to `h.add(this->myfield[idx0][idx1]...)` — a single
-  // mechanical switch per game replacing the per-field hand-written loops.
-  //
-  // Contract:
-  //   - Must NOT consult viz_; visibility filtering is done by the walker
-  //     before this hook is invoked.
-  //   - Must emit a stable, deterministic byte sequence per (name, idx).
-  //   - Default body is empty: games still using the legacy hand-written
-  //     hash_public_fields / hash_private_fields don't need to override
-  //     this until they migrate to the schema-driven path.
+  // Typed value emission for one schema slot. The framework walker
+  // visits every visible (name, idx) and dispatches here; games answer
+  // with `h.add(this->myfield[idx...])`. Walker has already filtered
+  // on viz, so this must NOT re-consult viz_.
   virtual void hash_field_slot(Hasher& /*h*/, const std::string& /*name*/,
                                const std::vector<int>& /*idx*/) const {}
 
-  // Framework-provided perspective hash. Combines step_count (for DAG
-  // acyclicity) + public fields + given player's private fields. NOT
-  // virtual — games override the two helpers above, not this.
-  StateHash64 state_hash_for_perspective(int player) const {
-    Hasher h;
-    h.add(step_count_);
-    hash_public_fields(h);
-    hash_private_fields(player, h);
-    return h.finalize();
+  // Hash off-schema state for `perspective`. Default no-op; games that
+  // hold variable-length lists or conditionally-public slots not yet
+  // expressed via the schema/viz pipeline override this. Called after
+  // the walker pass inside `state_hash_for_perspective`.
+  virtual void hash_extra_state_fields(int /*perspective*/,
+                                       Hasher& /*h*/) const {}
+
+  // Typed slot read/write for walker-driven snapshot wire I/O
+  // (`viz::serialize_public` / `viz::apply_public`). Game returns a
+  // typed std::any for the named slot, or accepts one back. Mirrors
+  // hash_field_slot / mask_field_slot dispatch shape.
+  virtual std::any read_field_slot(const std::string& /*name*/,
+                                   const std::vector<int>& /*idx*/) const {
+    return {};
   }
+  virtual void write_field_slot(const std::string& /*name*/,
+                                const std::vector<int>& /*idx*/,
+                                const std::any& /*value*/) {}
+
+  // Polymorphic accessor for the game's static VisibilitySchema.
+  // Framework helpers (`make_masked_state`, MCTS descent hoist) call
+  // this to drive the walker without knowing the concrete state type.
+  virtual const viz::VisibilitySchema& schema_ref() const = 0;
+
+  // Framework-provided perspective hash. Walks the schema and dispatches
+  // `hash_field_slot` for every slot whose runtime viz is 1 for `player`,
+  // then folds in `hash_extra_state_fields(player, h)` for off-schema
+  // state. NOT virtual — games extend via `hash_field_slot` and the
+  // optional extras hook, not by overriding this. Definition lives in
+  // schema_hash.h to break the include cycle (walker depends on
+  // viz_runtime which depends on this header).
+  StateHash64 state_hash_for_perspective(int player) const;
 
   // ========== Framework-provided step counter ==========
   //
@@ -148,49 +155,30 @@ class IGameState {
   std::uint32_t step_count_ = 0;
 
  public:
-  // ========== Per-state visibility tensor (Phase 1.2) ==========
-  //
-  // viz_ stores the live per-field visibility tensor for THIS state, keyed
-  // by FieldDecl::name. Initialized via viz::init_viz(*this, MyGame::schema())
-  // at the end of every game's reset_with_seed override (Phase 3 wires this
-  // into each game; Phase 1.2 only adds the storage + helpers). Mutated only
-  // by rules inside do_action_fast via the rules-side helpers
-  // (viz::reveal_slot / reveal_slot_to / reset_to_base — Phase 1.5).
-  //
-  // Public so framework helpers (init_viz / reveal_slot / hash walker /
-  // encoder masker) can read/write without friending every utility. Games
-  // MUST treat viz_ as opaque outside do_action_fast (golden standard I1:
-  // rules are the sole writer).
+  // Per-state visibility tensor, keyed by FieldDecl::name. Initialized
+  // by viz::init_viz at reset_with_seed; mutated only by rules inside
+  // do_action_fast via reveal_slot / reveal_slot_to / reset_to_base
+  // (golden standard I1 — rules are the sole writer). Framework readers
+  // (hash walker, snapshot serializer, mask_all_hidden_slots) read it
+  // directly.
   std::unordered_map<std::string, viz::VizTensor> viz_;
 
-  // ========== Per-perspective masking hook (Phase 1.5) ==========
-  //
-  // Called by framework's `make_masked_state(state, perspective)` on a
-  // freshly cloned state. Game's override walks its own viz_ and writes
-  // the corresponding kPlaceholder sentinel into every C++ field slot
-  // whose `viz[..., perspective] == 0`.
-  //
-  // Why the game writes its own mask: framework code holds only
-  // `IGameState&` and has no way to reach `state.influence[p][i]` (or
-  // any other game-specific typed field) without knowing the concrete
-  // subclass layout. The game does know its layout, so it does the
-  // write — read viz_["field_name"] for which slots to clobber, then
-  // assign kPlaceholderInt32 / kPlaceholderInt8 / kPlaceholderBool
-  // (from masked_state.h) into those slots.
-  //
-  // Default body: no-op. Correct for any state with empty viz_ (no
-  // schema declared yet — fully-public games before Phase 3, and all
-  // 6 games during Phase 1.5 since schemas land per-game in Phase 3).
-  // Once a game declares its schema, it overrides this to perform the
-  // actual mask write.
-  //
-  // Contract:
-  //   - May NOT touch viz_ itself, only the typed payload fields.
-  //   - May NOT touch step_count_.
-  //   - Must be idempotent — calling twice with the same perspective
-  //     produces the same state (because placeholder == placeholder).
-  //   - Must handle perspective in [0, num_players()).
-  virtual void apply_viz_mask(int /*perspective*/) {}
+  // Per-slot placeholder write for hidden slots. Walker calls this for
+  // each (name, idx) where viz[idx, perspective] == 0 (or belief_filled
+  // is set). Game writes kPlaceholderInt32 / kPlaceholderInt8 /
+  // kPlaceholderBool into the matching typed slot. Must be idempotent.
+  // Default no-op covers fully-public games whose walker never visits
+  // a hidden slot.
+  virtual void mask_field_slot(const std::string& /*name*/,
+                               const std::vector<int>& /*idx*/) {}
+
+  // Drives the walker over hidden slots and dispatches each to
+  // `mask_field_slot`. Virtual so games with COW-shared state (e.g.
+  // Splendor's shared_ptr<const SplendorData>) can detach a writable
+  // copy once before running the walker, instead of reseating per slot.
+  virtual void mask_all_hidden_slots(
+      const viz::VisibilitySchema& schema, int perspective,
+      const std::unordered_map<std::string, viz::VizTensor>* belief_filled);
 };
 
 template <typename Derived>

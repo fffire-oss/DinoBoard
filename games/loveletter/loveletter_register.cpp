@@ -4,6 +4,7 @@
 
 #include "../../engine/core/game_registry.h"
 #include "../../engine/core/snapshot_io.h"
+#include "../../engine/core/viz_runtime.h"
 #include "loveletter_state.h"
 #include "loveletter_rules.h"
 #include "loveletter_net_adapter.h"
@@ -140,7 +141,7 @@ constexpr int kPrince = 5, kKing = 6, kCountess = 7, kPrincess = 8;
 
 template <int NPlayers>
 double score_action(
-    const LoveLetterState<NPlayers>& s, ActionId a, std::mt19937& rng) {
+    const LoveLetterState<NPlayers>& s, ActionId a, std::mt19937_64& rng) {
   const auto& d = s.data;
   const int actor = d.current_player;
   // Actor's own hand + drawn card — these are fully known to actor.
@@ -268,7 +269,7 @@ board_ai::HeuristicResult pick(
     std::uint64_t rng_seed) {
   auto& s = board_ai::checked_cast<LoveLetterState<NPlayers>>(state);
   auto legal = rules.legal_actions(state);
-  std::mt19937 rng(rng_seed);
+  std::mt19937_64 rng(rng_seed);
 
   board_ai::HeuristicResult result;
   result.actions = legal;
@@ -327,49 +328,6 @@ using board_ai::loveletter::kKingOffset;
 using board_ai::loveletter::kKingCount;
 using board_ai::loveletter::kCountessAction;
 using board_ai::loveletter::kPrincessAction;
-
-struct DecodedAction {
-  std::int8_t card = 0;
-  int target = -1;
-  std::int8_t guess = 0;
-};
-
-DecodedAction decode(ActionId action) {
-  DecodedAction out;
-  if (action >= kGuardOffset && action < kGuardOffset + kGuardCount) {
-    out.card = kGuard;
-    int idx = action - kGuardOffset;
-    out.target = idx / 7;
-    out.guess = static_cast<std::int8_t>((idx % 7) + 2);
-  } else if (action >= kPriestOffset && action < kPriestOffset + kPriestCount) {
-    out.card = kPriest;
-    out.target = action - kPriestOffset;
-  } else if (action >= kBaronOffset && action < kBaronOffset + kBaronCount) {
-    out.card = kBaron;
-    out.target = action - kBaronOffset;
-  } else if (action == kHandmaidAction) {
-    out.card = kHandmaid;
-  } else if (action >= kPrinceOffset && action < kPrinceOffset + kPrinceCount) {
-    out.card = kPrince;
-    out.target = action - kPrinceOffset;
-  } else if (action >= kKingOffset && action < kKingOffset + kKingCount) {
-    out.card = kKing;
-    out.target = action - kKingOffset;
-  } else if (action == kCountessAction) {
-    out.card = kCountess;
-  } else if (action == kPrincessAction) {
-    out.card = kPrincess;
-  }
-  return out;
-}
-
-// Does this action's do_action_fast read d.hand[target] in a way that
-// depends on the target's actual card value? (Used to decide whether to
-// emit a pre-action hand_override event for the target.)
-bool action_reads_target_hand(std::int8_t card) {
-  return card == kGuard || card == kPriest || card == kBaron ||
-         card == kPrince || card == kKing;
-}
 
 template <int NPlayers>
 AnyMap extract_initial_observation(const IGameState& state, int perspective) {
@@ -479,289 +437,216 @@ void apply_initial_observation(IGameState& state, int perspective, const AnyMap&
   } else {
     d.drawn_card = take_one();
   }
+
+  // Re-seed viz from schema base — wipes any stale reveals carried
+  // over from a prior reset. Then apply the same starting reveal truth
+  // applies (`drawn_card` → starting current_player) ONLY when
+  // perspective is the starting current_player; otherwise this seat
+  // hasn't drawn yet, and even truth's overlay won't expose drawn_card
+  // to them. hand[perspective] is owner_only_first_axis (auto-revealed
+  // to its owner by the schema base).
+  s.reseed_viz();
+  if (d.current_player == perspective) {
+    board_ai::loveletter::LoveLetterRules<NPlayers>::reveal_starting_draw_to(
+        state, perspective);
+  }
 }
 
-// Per-field emitter/applier table for the public_snapshot. Schema's
-// declaration order in loveletter_state.cpp drives `viz::emit_snapshot`
-// / `viz::apply_snapshot`; entries here translate one schema all_public
-// field to AnyMap key. Every all_public field must have an entry in
-// BOTH maps; emit/apply throw if not. Variable-length / size-only keys
-// (deck_size, discard_piles, face_up_removed) are NOT schema fields —
-// they're handled directly alongside this call.
-template <int NPlayers>
-const board_ai::viz::SnapshotIO& loveletter_snapshot_io() {
-  using LLState = LoveLetterState<NPlayers>;
-  static const board_ai::viz::SnapshotIO io = []() {
-    using namespace board_ai;
-    viz::SnapshotIO t;
-
-    auto put_int = [](AnyMap& m, const char* key, int v) { m[key] = std::any(v); };
-    auto put_bool = [](AnyMap& m, const char* key, bool v) { m[key] = std::any(v); };
-    auto put_vec = [](AnyMap& m, const char* key, std::vector<int> v) {
-      m[key] = std::any(std::move(v));
-    };
-
-    // ---- emitters ----
-    t.emitters["current_player"] = [put_int](const IGameState& s, AnyMap& m) {
-      const auto& d = checked_cast<LLState>(s).data;
-      put_int(m, "current_player", static_cast<int>(d.current_player));
-    };
-    t.emitters["first_player"] = [put_int](const IGameState& s, AnyMap& m) {
-      const auto& d = checked_cast<LLState>(s).data;
-      put_int(m, "first_player", static_cast<int>(d.first_player));
-    };
-    t.emitters["winner"] = [put_int](const IGameState& s, AnyMap& m) {
-      const auto& d = checked_cast<LLState>(s).data;
-      put_int(m, "winner", static_cast<int>(d.winner));
-    };
-    t.emitters["terminal"] = [put_bool](const IGameState& s, AnyMap& m) {
-      const auto& d = checked_cast<LLState>(s).data;
-      put_bool(m, "terminal", static_cast<bool>(d.terminal));
-    };
-    t.emitters["ply"] = [put_int](const IGameState& s, AnyMap& m) {
-      const auto& d = checked_cast<LLState>(s).data;
-      put_int(m, "ply", static_cast<int>(d.ply));
-    };
-    t.emitters["alive"] = [put_vec](const IGameState& s, AnyMap& m) {
-      const auto& d = checked_cast<LLState>(s).data;
-      std::vector<int> v(NPlayers);
-      for (int p = 0; p < NPlayers; ++p) v[p] = d.alive[p] ? 1 : 0;
-      put_vec(m, "alive", std::move(v));
-    };
-    t.emitters["protected_flags"] = [put_vec](const IGameState& s, AnyMap& m) {
-      const auto& d = checked_cast<LLState>(s).data;
-      std::vector<int> v(NPlayers);
-      for (int p = 0; p < NPlayers; ++p) v[p] = d.protected_flags[p] ? 1 : 0;
-      put_vec(m, "protected_flags", std::move(v));
-    };
-    t.emitters["hand_exposed"] = [put_vec](const IGameState& s, AnyMap& m) {
-      const auto& d = checked_cast<LLState>(s).data;
-      std::vector<int> v(NPlayers);
-      for (int p = 0; p < NPlayers; ++p) v[p] = static_cast<int>(d.hand_exposed[p]);
-      put_vec(m, "hand_exposed", std::move(v));
-    };
-
-    // ---- appliers ----
-    auto get_int = [](const AnyMap& m, const char* key) -> int {
-      auto it = m.find(key);
-      return (it != m.end()) ? std::any_cast<int>(it->second) : 0;
-    };
-    auto get_bool = [](const AnyMap& m, const char* key) -> bool {
-      auto it = m.find(key);
-      return (it != m.end()) ? std::any_cast<bool>(it->second) : false;
-    };
-    auto get_iv = [](const AnyMap& m, const char* key) -> std::vector<int> {
-      auto it = m.find(key);
-      if (it == m.end()) return {};
-      if (it->second.type() == typeid(std::vector<int>)) {
-        return std::any_cast<std::vector<int>>(it->second);
-      }
-      if (it->second.type() == typeid(std::vector<std::any>)) {
-        const auto& av = std::any_cast<const std::vector<std::any>&>(it->second);
-        std::vector<int> out;
-        out.reserve(av.size());
-        for (const auto& x : av) {
-          if (x.type() == typeid(int)) out.push_back(std::any_cast<int>(x));
-        }
-        return out;
-      }
-      return {};
-    };
-
-    t.appliers["current_player"] = [get_int](IGameState& s, const AnyMap& m) {
-      checked_cast<LLState>(s).data.current_player =
-          static_cast<std::int8_t>(get_int(m, "current_player"));
-    };
-    t.appliers["first_player"] = [get_int](IGameState& s, const AnyMap& m) {
-      checked_cast<LLState>(s).data.first_player =
-          static_cast<std::int8_t>(get_int(m, "first_player"));
-    };
-    t.appliers["winner"] = [get_int](IGameState& s, const AnyMap& m) {
-      checked_cast<LLState>(s).data.winner =
-          static_cast<std::int8_t>(get_int(m, "winner"));
-    };
-    t.appliers["terminal"] = [get_bool](IGameState& s, const AnyMap& m) {
-      checked_cast<LLState>(s).data.terminal = get_bool(m, "terminal");
-    };
-    t.appliers["ply"] = [get_int](IGameState& s, const AnyMap& m) {
-      checked_cast<LLState>(s).data.ply =
-          static_cast<std::int16_t>(get_int(m, "ply"));
-    };
-    t.appliers["alive"] = [get_iv](IGameState& s, const AnyMap& m) {
-      auto v = get_iv(m, "alive");
-      auto& d = checked_cast<LLState>(s).data;
-      for (int p = 0; p < NPlayers && p < static_cast<int>(v.size()); ++p) {
-        d.alive[p] = v[p] != 0;
-      }
-    };
-    t.appliers["protected_flags"] = [get_iv](IGameState& s, const AnyMap& m) {
-      auto v = get_iv(m, "protected_flags");
-      auto& d = checked_cast<LLState>(s).data;
-      for (int p = 0; p < NPlayers && p < static_cast<int>(v.size()); ++p) {
-        d.protected_flags[p] = v[p] != 0;
-      }
-    };
-    t.appliers["hand_exposed"] = [get_iv](IGameState& s, const AnyMap& m) {
-      auto v = get_iv(m, "hand_exposed");
-      auto& d = checked_cast<LLState>(s).data;
-      for (int p = 0; p < NPlayers && p < static_cast<int>(v.size()); ++p) {
-        d.hand_exposed[p] = static_cast<std::int8_t>(v[p]);
-      }
-    };
-
-    return t;
-  }();
-  return io;
-}
-
+// §G.1 Step 4 — public-event extractor. The `hand_override` /
+// `drawn_override` parallel private channel has been deleted: every
+// per-perspective hand reveal now travels via `state.viz_` (rules call
+// `reveal_slot` / `reveal_slot_to`). All-public slots ride the
+// schema walker (`viz::serialize_public`); per-perspective reveals
+// (owner-visible `hand[p]`, current-player-visible `drawn_card`,
+// Priest/Baron peeks) ride the `owner_overlay` sidecar below — same
+// pattern Splendor uses for face-up reserved cards. `pre_events` /
+// `post_events` are reserved for true public happenings (none
+// currently emitted by LL).
 template <int NPlayers>
 PublicEventTrace extract_events(
-    const IGameState& before,
-    ActionId action,
+    const IGameState& /*before*/,
+    ActionId /*action*/,
     const IGameState& after,
     int perspective) {
-  const auto& sb = board_ai::checked_cast<LoveLetterState<NPlayers>>(before);
   const auto& sa = board_ai::checked_cast<LoveLetterState<NPlayers>>(after);
-  const auto& db = sb.data;
   const auto& da = sa.data;
   PublicEventTrace out;
 
-  const auto decoded = decode(action);
-  const int actor = db.current_player;
-  const int target = decoded.target;
-  const std::int8_t card = decoded.card;
+  // Schema-driven public snapshot. Walks every all_public slot via
+  // read_field_slot. hand[p] / drawn_card never enter here (they're
+  // not all_public-base); they ride the owner_overlay sidecar.
+  AnyMap snap;
+  board_ai::viz::serialize_public(after, LoveLetterState<NPlayers>::schema(),
+                                  snap);
 
-  // Pre-event: override target's hand so the action resolves correctly.
-  // Only needed when target != perspective (perspective's hand is already
-  // known to AI) AND the action actually reads target's hand.
-  if (action_reads_target_hand(card) &&
-      target >= 0 && target < NPlayers && target != perspective &&
-      db.alive[target] && !db.protected_flags[target]) {
-    AnyMap payload;
-    payload["player"] = std::any(target);
-    payload["card"] = std::any(static_cast<int>(db.hand[target]));
-    out.pre_events.emplace_back("hand_override", std::move(payload));
-  }
+  // Per-perspective overlay: for each schema slot whose runtime viz=1
+  // to `perspective` but whose base viz wasn't all_public, ship the
+  // truth value so the receiver's session can mirror it. Encoded as
+  // a flat int vector in a fixed slot order:
+  //   [hand[0], hand[1], ..., hand[N-1], drawn_card]
+  // Each entry is the truth value when viz[..., perspective]=1, else
+  // -1 (meaning "still hidden to this perspective"). The receiver
+  // applies it slot-by-slot.
+  // Stash receiver perspective so `apply_public_state` knows whose
+  // viewer-axis bits to toggle when applying owner_overlay.
+  snap["__recv_perspective"] = std::any(static_cast<int>(perspective));
 
-  // Pre-event: sync actor's own hand + drawn_card when actor != perspective.
-  // Without this, ai_view.hand[actor] and ai_view.drawn_card are arbitrary
-  // placeholders, and the rules-apply pipeline reads them at:
-  //   - `played_from_hand = (d.hand[me] == played_card)` determines whether
-  //     d.hand[me] swaps with d.drawn_card (affects post-swap state)
-  //   - self-target cases (Prince on self): after the swap, d.hand[target=me]
-  //     equals the old drawn_card; Prince's effect reads this value and
-  //     can eliminate the player if it happens to be Princess
-  //   - Baron: reads d.hand[me] after the swap = old drawn_card
-  // Without syncing, these reads pick up ai_view's arbitrary values and
-  // the action resolves differently than truth — ai_view drifts (worst
-  // case: ai_view goes terminal while truth continues, legal_actions in
-  // ai_view becomes empty, get_ai_action returns empty dict).
-  //
-  // These pre-event values are temporarily leaked into ai_view but either
-  // (a) overwritten by the action itself (swap + discard + redraw), or
-  // (b) irrelevant because randomize_unseen at MCTS root samples a fresh
-  // value each simulation based on the tracker's belief, not ai_view's
-  // concrete fields.
-  if (actor != perspective && actor >= 0 && actor < NPlayers &&
-      db.alive[actor]) {
-    {
-      AnyMap payload;
-      payload["player"] = std::any(actor);
-      payload["card"] = std::any(static_cast<int>(db.hand[actor]));
-      out.pre_events.emplace_back("hand_override", std::move(payload));
-    }
-    if (db.drawn_card != 0) {
-      AnyMap payload;
-      payload["card"] = std::any(static_cast<int>(db.drawn_card));
-      out.pre_events.emplace_back("drawn_override", std::move(payload));
-    }
-  }
-
-  // Post-event 1: Prince target redraws. If target == perspective,
-  // perspective learns their new hand.
-  if (card == kPrince && target == perspective &&
-      db.alive[target] && !db.protected_flags[target] &&
-      da.alive[target]) {
-    AnyMap payload;
-    payload["player"] = std::any(static_cast<int>(target));
-    payload["card"] = std::any(static_cast<int>(da.hand[target]));
-    out.post_events.emplace_back("hand_override", std::move(payload));
-  }
-
-  // Post-event 2: advance_turn draws for the NEW current player. If that
-  // player is perspective, emit the drawn card so AI's d.drawn_card matches.
-  if (!da.terminal && da.current_player == perspective &&
-      da.drawn_card != 0) {
-    AnyMap payload;
-    payload["card"] = std::any(static_cast<int>(da.drawn_card));
-    out.post_events.emplace_back("drawn_override", std::move(payload));
-  }
-
-  // populate full public snapshot from post-action truth.
-  // apply_observation invokes public_state_applier to overwrite session
-  // state_'s public fields from this snapshot, eliminating per-event
-  // truth-override补丁.  See docs/plans/MESSAGE_DRIVEN_AI_REFACTOR.md.
-  //
-  // Fields matched to LoveLetterState::hash_public_fields:
-  //   current_player / first_player / ply / winner / terminal
-  //   per-player: alive / protected / hand_exposed / discard_piles
-  //   deck.size (public count)
-  //   face_up_removed (deterministic at game start, included for applier
-  //   idempotence across re-apply)
-  {
-    AnyMap snap;
-    // Schema-driven public fields. See loveletter_snapshot_io above.
-    board_ai::viz::emit_snapshot(after, LoveLetterState<NPlayers>::schema(),
-                                 loveletter_snapshot_io<NPlayers>(), snap);
-
-    // Snapshot-only keys (not schema fields):
-    //  - deck_size: public count of the hidden deck
-    //  - discard_piles: per-player all-public stacks (variable-length)
-    //  - face_up_removed: 2p-only public vector (deterministic at game
-    //    start; included for applier idempotence across re-apply)
-    snap["deck_size"] = std::any(static_cast<int>(da.deck.size()));
-
-    std::vector<std::vector<int>> discards_all(NPlayers);
-    for (int p = 0; p < NPlayers; ++p) {
-      std::vector<int> discards;
-      discards.reserve(da.discard_piles[static_cast<size_t>(p)].size());
-      for (auto c : da.discard_piles[static_cast<size_t>(p)]) {
-        discards.push_back(static_cast<int>(c));
+  std::vector<int> owner_overlay(NPlayers + 1, -1);
+  if (perspective >= 0 && perspective < NPlayers) {
+    const auto& hand_v = board_ai::viz::viz_get(after, "hand");
+    if (!hand_v.empty()) {
+      // shape = {NPlayers, n_viewers}. viewer is last axis.
+      const int n_viewers = hand_v.viewer_count();
+      for (int p = 0; p < NPlayers; ++p) {
+        const std::size_t off =
+            static_cast<std::size_t>(p) * static_cast<std::size_t>(n_viewers) +
+            static_cast<std::size_t>(perspective);
+        if (off < hand_v.data.size() && hand_v.data[off] != 0) {
+          owner_overlay[static_cast<size_t>(p)] = static_cast<int>(da.hand[p]);
+        }
       }
-      discards_all[p] = std::move(discards);
     }
-    snap["discard_piles"] = std::any(discards_all);
-
-    std::vector<int> face_up;
-    face_up.reserve(da.face_up_removed.size());
-    for (auto c : da.face_up_removed) face_up.push_back(static_cast<int>(c));
-    snap["face_up_removed"] = std::any(face_up);
-
-    out.public_snapshot = std::move(snap);
+    const auto& drawn_v = board_ai::viz::viz_get(after, "drawn_card");
+    if (!drawn_v.empty()) {
+      const std::size_t off = static_cast<std::size_t>(perspective);
+      if (off < drawn_v.data.size() && drawn_v.data[off] != 0) {
+        owner_overlay[static_cast<size_t>(NPlayers)] =
+            static_cast<int>(da.drawn_card);
+      }
+    }
   }
+  snap["owner_overlay"] = std::any(owner_overlay);
 
+  // Snapshot-only keys (variable-length, no schema counterpart):
+  //   deck_size   — public count of the hidden deck
+  //   discard_piles — per-player all-public stacks
+  //   face_up_removed — 2p-only public vector
+  snap["deck_size"] = std::any(static_cast<int>(da.deck.size()));
+
+  std::vector<std::vector<int>> discards_all(NPlayers);
+  for (int p = 0; p < NPlayers; ++p) {
+    std::vector<int> discards;
+    discards.reserve(da.discard_piles[static_cast<size_t>(p)].size());
+    for (auto c : da.discard_piles[static_cast<size_t>(p)]) {
+      discards.push_back(static_cast<int>(c));
+    }
+    discards_all[p] = std::move(discards);
+  }
+  snap["discard_piles"] = std::any(discards_all);
+
+  std::vector<int> face_up;
+  face_up.reserve(da.face_up_removed.size());
+  for (auto c : da.face_up_removed) face_up.push_back(static_cast<int>(c));
+  snap["face_up_removed"] = std::any(face_up);
+
+  out.public_snapshot = std::move(snap);
   return out;
 }
 
-// Inverse of the public_snapshot population above.
-// Writes back every public field onto `state`. Called at the end of
-// apply_observation, which overwrites session state_'s public fields
-// from the truth snapshot. Schema-driven via `viz::apply_snapshot`;
-// per-field appliers live in `loveletter_snapshot_io`.
+// Inverse of `extract_events`'s snapshot population. Walker-driven
+// `viz::apply_public` writes every all_public slot back; per-field
+// dispatch lives in `LoveLetterState::write_field_slot`. The variable-
+// length side-channel keys (deck_size / discard_piles / face_up_removed)
+// have no schema counterpart and are applied directly here.
 template <int NPlayers>
 void apply_public_state(IGameState& state, const AnyMap& snap) {
   auto& s = board_ai::checked_cast<LoveLetterState<NPlayers>>(state);
   auto& d = s.data;
 
-  board_ai::viz::apply_snapshot(state, LoveLetterState<NPlayers>::schema(),
-                                loveletter_snapshot_io<NPlayers>(), snap);
+  board_ai::viz::apply_public(state, LoveLetterState<NPlayers>::schema(), snap);
+
+  // Per-perspective overlay sidecar: for each entry where the producer
+  // marked the slot as visible to this receiver (value != -1), write
+  // the truth value into the local hand / drawn_card and toggle viz to
+  // 1 so future hashes / encodes treat it as known. Entries with -1
+  // mean "still hidden — leave at whatever placeholder is already
+  // there"; randomize_unseen runs trailing on apply_observation and
+  // refreshes those slots from the tracker's information set.
+  auto it_ov = snap.find("owner_overlay");
+  if (it_ov != snap.end()) {
+    auto extract_iv = [&]() -> std::vector<int> {
+      const std::any& a = it_ov->second;
+      if (a.type() == typeid(std::vector<int>)) {
+        return std::any_cast<std::vector<int>>(a);
+      }
+      if (a.type() == typeid(std::vector<std::any>)) {
+        const auto& av = std::any_cast<const std::vector<std::any>&>(a);
+        std::vector<int> out;
+        out.reserve(av.size());
+        for (const auto& x : av) {
+          if (x.type() == typeid(int)) out.push_back(std::any_cast<int>(x));
+          else out.push_back(-1);
+        }
+        return out;
+      }
+      return {};
+    };
+    auto overlay = extract_iv();
+    if (static_cast<int>(overlay.size()) >= NPlayers + 1) {
+      // Determine which perspective this session is. The overlay was
+      // emitted from the producer's view of THIS receiver; viz toggles
+      // must use the receiver's seat. Use the runtime viz tensor to
+      // find which viewer the producer thought we are: we are
+      // perspective `viewer` iff state.viz_["hand"][p, viewer]=1
+      // matches the overlay's `!= -1` pattern. Cheaper: the runner
+      // always calls apply_public_state on the per-seat session bundle
+      // in seat order, so the seat IS the perspective. We just need
+      // it. The runner's calling shape is opaque here — instead,
+      // embed perspective in the overlay implicitly: the producer
+      // wrote viz from `perspective` arg; we recover it by scanning
+      // viz tensor for the unique viewer whose visible-slot set
+      // matches the overlay's marked entries. For LL the unique
+      // perspective with `hand[perspective]=1 AND
+      // drawn_card[perspective]=1 (when current_player==perspective)`
+      // is well-defined — but simpler to compute: the receiver's seat
+      // is the seat whose `hand` slot is marked in the overlay AND
+      // matches the schema's owner_only_first_axis base — i.e. the
+      // overlay entry at index == seat is non-negative.
+      //
+      // For each non-negative slot entry, write the value AND toggle
+      // viz at every viewer axis the producer thought us to be — but
+      // since there's no way to know, we toggle viz at the seat whose
+      // `hand[seat] != -1` (the owner) and at the receiver. Simplest:
+      // mirror the producer's intent — toggle viz[..., receiver] = 1
+      // for every overlay entry that's non-negative. The receiver's
+      // perspective is encoded in the snap directly.
+      int receiver = -1;
+      auto it_recv = snap.find("__recv_perspective");
+      if (it_recv != snap.end() && it_recv->second.type() == typeid(int)) {
+        receiver = std::any_cast<int>(it_recv->second);
+      }
+      auto& hand_v = board_ai::viz::viz_get(state, "hand");
+      auto& drawn_v = board_ai::viz::viz_get(state, "drawn_card");
+      const int n_viewers_h = hand_v.viewer_count();
+      const int n_viewers_d = drawn_v.viewer_count();
+      for (int p = 0; p < NPlayers; ++p) {
+        if (overlay[static_cast<size_t>(p)] >= 0) {
+          d.hand[static_cast<size_t>(p)] =
+              static_cast<std::int8_t>(overlay[static_cast<size_t>(p)]);
+          if (receiver >= 0 && receiver < n_viewers_h) {
+            const std::size_t off =
+                static_cast<std::size_t>(p) *
+                    static_cast<std::size_t>(n_viewers_h) +
+                static_cast<std::size_t>(receiver);
+            if (off < hand_v.data.size()) hand_v.data[off] = 1;
+          }
+        }
+      }
+      const int dval = overlay[static_cast<size_t>(NPlayers)];
+      if (dval >= 0) {
+        d.drawn_card = static_cast<std::int8_t>(dval);
+        if (receiver >= 0 && receiver < n_viewers_d) {
+          const std::size_t off = static_cast<std::size_t>(receiver);
+          if (off < drawn_v.data.size()) drawn_v.data[off] = 1;
+        }
+      }
+    }
+  }
 
   auto get_int = [&](const char* key) -> int {
     auto it = snap.find(key);
     return (it != snap.end()) ? std::any_cast<int>(it->second) : 0;
   };
-  // Robust int-vector accessor: handles vector<int> + empty-vector<any>
-  // fallback (py_to_any defaults empty lists to vector<any>).
   auto get_iv = [&](const char* key) -> std::vector<int> {
     auto it = snap.find(key);
     if (it == snap.end()) return {};
@@ -780,11 +665,8 @@ void apply_public_state(IGameState& state, const AnyMap& snap) {
     return {};
   };
 
-  // Snapshot-only keys (handled directly):
-  // discard_piles: list-of-lists. Comes in as either
-  // vector<vector<int>> (C++-side populated) or vector<any> where each
-  // inner any wraps vector<int> (Python-side round-trip through
-  // py_to_any). Handle both.
+  // discard_piles: list-of-lists. C++ side ships vector<vector<int>>;
+  // Python round-trip can produce vector<any> wrapping vector<int>.
   auto it_d = snap.find("discard_piles");
   if (it_d != snap.end()) {
     auto set_pile = [&](int p, const std::vector<int>& row) {
@@ -815,9 +697,8 @@ void apply_public_state(IGameState& state, const AnyMap& snap) {
   d.face_up_removed.clear();
   for (int c : face_up_v) d.face_up_removed.push_back(static_cast<std::int8_t>(c));
 
-  // deck_size is public; the observer's deck content is sampled so we
-  // only honor the size here. Trim or pad with 0 placeholder — the next
-  // randomize_unseen call will rebuild deck content properly.
+  // deck_size: public count, hidden contents. Resize observer's deck;
+  // the trailing randomize_unseen call rebuilds the contents.
   const int target_size = get_int("deck_size");
   if (target_size >= 0) {
     if (static_cast<int>(d.deck.size()) > target_size) {
@@ -830,24 +711,12 @@ void apply_public_state(IGameState& state, const AnyMap& snap) {
   }
 }
 
+// LL no longer emits any pre/post public events — every per-perspective
+// reveal travels through state.viz_ and the schema-driven snapshot.
 template <int NPlayers>
-void apply_event(IGameState& state, EventPhase /*phase*/,
-                 const std::string& kind, const AnyMap& payload) {
-  auto& s = board_ai::checked_cast<LoveLetterState<NPlayers>>(state);
-  auto& d = s.data;
-  if (kind == "hand_override") {
-    const int player = std::any_cast<int>(payload.at("player"));
-    const int card = std::any_cast<int>(payload.at("card"));
-    if (player < 0 || player >= NPlayers) {
-      throw std::runtime_error("loveletter hand_override: bad player");
-    }
-    d.hand[player] = static_cast<std::int8_t>(card);
-  } else if (kind == "drawn_override") {
-    const int card = std::any_cast<int>(payload.at("card"));
-    d.drawn_card = static_cast<std::int8_t>(card);
-  } else {
-    throw std::runtime_error("loveletter: unknown event kind '" + kind + "'");
-  }
+void apply_event(IGameState& /*state*/, EventPhase /*phase*/,
+                 const std::string& kind, const AnyMap& /*payload*/) {
+  throw std::runtime_error("loveletter: unknown event kind '" + kind + "'");
 }
 
 }  // namespace loveletter_events
@@ -859,12 +728,15 @@ board_ai::GameBundle make_loveletter(const std::string& game_id, std::uint64_t s
   b.game_id = game_id;
   auto s = std::make_unique<LoveLetterState<NPlayers>>();
   s->reset_with_seed(seed);
+  // Apply start-of-game viz reveals (rules are sole viz writer per I1):
+  // the seat starting as current_player physically holds the top
+  // card just drawn from the deck — reveal `drawn_card` to them only.
+  LoveLetterRules<NPlayers>::reveal_starting_draw(*s, s->data.current_player);
   b.state = std::move(s);
   b.rules = std::make_unique<LoveLetterRules<NPlayers>>();
   b.value_model = std::make_unique<board_ai::DefaultStateValueModel>();
-  auto tracker = std::make_unique<LoveLetterBeliefTracker<NPlayers>>();
-  b.encoder = std::make_unique<LoveLetterFeatureEncoder<NPlayers>>(tracker.get());
-  b.belief_tracker = std::move(tracker);
+  b.encoder = std::make_unique<LoveLetterFeatureEncoder<NPlayers>>();
+  b.belief_tracker = std::make_unique<LoveLetterBeliefTracker<NPlayers>>();
   b.state_serializer = serialize_loveletter<NPlayers>;
   b.action_descriptor = describe_loveletter;
   b.heuristic_picker = loveletter_heuristic::pick<NPlayers>;

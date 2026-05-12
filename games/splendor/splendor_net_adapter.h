@@ -1,5 +1,6 @@
 #pragma once
 
+#include <memory>
 #include <random>
 #include <unordered_set>
 #include <vector>
@@ -28,11 +29,13 @@ class SplendorFeatureEncoder final : public IFeatureEncoder {
   void encode_public(
       const IGameState& state,
       int perspective_player,
+      const IBeliefTracker* tracker,
       std::vector<float>* out) const override;
 
   void encode_private(
       const IGameState& state,
       int player,
+      const IBeliefTracker* tracker,
       std::vector<float>* out) const override;
 };
 
@@ -40,17 +43,24 @@ template <int NPlayers>
 class SplendorBeliefTracker final : public IBeliefTracker {
  public:
   using Cfg = SplendorConfig<NPlayers>;
-  void init(int perspective_player, const AnyMap& initial_observation) override;
+  void init(const AnyMap& initial_observation) override;
   void observe_public_event(
       int actor,
       ActionId action,
       const std::vector<PublicEvent>& pre_events,
       const std::vector<PublicEvent>& post_events) override;
-  void randomize_unseen(IGameState& state, std::mt19937& rng) const override;
+  void randomize_unseen(IGameState& state, int observer,
+                        std::mt19937_64& rng) const override;
+  std::unique_ptr<IBeliefTracker> clone() const override {
+    return std::make_unique<SplendorBeliefTracker<NPlayers>>(*this);
+  }
   AnyMap serialize() const override;
 
  private:
-  int perspective_player_ = -1;
+  // Perspective-agnostic. Holds only public-derivable card multisets:
+  // tableau cards from init + deck-flip post-events. Private knowledge
+  // (own face-down reserved card ids) lives on state.viz=1 slots — not
+  // here — so the tracker stays observer-independent.
   std::unordered_set<int> seen_cards_;
   bool initialized_ = false;
 };

@@ -27,7 +27,6 @@
     "batch_size": 256,
     "learning_rate": 0.001,
     "steps": 3000,
-    "peek_steps": 0,
     "heuristic_guidance_hold_steps": 10,
     "heuristic_guidance_steps": 20,
     "heuristic_guidance_initial_ratio": 1.0,

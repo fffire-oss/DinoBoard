@@ -72,7 +72,6 @@ def _worker_selfplay(args: tuple) -> dict[str, Any]:
         heuristic_guidance_ratio=cfg.get("heuristic_guidance_ratio", 0.0),
         heuristic_temperature=cfg.get("heuristic_temperature", 0.0),
         training_filter_ratio=cfg.get("training_filter_ratio", 1.0),
-        ismcts_enabled=cfg.get("ismcts_enabled", True),
     )
 
 
@@ -345,7 +344,6 @@ def run_training_loop(
     training_filter_hold_steps = train_cfg.get("training_filter_hold_steps", 0)
     training_filter_steps = train_cfg.get("training_filter_steps", 0)
     training_filter_initial = train_cfg.get("training_filter_initial_ratio", 0.5)
-    peek_steps = train_cfg.get("peek_steps", 0)
 
     simulations_start = train_cfg.get("simulations_start", train_cfg.get("simulations", 200))
     simulations_full = train_cfg.get("simulations", 200)
@@ -363,7 +361,6 @@ def run_training_loop(
         f"decay_end={training_filter_steps}, initial_ratio={training_filter_initial}"
     )
     logger.info(f"  simulations: start={simulations_start}, full={simulations_full}")
-    logger.info(f"  peek_steps={peek_steps}")
     logger.info(f"  tail_solve: enabled={train_cfg.get('tail_solve_enabled', False)}")
     logger.info(f"  replay_buffer: maxlen={replay_buffer_size}")
 
@@ -410,13 +407,6 @@ def run_training_loop(
             # separate `heuristic_temperature` (low = strength benchmark).
             "heuristic_temperature": train_cfg.get("heuristic_guidance_temperature", 0.0),
             "training_filter_ratio": filter_ratio,
-            # peek_steps=N means "first N steps use peek". When step < N the
-            # searcher disables root sampling (ismcts_enabled=False) and runs
-            # on truth; step N onwards switches to ISMCTS (ismcts_enabled=True).
-            # Off-by-one caveat: `step > peek_steps` would wrongly include
-            # step==peek_steps in the peek window — use `>=` to match the
-            # "first N steps" semantics (peek_steps=0 means no peek at all).
-            "ismcts_enabled": step >= peek_steps,
         }
 
         episodes = run_selfplay_batch(

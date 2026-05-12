@@ -98,11 +98,10 @@ class AzulState final : public CloneableState<AzulState<NPlayers>> {
   // model nested structs — every consumer addresses fields by string.
   static const viz::VisibilitySchema& schema();
 
-  StateHash64 state_hash(bool include_hidden_rng) const override;
-  void hash_public_fields(Hasher& h) const override;
-  void hash_private_fields(int player, Hasher& h) const override;
+  StateHash64 state_hash() const override;
   void hash_field_slot(Hasher& h, const std::string& name,
                        const std::vector<int>& idx) const override;
+  const viz::VisibilitySchema& schema_ref() const override { return schema(); }
   int current_player() const override { return current_player_; }
   int first_player() const override { return game_first_player_; }
   bool is_terminal() const override { return terminal; }
@@ -132,7 +131,7 @@ class AzulState final : public CloneableState<AzulState<NPlayers>> {
   bool all_sources_empty() const;
   void refill_factories_from_rng(std::mt19937_64& rng);
   int draw_one_tile(std::mt19937_64& rng);
-  StateHash64 state_signature() const { return state_hash(false); }
+  StateHash64 state_signature() const { return state_hash(); }
   bool is_tree_cache_consistent() const;
 };
 

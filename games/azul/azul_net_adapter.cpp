@@ -52,6 +52,7 @@ template <int NPlayers>
 void AzulFeatureEncoder<NPlayers>::encode_public(
     const IGameState& state,
     int perspective_player,
+    const IBeliefTracker* /*tracker*/,
     std::vector<float>* out) const {
   const auto* s = dynamic_cast<const AzulState<NPlayers>*>(&state);
   if (!s || !out || perspective_player < 0 || perspective_player >= Cfg::kPlayers) {
@@ -111,8 +112,9 @@ void AzulFeatureEncoder<NPlayers>::encode_public(
 
 template <int NPlayers>
 void AzulBeliefTracker<NPlayers>::init(
-    int perspective_player, const AnyMap& /*initial_observation*/) {
-  perspective_player_ = perspective_player;
+    const AnyMap& /*initial_observation*/) {
+  // Azul has no perspective-specific state to remember; bag composition
+  // is publicly derivable from token counts.
 }
 
 template <int NPlayers>
@@ -126,7 +128,7 @@ void AzulBeliefTracker<NPlayers>::observe_public_event(
 }
 
 template <int NPlayers>
-void AzulBeliefTracker<NPlayers>::randomize_unseen(IGameState& /*state*/, std::mt19937& /*rng*/) const {
+void AzulBeliefTracker<NPlayers>::randomize_unseen(IGameState& /*state*/, int /*observer*/, std::mt19937_64& /*rng*/) const {
   // No-op: the bag is now stored as per-color counts (the only public
   // fact). There is no order to resample, and counts are publicly
   // derivable, so observer state already matches truth.

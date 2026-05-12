@@ -1,39 +1,26 @@
 #pragma once
 
-// Visibility Schema (Phase 1.2): per-game declarative field visibility.
+// Visibility Schema: per-game declarative field visibility.
 //
-// A game declares, ONCE, every field in its IGameState — its name, the
+// A game declares, once, every field in its IGameState — its name, the
 // shape of its data tensor, and a bool[shape..., NPlayers] visibility
 // tensor saying which seats see which slots. There is no
 // public/internal/derived flag — visibility is wholly carried by the
-// viz tensor. A field with all-1 viz is fully public; a field with
-// all-0 (or empty) viz is fully hidden; per-seat patterns sit in
-// between. The framework derives:
+// viz tensor. all-1 = fully public; all-0 (or empty) = fully hidden;
+// per-seat patterns sit in between. The framework derives:
 //   - state_hash_for_perspective(p) (hash all slots with viz[..., p]==1)
-//   - encoder feature scope (encode all slots with viz[..., p]==1)
-//   - extract_snapshot / apply_snapshot (filter by viz)
-//   - protocol-level visibility_mask (bit-packed, sent over the wire)
+//   - encoder feature scope via MaskedState placeholders
+//   - serialize_public / apply_public (filter by viz)
 //
-// This header defines the *declaration surface only*: schema data
-// structures + base-viz builder helpers. There is intentionally NO
-// "overlay" / "reveal-when" closure machinery here. Per the framework
-// golden standard (§2.2, invariant I1), rules are the SOLE writer of
-// state.viz_; dynamic visibility changes (face-up reveals, end-of-round
-// resets, Priest peeks, etc.) happen by `do_action_fast` calling the
-// rules-side helpers `reveal_slot / reveal_slot_to / reset_to_base`,
-// not by schema-declared closures. Putting "what flips when" into the
-// schema would create a second viz writer and break I1.
+// Declaration surface only: schema data structures + base-viz builder
+// helpers. No "overlay" / "reveal-when" closure machinery — golden
+// standard I1 makes `do_action_fast` the sole viz writer; dynamic
+// visibility changes happen via the rules-side helpers
+// `reveal_slot / reveal_slot_to / reset_to_base`. Putting "what flips
+// when" into the schema would create a second viz writer and break I1.
 //
-// The runtime walker (`for_each_visible_slot`), state.viz_ injection on
-// IGameState, init_viz, the rules-side viz-mutation helpers, and the
-// `derive_size` declaration helper for observer-derived scalars are
-// added in Phase 1.5 / 1.6 PRs (they need types this header introduces).
-//
-// The scalar-fact visibility tensor is rank N+1 where N is the data
-// tensor's rank (rank=0 for a scalar). The trailing axis is the viewer
-// (NPlayers wide). For a scalar field with NPlayers=4, viz is bool[4]
-// (one bit per viewer); for a 1D field of length L, bool[L][4]; for a
-// 2D field of shape [a, b], bool[a][b][4]; etc.
+// The viz tensor is rank N+1 where N is the data tensor's rank
+// (rank=0 for a scalar). Trailing axis is the viewer (NPlayers wide).
 
 #include <cstdint>
 #include <cstddef>
@@ -138,90 +125,37 @@ inline VizTensor owner_only_first_axis(const std::vector<int>& data_shape, int n
   return v;
 }
 
-// One field in the game state.
-//
-// FieldDecl is intentionally minimal: just the name and the static base
-// visibility. Visibility is the single dimension along which fields
-// differ — there are no public/internal/derived flags. Dynamic
-// visibility is NOT described here — `do_action_fast` mutates
-// state.viz_ directly via the rules-side helpers (Phase 1.5). That
-// keeps rules as the sole viz writer (golden standard I1).
+// One field in the game state. `name` doubles as the path key on the
+// snapshot wire; `base_viz` is what init_viz copies into state.viz_
+// and what reset_to_base restores to.
 struct FieldDecl {
-  std::string name;             // stable identifier; doubles as path key
-                                // for snapshot serialization
-  VizTensor base_viz;           // static visibility — what state.viz_
-                                // gets initialized to and what
-                                // reset_to_base restores to
-};
-
-// Describes the visibility audience of a single public-event payload.
-// Used to generate the protocol-side `audience` mask alongside snapshots.
-struct EventDecl {
-  std::string kind;             // stable identifier
-  // Phase relative to action; mirrors EventPhase in game_interfaces.h.
-  // Stored as int to avoid pulling the full header in here.
-  int phase = 1;                // 0=pre, 1=post (default post)
-  // bool[NPlayers] — true iff that seat receives the event payload.
-  std::vector<std::uint8_t> audience;
-  // Optional payload schema doc — list of (key, type-string) pairs.
-  // Not enforced at runtime yet; will drive auto-generated docs and
-  // payload validation in a later phase.
-  std::vector<std::pair<std::string, std::string>> payload_schema;
-};
-
-// Maps an action ID range or predicate to the list of events that
-// action will produce. The matcher is an opaque predicate so games
-// can use whatever scheme fits (range checks, switch-table, etc.).
-struct ActionEventMap {
-  std::function<bool(int /*action_id*/)> matches;
-  std::vector<EventDecl> events;
+  std::string name;
+  VizTensor base_viz;
 };
 
 // The visibility schema of one game.
 struct VisibilitySchema {
   int n_players = 0;
   std::vector<FieldDecl> fields;
-  std::vector<ActionEventMap> action_events;
-  // post_events_required: if true, ObserveRequest must include
-  // post_events for hidden-info diff (e.g. assumed-hidden derived
-  // fields the observer can't reconstruct from snapshot alone).
-  // Defaults false: snapshot is sufficient.
-  bool post_events_required = false;
 };
 
-// ---------- ergonomic wrappers ----------
-//
-// Sugar for the common patterns. Games typically write:
+// declare_field — push a FieldDecl onto the schema with name-uniqueness
+// + viewer-count consistency checks. Typical use:
 //
 //   declare_field(schema, "scores", viz::all_public({N}, N));
 //   declare_field(schema, "influence", viz::owner_only_first_axis({N, 2}, N));
-//
-// All "what flips when" lives in rules (`do_action_fast`), not here:
-//
-//   // in coup_rules.cpp do_action_fast:
-//   if (a.type == kRevealInfluence) {
-//     viz::reveal_slot(s.viz_, &CoupState::influence, p, i);   // Phase 1.5
-//     s.influence[p][i] = kEmpty;
-//   }
-//
-// `declare_field` validates name uniqueness + viewer-count consistency
-// and pushes a FieldDecl onto the schema.
 
 inline void declare_field(VisibilitySchema& schema, const std::string& name,
                           VizTensor base_viz) {
-  // Name uniqueness — schema is the single source of truth for path keys
-  // used in snapshots, hashes, and event payloads. Duplicates would let
-  // one field silently shadow another.
   for (const auto& existing : schema.fields) {
     if (existing.name == name) {
       throw std::invalid_argument(
           "VisibilitySchema: duplicate field name '" + name + "'");
     }
   }
-  // viewer_count consistency — every field's viz must match schema.n_players.
-  // Empty viz (size==0) is allowed and means "no viz" (the walker
-  // skips empty-viz fields, so they are effectively hidden from every
-  // perspective without needing a separate flag).
+  // Empty viz is allowed and means "no viz" — the walker skips
+  // empty-viz fields, so they are effectively hidden from every viewer
+  // without needing a separate flag.
   if (!base_viz.empty() && schema.n_players > 0 &&
       base_viz.viewer_count() != schema.n_players) {
     throw std::invalid_argument(
@@ -237,46 +171,12 @@ inline void declare_field(VisibilitySchema& schema, const std::string& name,
   schema.fields.push_back(std::move(f));
 }
 
-// ---------- runtime ops on state.viz_ ----------
-//
-// state.viz_ lives on IGameState (see game_interfaces.h). It maps
-// FieldDecl::name → live VizTensor for THIS state object. The helpers
-// below are the ONLY way rules and framework should poke at it:
-//
-//   init_viz(state, schema)
-//     — Called from each game's reset_with_seed override AFTER
-//       reset_step_count_base() and AFTER game-specific data init.
-//       Copies each FieldDecl::base_viz into state.viz_.
-//
-//   reveal_slot(state, "field", idx0, idx1, ...)
-//     — Phase 1.5+: called from rules.do_action_fast. Sets the viz of
-//       the named field at the given data-axis index to all-1 across
-//       viewers. Idx count must equal data-tensor rank.
-//
-//   reveal_slot_to(state, "field", idx0, ..., viewer)
-//     — Phase 1.5+: like reveal_slot but flips visibility ON only for
-//       `viewer`, leaves other viewers' bits untouched. Used for
-//       Priest-style targeted peeks.
-//
-//   reset_to_base(state, "field", schema, idx0, ...)
-//     — Phase 1.5+: restore the named slot's viewer bits to schema's
-//       declared base viz. Used at end-of-round resets.
-//
-// All four are intentionally NAME-keyed (string lookup), not
-// member-pointer-keyed. The member-pointer offset arithmetic that
-// turns `&CoupState::influence` into a viz key is a Phase 1.5 concern
-// (registry maps `member-ptr → name` at declare-time); Phase 1.2 lands
-// the storage + name-keyed primitives so games can be ported to
-// schema-driven viz without waiting for the sugar layer.
-
-// Compute the flat byte offset for a multi-index into a row-major tensor
-// of shape `shape`. The trailing axis (viewer) is left to the caller —
-// pass `idx.size() == shape.size() - 1` and the function returns the
-// offset of `viz[idx..., 0]`; the viewer-axis stride is `1`.
+// flat_offset_data_only — flat byte offset for a multi-index into a
+// row-major tensor of shape `shape`. `shape` includes the trailing
+// viewer axis; `idx` covers data axes only. Returns the offset of
+// `viz[idx..., 0]`; the viewer-axis stride is 1.
 inline std::size_t flat_offset_data_only(const std::vector<int>& shape,
                                          const std::vector<int>& idx) {
-  // shape includes trailing viewer axis (size = data_rank + 1). idx is
-  // data indices only (size = data_rank).
   if (idx.size() + 1 != shape.size()) {
     throw std::invalid_argument(
         "viz::flat_offset_data_only: index rank does not match tensor rank");
@@ -301,11 +201,8 @@ inline std::size_t flat_offset_data_only(const std::vector<int>& shape,
   return off;
 }
 
-// init_viz / reveal_slot / reveal_slot_to / reset_to_base / walker
-// signatures — bodies live in viz_runtime.h (included after
-// game_interfaces.h to break the include cycle: state.viz_ is on
-// IGameState which forward-declares VizTensor; runtime helpers need
-// the concrete IGameState type).
+// init_viz / reveal_slot / reveal_slot_to / reset_to_base bodies live
+// in viz_runtime.h (after game_interfaces.h to break the include cycle).
 
 }  // namespace viz
 }  // namespace board_ai

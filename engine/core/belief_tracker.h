@@ -2,6 +2,7 @@
 
 #include <any>
 #include <map>
+#include <memory>
 #include <random>
 #include <string>
 #include <vector>
@@ -10,42 +11,53 @@
 
 namespace board_ai {
 
-// Observer's memory of a game in progress.
-//
-// Design principle: the tracker's inputs come SOLELY through this
-// interface — initial observations at session start, then public events
-// for each action. It never receives a reference to the game state for
-// reading (randomize_unseen takes a state for WRITING only). This mirrors
-// the AI API contract: a tracker running behind an AI/player boundary
-// could be driven by action_ids + event payloads over the wire.
+// Observer's memory of a game in progress, derived purely from the
+// public-event stream. perspective-agnostic: the same belief content is
+// shared by every seat in the AI session — what differs per seat is what
+// is publicly observable to *someone*, not who that someone is.
 //
 // Concretely, this means:
-//   - observe_public_event MUST update internal belief from the given
-//     payloads — no peeking at truth or any other state.
-//   - init is driven by initial_observation (not state); the game's
-//     initial_observation_extractor produces observer-visible starting
-//     info (own hand, public tableau, etc.).
-//   - Tracker implementations are typed per game; they use their internal
-//     belief state plus event payloads to answer encoder queries.
+//   - `init` takes only the AnyMap of public initial-observation payload.
+//     It carries no `perspective_player` argument.
+//   - `observe_public_event` MUST update internal belief from the given
+//     event payloads only — no peeking at truth or any other state.
+//   - Per-perspective private knowledge (own hand, peeked opp hand,
+//     exchange-seen cards, etc.) lives on state with `viz=1` for the
+//     owner — NOT on the tracker. The tracker holds only public-derivable
+//     aggregates (claim history, public discard pile composition, …).
+//
+// Usage:
+//   - Each AI session holds its own tracker. They all converge to the
+//     same belief content from the same observation stream — independent
+//     storage exists only so each session can clone its tracker into
+//     each MCTS sim (`clone()` + sim-local `observe_public_event`).
+//   - GT does NOT hold a tracker — GT runs `do_action_fast` on truth,
+//     which already encodes everything `randomize_unseen` would invent.
 //
 // Enforced by tests:
-//   - test_api_belief_matches_selfplay — a tracker initialized with a
+//   - test_api_belief_matches_selfplay — tracker initialized with a
 //     different seed than ground truth must converge to the same belief
-//     after replaying the observation stream. Any hidden state read would
-//     diverge.
+//     after replaying the observation stream. Any hidden-state read
+//     would diverge.
 //   - test_api_mcts_policy_invariance — MCTS policy depending on tracker
 //     belief must be identical across selfplay and API paths.
 class IBeliefTracker {
  public:
   virtual ~IBeliefTracker() = default;
 
-  // Initialize at game start from the observer's initial observation.
-  // `initial_observation` is produced by the game's
-  // initial_observation_extractor for the perspective player — it carries
-  // only observer-visible info (perspective's own starting hand, public
-  // setup). No state reference is passed.
-  virtual void init(int perspective_player,
-                    const AnyMap& initial_observation) = 0;
+  // Initialize at game start from the public initial observation.
+  // `initial_observation` carries observer-visible setup (seat count,
+  // public board layout, …).
+  //
+  // Transition note: callers also stash `__perspective_player` (int) in
+  // the AnyMap. Coup (pre-§G.2) is the last remaining tracker that reads
+  // this to decide which slots own_self vs. opp at randomize_unseen time.
+  // LoveLetter migrated its perspective-private knowledge to state.viz
+  // in §G.1 (rules-driven `reveal_slot_to` / `reset_to_base` /
+  // `swap_slot_owned`); its tracker no longer reads `__perspective_player`.
+  // Once §G.2 lands and Coup follows suit, this key becomes redundant
+  // and the convention is dropped.
+  virtual void init(const AnyMap& initial_observation) = 0;
 
   // Update after each action using ONLY the public event stream.
   //
@@ -68,32 +80,41 @@ class IBeliefTracker {
       const std::vector<PublicEvent>& post_events) = 0;
 
   // Randomize all unseen information in-place, producing a world
-  // consistent with this tracker's information set.
+  // consistent with `observer`'s information set.
+  //
+  // `observer` is the perspective for whom slots are filled: any slot
+  // where `state.viz_[..., observer] == 0` is considered unseen and gets
+  // a fresh sample; slots with viz=1 are observer-known truth and stay.
+  //
+  // Information sources:
+  //   - state's `viz=1` slots (own hand, public revealed cards, scores,
+  //     discards, deck sizes visible by counts, …) — the observer's
+  //     current concrete knowledge.
+  //   - tracker's own derived public history — public-event aggregates
+  //     not present as state fields (claim sequences, publicly-revealed
+  //     card multisets, …). Tracker content is perspective-agnostic:
+  //     two trackers seeded differently but fed the same public event
+  //     stream produce equal aggregates.
+  //
+  // Unseen-pool formula (canonical):
+  //     unseen_pool = full_pool − tracker.public_seen − state.viz=1[observer]
+  // Then unseen_pool is shuffled and consumed to fill viz=0 slots.
   //
   // Contract: the result must satisfy every public invariant —
-  // `hash_public_fields` on the output is byte-equal across any two
-  // trackers with the same observation history, regardless of the input
-  // state's hidden contents or the caller's RNG. Concretely:
-  //   - Hidden multisets (e.g. deck sizes, bag sizes, court-deck size)
-  //     are derived from the tracker's seen information (pool minus seen
-  //     minus opp-committed hidden), NOT preserved from the input state.
-  //   - Stale samples (opp hidden fields whose cid later became publicly
-  //     seen) are re-sampled from the current unseen pool.
+  // `state_hash_for_perspective(observer)` on the output is byte-equal
+  // across any two trackers with the same observation history, regardless
+  // of the input state's hidden contents or the caller's RNG.
   //
-  // Called both at MCTS simulation root (different RNG per sim, hidden
-  // contents differ but public fields don't) and at the end of
-  // apply_observation (to re-sample session state_'s hidden fields — so
-  // they are a fresh tracker-consistent sample every ply, never a copy
-  // of truth).
-  //
-  // This method WRITES to `state`. It may READ observer-visible fields
-  // from `state` (e.g. alive flags, discard piles) to compute WHAT to
-  // randomize, but it MUST NOT READ hidden fields that the observer
-  // doesn't know. Callers pass the observer view (ai_view), so hidden
-  // fields in `state` are placeholders anyway — but tracker code should
-  // not rely on that and should derive all belief information from its
-  // own accumulated observations.
-  virtual void randomize_unseen(IGameState& state, std::mt19937& rng) const = 0;
+  // Called both at MCTS simulation root (different RNG per sim; hidden
+  // contents differ but observer-visible fields don't) and at the end
+  // of apply_observation (to re-sample session state's hidden fields).
+  virtual void randomize_unseen(IGameState& state, int observer,
+                                std::mt19937_64& rng) const = 0;
+
+  // Deep-copy this tracker. Used at MCTS sim entry: each sim clones the
+  // session's tracker so descent-time `observe_public_event` calls don't
+  // pollute the session's tracker.
+  virtual std::unique_ptr<IBeliefTracker> clone() const = 0;
 
   // Serialize the tracker's internal belief to a canonical, comparable form.
   // Used by the AI API belief-equivalence tests: a self-play session and an
@@ -102,13 +123,6 @@ class IBeliefTracker {
   // identical internal states — sort sets, use stable keys. The default
   // returns an empty map for trackers that hold no explicit state.
   virtual AnyMap serialize() const { return {}; }
-
-  // The seat this tracker was init'd for (or -1 if not yet init'd).
-  // Encoders that consume tracker knowledge MUST gate on this — using a
-  // tracker bound to perspective P while encoding from seat Q's view
-  // leaks P's private knowledge into Q's features (BUG / OB-002).
-  // Default returns -1; trackers that store a perspective override.
-  virtual int perspective_player() const { return -1; }
 };
 
 }  // namespace board_ai

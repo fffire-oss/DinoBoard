@@ -160,11 +160,13 @@ struct CoupState final : public CloneableState<CoupState<NPlayers>> {
   static const viz::VisibilitySchema& schema();
 
   void reset_with_seed(std::uint64_t seed) override;
-  StateHash64 state_hash(bool include_hidden_rng) const override;
-  void hash_public_fields(Hasher& h) const override;
-  void hash_private_fields(int player, Hasher& h) const override;
+  StateHash64 state_hash() const override;
   void hash_field_slot(Hasher& h, const std::string& name,
                        const std::vector<int>& idx) const override;
+  void hash_extra_state_fields(int perspective, Hasher& h) const override;
+  void mask_field_slot(const std::string& name,
+                       const std::vector<int>& idx) override;
+  const viz::VisibilitySchema& schema_ref() const override { return schema(); }
   int current_player() const override;
   int first_player() const override;
   bool is_terminal() const override;

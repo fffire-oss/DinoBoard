@@ -502,7 +502,7 @@ def test_dag_reuse_hits_present(self):
     result = gs.apply_ai_action(simulations=200, temperature=0.0)
     stats = result["stats"]
     assert stats["dag_reuse_hits"] > 0, (
-        "dag_reuse_hits 一直为 0——hash_public_fields 可能漏了字段"
+        "dag_reuse_hits 一直为 0——hash_field_slot 可能漏了字段，或 schema 漏声明 all_public 字段"
     )
 ```
 
@@ -731,7 +731,7 @@ python -m pytest tests/<your_game>/ -v -k belief
 python -m pytest tests/framework/test_public_hash_excludes_internal_rng.py -v -k <your_game>
 ```
 
-测的是：相同 observation 历史下，两个内部 seed 不同的 `GameSession` 必须产生**字节相等**的 `state_hash_for_perspective(p)`。失败几乎 100% 意味着 `hash_public_fields` 把内部 RNG / 牌堆顺序 / `bag` 抽前向量序 hash 进去了——这就是 BUG-028。
+测的是：相同 observation 历史下，两个内部 seed 不同的 `GameSession` 必须产生**字节相等**的 `state_hash_for_perspective(p)`。失败几乎 100% 意味着某个 `hash_field_slot` 在 `viz=1` 路径上读到了内部 RNG / 牌堆顺序 / 未揭示 deck 等任何"应该藏起来"的 slot——这就是 BUG-028。修法是把那个 slot 的 schema base viz 改成 `all_hidden`，或检查 viz tensor 是不是被错误地翻成了 1。
 
 为什么这条单列：BUG-028 不会让任何已有测试失败，不会崩，只会让 search 变弱、selfplay 与 API 路径分裂、训练曲线悄悄垮掉。文档级提醒（CLAUDE.md, GAME_DEVELOPMENT_GUIDE §11.1b）防不住人，CI 测试才防得住。
 
@@ -849,7 +849,7 @@ python -m pytest tests/ -x -q
 | 玩家淘汰 | | | ✓ |
 | `tail_solver` | ✓ | | |
 | `belief_tracker` | | ✓ | ✓ |
-| `hash_private_fields(p)` 非空 | | | ✓ |
+| schema 含 `owner_only_first_axis` / `all_hidden` 字段 | | | ✓ |
 
 > **作为新游戏开发者，你不需要修改 `tests/framework/`。** 框架层用 `FRAMEWORK_GAMES` 这三个固定游戏来验证框架本身——这是项目维护者的工具。如果你的新游戏带来了一个**新的结构特征**（既不是 quoridor 也不是 azul/loveletter 的子集），再考虑是否需要把它加进 `FRAMEWORK_GAMES` 或某个子集列表（`FRAMEWORK_HIDDEN_INFO_GAMES`、`FRAMEWORK_TAIL_SOLVER_GAMES` 等），这是项目维护者的决定。
 

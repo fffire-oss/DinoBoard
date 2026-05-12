@@ -6,6 +6,7 @@ namespace board_ai::quoridor {
 void QuoridorFeatureEncoder::encode_public(
     const IGameState& state,
     int perspective_player,
+    const IBeliefTracker* /*tracker*/,
     std::vector<float>* out) const {
   const auto* s = dynamic_cast<const QuoridorState*>(&state);
   if (!s || !out || perspective_player < 0 || perspective_player >= kPlayers) {

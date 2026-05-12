@@ -122,7 +122,8 @@ def test_encoder_stable_within_info_set(game_id):
 # exercise `encode_public` / `encode_private` directly through the binding.
 # ---------------------------------------------------------------------------
 
-ALL_GAMES = ["tictactoe", "quoridor", "splendor", "azul", "loveletter", "coup"]
+ALL_GAMES = [g for g in ["tictactoe", "quoridor", "splendor", "azul", "loveletter", "coup"]
+             if g in engine.available_games()]
 
 
 @pytest.mark.parametrize("game_id", ALL_GAMES)

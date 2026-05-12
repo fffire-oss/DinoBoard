@@ -6,6 +6,8 @@
 #include <vector>
 
 #include "../../engine/core/game_interfaces.h"
+#include "../../engine/core/masked_state.h"
+#include "../../engine/core/viz_runtime.h"
 
 namespace board_ai::loveletter {
 
@@ -13,6 +15,7 @@ template <int NPlayers>
 void LoveLetterFeatureEncoder<NPlayers>::encode_public(
     const IGameState& state,
     int perspective_player,
+    const IBeliefTracker* /*tracker*/,
     std::vector<float>* out) const {
   const auto* s = dynamic_cast<const LoveLetterState<NPlayers>*>(&state);
   if (!s || !out || perspective_player < 0 || perspective_player >= NPlayers) return;
@@ -64,155 +67,66 @@ template <int NPlayers>
 void LoveLetterFeatureEncoder<NPlayers>::encode_private(
     const IGameState& state,
     int player,
+    const IBeliefTracker* /*tracker*/,
     std::vector<float>* out) const {
   const auto* s = dynamic_cast<const LoveLetterState<NPlayers>*>(&state);
   if (!s || !out || player < 0 || player >= NPlayers) return;
   const auto& d = s->data;
 
-  // Private from `player`'s perspective: for each player pid (in player's
-  // perspective-relative order), output:
-  //   - 8 dims: hand one-hot. Self: real hand. Opp: tracker->known_hand
-  //     (0 if not known, i.e. all zeros).
-  //   - 8 dims: drawn_card one-hot. Self AND current_player: real. Else 0.
+  // Encoder reads MaskedState directly: viz=1 slots carry truth, viz=0
+  // slots carry kPlaceholderInt8 (INT8_MIN), which never equals any
+  // legitimate cid in 1..8 — the one-hot naturally encodes as all-zero
+  // for hidden slots without any explicit placeholder branch.
   //
-  // Tracker access: the encoder's tracker_ pointer is attached at
-  // construction to a specific perspective. If `player` matches that
-  // perspective, use tracker's knowledge; otherwise, output zeros for opp
-  // hands (we don't have `player`'s tracker, and we must not leak opp
-  // private info into a non-owner's private encoding). When MCTS descends
-  // into nodes whose current_player differs from the search root, encoding
-  // for that seat with the root's tracker would inject root's private
-  // knowledge into a non-owner's features (OB-002). Gate explicitly.
-  const bool use_tracker =
-      (tracker_ != nullptr && tracker_->perspective_player() == player);
-
+  // hand[pid]: owner_only_first_axis. From perspective `player`:
+  //   - pid == player        : viz=1 (truth)
+  //   - other pid, no reveal : viz=0 (placeholder)
+  //   - other pid, after Priest peek / Baron / King swap : viz=1 (rules
+  //     called reveal_slot_to(player) on that slot — viz follows cid)
+  //
+  // drawn_card: all_hidden base; rules call reveal_slot_to(current_player)
+  // on draw and reset_to_base on play. Visible only when player ==
+  // current_player and a draw is in flight.
   for (int pi = 0; pi < NPlayers; ++pi) {
     const int pid = (player + pi) % NPlayers;
-    const bool is_self = (pid == player);
-
-    std::int8_t visible_hand = 0;
-    if (is_self) {
-      visible_hand = d.hand[pid];
-    } else if (use_tracker && tracker_->known_hand(pid) > 0) {
-      visible_hand = tracker_->known_hand(pid);
+    const std::int8_t hand_card = d.hand[static_cast<size_t>(pid)];
+    for (int c = 1; c <= kCardTypes; ++c) {
+      out->push_back(hand_card == c ? 1.0f : 0.0f);
     }
     for (int c = 1; c <= kCardTypes; ++c) {
-      out->push_back(visible_hand == c ? 1.0f : 0.0f);
-    }
-
-    for (int c = 1; c <= kCardTypes; ++c) {
-      if (is_self && d.current_player == pid && d.drawn_card == c) {
-        out->push_back(1.0f);
-      } else {
-        out->push_back(0.0f);
-      }
+      const bool show_drawn = (pid == d.current_player && pid == player &&
+                                d.drawn_card == c);
+      out->push_back(show_drawn ? 1.0f : 0.0f);
     }
   }
 }
 
 template <int NPlayers>
 void LoveLetterBeliefTracker<NPlayers>::init(
-    int perspective_player, const AnyMap& initial_observation) {
-  // Idempotent within the same perspective. Selfplay/arena runners call
-  // init each ply for the acting player; we only reset on perspective
-  // change or first call.
-  if (perspective_player_ == perspective_player &&
-      !known_hand_.empty() &&
-      // First init has own_hand_ default 0 — but an empty-hand mid-game is
-      // technically possible (eliminated). Use a separate flag for cleanliness.
-      init_once_) {
-    return;
-  }
-  perspective_player_ = perspective_player;
-  known_hand_.fill(0);
-  alive_tracked_.fill(true);
-  init_once_ = true;
-
-  auto it_h = initial_observation.find("my_hand");
-  own_hand_ = (it_h != initial_observation.end())
-      ? static_cast<std::int8_t>(std::any_cast<int>(it_h->second))
-      : 0;
-  auto it_d = initial_observation.find("my_drawn_card");
-  own_drawn_card_ = (it_d != initial_observation.end())
-      ? static_cast<std::int8_t>(std::any_cast<int>(it_d->second))
-      : 0;
+    const AnyMap& /*initial_observation*/) {
+  // Tracker is perspective-agnostic and stateless. All per-perspective
+  // hand/drawn knowledge lives on state.viz_ (rules-driven reveals).
+  // No private fields to seed; randomize_unseen reads everything it
+  // needs from the public state + observer's viz=1 slots.
 }
-
-namespace {
-// Extract the card referenced by a hand_override event whose "player" key
-// equals the given player. Returns 0 if no such event is in the vector.
-inline std::int8_t extract_hand_override(
-    const std::vector<PublicEvent>& events, int player) {
-  for (const auto& ev : events) {
-    if (ev.first == "hand_override") {
-      auto pit = ev.second.find("player");
-      auto cit = ev.second.find("card");
-      if (pit != ev.second.end() && cit != ev.second.end()) {
-        if (std::any_cast<int>(pit->second) == player) {
-          return static_cast<std::int8_t>(std::any_cast<int>(cit->second));
-        }
-      }
-    }
-  }
-  return 0;
-}
-
-// Extract drawn_override. Love Letter emits this without a player key:
-// the event is always "the current_player after advance_turn drew this"
-// (perspective-only; non-perspectives get empty drawn_card in ai_view).
-inline std::int8_t extract_drawn_override(
-    const std::vector<PublicEvent>& events) {
-  for (const auto& ev : events) {
-    if (ev.first == "drawn_override") {
-      auto cit = ev.second.find("card");
-      if (cit != ev.second.end()) {
-        return static_cast<std::int8_t>(std::any_cast<int>(cit->second));
-      }
-    }
-  }
-  return 0;
-}
-
-// Event-driven card play decoder — same math as loveletter_register's
-// decode(), duplicated here to keep the tracker independent of register
-// internals.
-struct PlayedCardInfo {
-  std::int8_t card = 0;
-  int target = -1;
-};
-
-inline PlayedCardInfo decode_played(ActionId action) {
-  PlayedCardInfo out;
-  if (action >= kGuardOffset && action < kGuardOffset + kGuardCount) {
-    out.card = kGuard;
-    out.target = (action - kGuardOffset) / 7;
-  } else if (action >= kPriestOffset && action < kPriestOffset + kPriestCount) {
-    out.card = kPriest;
-    out.target = action - kPriestOffset;
-  } else if (action >= kBaronOffset && action < kBaronOffset + kBaronCount) {
-    out.card = kBaron;
-    out.target = action - kBaronOffset;
-  } else if (action == kHandmaidAction) {
-    out.card = kHandmaid;
-  } else if (action >= kPrinceOffset && action < kPrinceOffset + kPrinceCount) {
-    out.card = kPrince;
-    out.target = action - kPrinceOffset;
-  } else if (action >= kKingOffset && action < kKingOffset + kKingCount) {
-    out.card = kKing;
-    out.target = action - kKingOffset;
-  } else if (action == kCountessAction) {
-    out.card = kCountess;
-  } else if (action == kPrincessAction) {
-    out.card = kPrincess;
-  }
-  return out;
-}
-}  // namespace
 
 template <int NPlayers>
 void LoveLetterBeliefTracker<NPlayers>::observe_public_event(
-    int actor,
-    ActionId action,
+    int /*actor*/,
+    ActionId /*action*/,
+    const std::vector<PublicEvent>& /*pre_events*/,
+    const std::vector<PublicEvent>& /*post_events*/) {
+  // Stateless — every observation effect that affects what observer
+  // can see lands on state.viz_ via rules' reveal_slot / reset_to_base
+  // and on state's public fields (discard_piles / face_up_removed)
+  // via wholesale public_state_applier replacement. Nothing for the
+  // tracker to record.
+}
+
+#if 0
+template <int NPlayers>
+void LoveLetterBeliefTracker<NPlayers>::observe_public_event_legacy(
+    int actor, ActionId action,
     const std::vector<PublicEvent>& pre_events,
     const std::vector<PublicEvent>& post_events) {
   const PlayedCardInfo played = decode_played(action);
@@ -489,58 +403,71 @@ void LoveLetterBeliefTracker<NPlayers>::observe_public_event(
     }
   }
 }
+#endif  // legacy observe_public_event
 
+// randomize_unseen produces a determinized world consistent with what
+// `observer` has observed. Per §G the tracker is stateless: every fact
+// the observer knows is already on state — either as a public field
+// (discard_piles, face_up_removed, hand_exposed) or as a viz=1 hand /
+// drawn_card slot (rules' Priest peek / Baron compare / King swap /
+// drawn-card-on-own-turn).
+//
+// Algorithm:
+//   1. Derive the unseen-card pool: full LL deck minus public discards,
+//      minus face_up_removed, minus every slot the observer can see the
+//      truth of (state.viz_["hand"][p, observer]==1 → consume
+//      state.hand[p]; ditto drawn_card; set_aside_card is permanently
+//      hidden so always in the pool).
+//   2. Shuffle the pool with caller-supplied rng.
+//   3. Fill set_aside_card from the pool (always).
+//   4. For each viz=0 hand slot (alive players observer can't see),
+//      draw the next pool card.
+//   5. drawn_card: if current_player has a draw in flight (viz=0 to
+//      observer), draw from pool.
+//   6. Remaining pool → state.deck.
 template <int NPlayers>
 void LoveLetterBeliefTracker<NPlayers>::randomize_unseen(
-    IGameState& state, std::mt19937& rng) const {
+    IGameState& state, int observer, std::mt19937_64& rng) const {
   auto* s = dynamic_cast<LoveLetterState<NPlayers>*>(&state);
   if (!s) return;
   auto& d = s->data;
+  if (observer < 0 || observer >= NPlayers) return;
 
-  // Defensive assertion: the tracker must be init'd before search uses it.
-  // Without this, perspective_player_ stays at default -1, and the loops
-  // below (which skip only `p == perspective_player_`) will overwrite the
-  // current player's own hand from the unseen pool — producing sim_state
-  // whose legal_actions disagree with the real root, and DAG collisions.
-  if (perspective_player_ < 0 || perspective_player_ >= NPlayers) {
-    throw std::runtime_error(
-        "LoveLetterBeliefTracker::randomize_unseen called with uninitialized "
-        "perspective_player_=" + std::to_string(perspective_player_) +
-        " (init() must run before search)");
-  }
+  const auto& hand_viz = viz::viz_get(state, "hand");
+  const auto& drawn_viz = viz::viz_get(state, "drawn_card");
+  const int n_viewers = hand_viz.viewer_count();
+  if (observer >= n_viewers) return;
+
+  auto hand_visible = [&](int p) -> bool {
+    const std::size_t base =
+        viz::flat_offset_data_only(hand_viz.shape, std::vector<int>{p});
+    return hand_viz.data[base + static_cast<std::size_t>(observer)] != 0;
+  };
+  auto drawn_visible = [&]() -> bool {
+    const std::size_t base =
+        viz::flat_offset_data_only(drawn_viz.shape, std::vector<int>{});
+    return drawn_viz.data[base + static_cast<std::size_t>(observer)] != 0;
+  };
 
   std::array<int, 9> remaining{};
   for (int c = 1; c <= kCardTypes; ++c) {
     remaining[static_cast<size_t>(c)] = kCardCounts[static_cast<size_t>(c)];
   }
-
   auto consume = [&](std::int8_t card) {
     if (card >= 1 && card <= kCardTypes) {
       remaining[static_cast<size_t>(card)]--;
     }
   };
 
-  // Perspective's own hand + drawn_card come from tracker state, not state.
-  consume(own_hand_);
-  if (own_drawn_card_ != 0) consume(own_drawn_card_);
-
   for (int p = 0; p < NPlayers; ++p) {
-    for (auto card : d.discard_piles[static_cast<size_t>(p)]) {
-      consume(card);
-    }
+    for (auto card : d.discard_piles[static_cast<size_t>(p)]) consume(card);
   }
-
-  for (auto card : d.face_up_removed) {
-    consume(card);
-  }
-
+  for (auto card : d.face_up_removed) consume(card);
   for (int p = 0; p < NPlayers; ++p) {
-    if (p == perspective_player_) continue;
     if (!d.alive[p]) continue;
-    if (known_hand_[p] > 0) {
-      consume(known_hand_[p]);
-    }
+    if (hand_visible(p)) consume(d.hand[static_cast<size_t>(p)]);
   }
+  if (drawn_visible() && d.drawn_card != 0) consume(d.drawn_card);
 
   std::vector<std::int8_t> unseen;
   for (int c = 1; c <= kCardTypes; ++c) {
@@ -550,46 +477,45 @@ void LoveLetterBeliefTracker<NPlayers>::randomize_unseen(
   }
   std::shuffle(unseen.begin(), unseen.end(), rng);
 
-  size_t idx = 0;
+  std::size_t idx = 0;
 
+  // set_aside_card: permanently hidden to everyone; always sample.
   if (idx < unseen.size()) {
     d.set_aside_card = unseen[idx++];
+  } else {
+    d.set_aside_card = 0;
   }
 
-  // Write perspective's own hand from tracker authoritative state. When
-  // perspective is dead (public alive==false), hand becomes 0 to match
-  // truth (which clears hand on elimination via do_action_fast). Without
-  // this, state.hand[perspective] drifts because do_action_fast no longer
-  // runs in the AI session.
-  if (perspective_player_ >= 0 && perspective_player_ < NPlayers) {
-    d.hand[perspective_player_] =
-        d.alive[perspective_player_] ? own_hand_ : static_cast<std::int8_t>(0);
-  }
-
+  // Hands: viz=1 → keep state.hand[p]; viz=0 → sample.
   for (int p = 0; p < NPlayers; ++p) {
-    if (p == perspective_player_) continue;
     if (!d.alive[p]) {
-      d.hand[p] = 0;
+      d.hand[static_cast<size_t>(p)] = 0;
       continue;
     }
-    if (known_hand_[p] > 0) {
-      d.hand[p] = known_hand_[p];
-    } else if (idx < unseen.size()) {
-      d.hand[p] = unseen[idx++];
+    if (hand_visible(p)) continue;  // observer-known, leave alone
+    if (idx < unseen.size()) {
+      d.hand[static_cast<size_t>(p)] = unseen[idx++];
+    } else {
+      d.hand[static_cast<size_t>(p)] = 0;
     }
   }
 
-  // drawn_card is the card the current_player drew at start of their turn.
-  // If current_player is perspective, use tracker authoritative value;
-  // otherwise sample from unseen pool. When the game is terminal or no
-  // active draw is in flight, clear it.
+  // drawn_card: visible to current_player after a draw (rules call
+  // reveal_slot_to(drawn_card, {}, current_player)). Truth has a
+  // drawn_card in flight whenever a draw has resolved and the play has
+  // not yet consumed it; observer-side we check the public deck size
+  // proxy via viz: rules reset_to_base("drawn_card") on play and
+  // reveal_slot_to on draw, so viz=1 to observer iff observer drew.
   if (d.terminal) {
     d.drawn_card = 0;
-  } else if (d.current_player == perspective_player_) {
-    d.drawn_card = own_drawn_card_;
+  } else if (drawn_visible()) {
+    // Observer is the current_player on their own turn — keep truth.
   } else if (d.drawn_card != 0) {
+    // A draw is in flight (current_player != observer); sample.
     if (idx < unseen.size()) {
       d.drawn_card = unseen[idx++];
+    } else {
+      d.drawn_card = 0;
     }
   }
 
@@ -597,22 +523,12 @@ void LoveLetterBeliefTracker<NPlayers>::randomize_unseen(
   while (idx < unseen.size()) {
     d.deck.push_back(unseen[idx++]);
   }
-
-  // Caller-owned rng now drives all subsequent draws via do_action_fast(rng);
-  // nothing on state to reseed.
-  (void)rng;
 }
 
 template <int NPlayers>
 AnyMap LoveLetterBeliefTracker<NPlayers>::serialize() const {
-  AnyMap out;
-  out["perspective_player"] = perspective_player_;
-  std::vector<int> known(NPlayers);
-  for (int p = 0; p < NPlayers; ++p) {
-    known[p] = static_cast<int>(known_hand_[p]);
-  }
-  out["known_hand"] = known;
-  return out;
+  // Stateless: any two observation-equal trackers produce equal output.
+  return AnyMap{};
 }
 
 template class LoveLetterFeatureEncoder<2>;

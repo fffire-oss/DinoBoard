@@ -6,8 +6,10 @@
 #include <stdexcept>
 
 #include "splendor_rules.h"
+#include "../../engine/core/masked_state.h"
 #include "../../engine/core/schema_hash.h"
 #include "../../engine/core/viz_runtime.h"
+#include "../../engine/core/viz_walker.h"
 
 namespace board_ai::splendor {
 
@@ -201,7 +203,7 @@ SplendorPersistentState<NPlayers> SplendorPersistentState<NPlayers>::advance(
 }
 
 template <int NPlayers>
-StateHash64 SplendorPersistentState<NPlayers>::state_hash(bool include_hidden_rng) const {
+StateHash64 SplendorPersistentState<NPlayers>::state_hash() const {
   using Cfg = SplendorConfig<NPlayers>;
   const SplendorData<NPlayers>& d = data();
   std::size_t h = 0;
@@ -228,7 +230,7 @@ StateHash64 SplendorPersistentState<NPlayers>::state_hash(bool include_hidden_rn
     for (int i = 0; i < 3; ++i) {
       const std::int16_t cid = d.reserved[p][static_cast<size_t>(i)];
       const bool visible_to_actor = d.reserved_visible[p][static_cast<size_t>(i)] != 0;
-      if (include_hidden_rng || p == actor || visible_to_actor) {
+      if (p == actor || visible_to_actor) {
         hash_combine(h,static_cast<std::size_t>(cid + 41));
       } else {
         hash_combine(h,static_cast<std::size_t>(-1 + 41));
@@ -240,13 +242,6 @@ StateHash64 SplendorPersistentState<NPlayers>::state_hash(bool include_hidden_rn
     hash_combine(h,static_cast<std::size_t>(d.tableau_size[t] + 47));
     for (auto cid : d.tableau[t]) hash_combine(h,static_cast<std::size_t>(cid + 53));
     hash_combine(h,static_cast<std::size_t>(d.decks[t].size() + 59));
-    if (include_hidden_rng) {
-      const int tail = std::min<int>(3, static_cast<int>(d.decks[t].size()));
-      for (int i = 0; i < tail; ++i) {
-        const auto cid = d.decks[t][d.decks[t].size() - 1U - static_cast<size_t>(i)];
-        hash_combine(h,static_cast<std::size_t>(cid + 61 + i));
-      }
-    }
   }
   hash_combine(h,static_cast<std::size_t>(d.nobles_size + 67));
   for (int i = 0; i < Cfg::kNobleCount; ++i) {
@@ -302,6 +297,12 @@ const viz::VisibilitySchema& SplendorState<NPlayers>::schema() {
                        viz::all_public({Cfg::kPlayers}, Cfg::kPlayers));
     viz::declare_field(schema, "tableau_size",
                        viz::all_public({3}, Cfg::kPlayers));
+    // deck_sizes[3]: per-tier deck size. Public count, hidden contents.
+    // Size is a derived public quantity off `decks[t].size()` —
+    // read/write_field_slot project to / from `decks[t].resize(...)`;
+    // contents are filled by randomize_unseen.
+    viz::declare_field(schema, "deck_sizes",
+                       viz::all_public({3}, Cfg::kPlayers));
     viz::declare_field(schema, "nobles",
                        viz::all_public({Cfg::kNobleCount}, Cfg::kPlayers));
 
@@ -321,9 +322,9 @@ const viz::VisibilitySchema& SplendorState<NPlayers>::schema() {
     // ---- private (per-owner) ----
     // reserved[p][i]: card id of player p's reserve slot i. Base
     // owner-only; rules call viz::reveal_slot(reserved, {p, i}) when a
-    // reserve becomes face-up. Phase 3 consumers continue to gate on
-    // reserved_visible[p][i] (the canonical public flag) until viz is
-    // wired through encoder/hash. Reveal-wiring is a follow-on PR.
+    // reserve becomes face-up, reset_to_base when bought/discarded.
+    // The encoder reads MaskedState's `reserved` slot directly — face-
+    // down opp slots arrive as kPlaceholderInt32.
     viz::declare_field(
         schema, "reserved",
         viz::owner_only_first_axis({Cfg::kPlayers, 3}, Cfg::kPlayers));
@@ -346,29 +347,8 @@ void SplendorState<NPlayers>::reset_with_seed(std::uint64_t seed) {
 }
 
 template <int NPlayers>
-StateHash64 SplendorState<NPlayers>::state_hash(bool include_hidden_rng) const {
-  return persistent.state_hash(include_hidden_rng);
-}
-
-template <int NPlayers>
-void SplendorState<NPlayers>::hash_public_fields(Hasher& h) const {
-  // Schema-driven path: walker iterates declared fields, calls
-  // hash_field_slot for each slot whose runtime viz is 1 for every
-  // viewer. Public deck SIZE is appended manually — `decks` is a
-  // variable-length per-tier vector NOT declared in the schema (its
-  // contents are hidden; only the size is public).
-  framework::hash_public_via_schema(*this, schema(), h);
-  const auto& d = persistent.data();
-  for (int t = 0; t < 3; ++t) {
-    h.add(static_cast<std::int64_t>(d.decks[static_cast<size_t>(t)].size()) + 59);
-  }
-}
-
-template <int NPlayers>
-void SplendorState<NPlayers>::hash_private_fields(int player, Hasher& h) const {
-  using Cfg = SplendorConfig<NPlayers>;
-  if (player < 0 || player >= Cfg::kPlayers) return;
-  framework::hash_private_via_schema(*this, schema(), player, h);
+StateHash64 SplendorState<NPlayers>::state_hash() const {
+  return persistent.state_hash();
 }
 
 template <int NPlayers>
@@ -414,6 +394,10 @@ void SplendorState<NPlayers>::hash_field_slot(
   if (name == "tableau_size") {
     h.add(d.tableau_size[static_cast<size_t>(idx[0])] + 47); return;
   }
+  if (name == "deck_sizes") {
+    h.add(static_cast<std::int64_t>(d.decks[static_cast<size_t>(idx[0])].size()) + 59);
+    return;
+  }
   if (name == "nobles") {
     h.add(d.nobles[static_cast<size_t>(idx[0])] + 71); return;
   }
@@ -444,6 +428,231 @@ void SplendorState<NPlayers>::hash_field_slot(
   // tests/framework/test_public_snapshot_round_trip.py (the public
   // hash will start drifting from the snapshot path).
   (void)Cfg::kPlayers;
+}
+
+// Walker-driven snapshot wire I/O dispatchers. `read_field_slot`
+// returns std::any of int / bool. `write_field_slot` is gated behind
+// the COW persistent — register.cpp opens a `mutate_persistent` block
+// around `viz::apply_public(...)` so all per-slot writes land on the
+// detached writable copy.
+
+template <int NPlayers>
+std::any SplendorState<NPlayers>::read_field_slot(
+    const std::string& name, const std::vector<int>& idx) const {
+  const SplendorData<NPlayers>& d = persistent.data();
+  // 0-D scalars.
+  if (name == "current_player") return std::any(static_cast<int>(d.current_player));
+  if (name == "first_player") return std::any(static_cast<int>(d.first_player));
+  if (name == "plies") return std::any(static_cast<int>(d.plies));
+  if (name == "final_round_remaining") return std::any(static_cast<int>(d.final_round_remaining));
+  if (name == "stage") return std::any(static_cast<int>(d.stage));
+  if (name == "pending_returns") return std::any(static_cast<int>(d.pending_returns));
+  if (name == "pending_nobles_size") return std::any(static_cast<int>(d.pending_nobles_size));
+  if (name == "winner") return std::any(static_cast<int>(d.winner));
+  if (name == "terminal") return std::any(static_cast<bool>(d.terminal));
+  if (name == "shared_victory") return std::any(static_cast<bool>(d.shared_victory));
+  if (name == "nobles_size") return std::any(static_cast<int>(d.nobles_size));
+  // 1-D fields.
+  if (name == "pending_noble_slots") {
+    return std::any(static_cast<int>(d.pending_noble_slots[static_cast<size_t>(idx[0])]));
+  }
+  if (name == "scores") return std::any(static_cast<int>(d.scores[static_cast<size_t>(idx[0])]));
+  if (name == "bank") return std::any(static_cast<int>(d.bank[static_cast<size_t>(idx[0])]));
+  if (name == "player_points") {
+    return std::any(static_cast<int>(d.player_points[static_cast<size_t>(idx[0])]));
+  }
+  if (name == "player_cards_count") {
+    return std::any(static_cast<int>(d.player_cards_count[static_cast<size_t>(idx[0])]));
+  }
+  if (name == "player_nobles_count") {
+    return std::any(static_cast<int>(d.player_nobles_count[static_cast<size_t>(idx[0])]));
+  }
+  if (name == "reserved_size") {
+    return std::any(static_cast<int>(d.reserved_size[static_cast<size_t>(idx[0])]));
+  }
+  if (name == "tableau_size") {
+    return std::any(static_cast<int>(d.tableau_size[static_cast<size_t>(idx[0])]));
+  }
+  if (name == "deck_sizes") {
+    return std::any(static_cast<int>(d.decks[static_cast<size_t>(idx[0])].size()));
+  }
+  if (name == "nobles") return std::any(static_cast<int>(d.nobles[static_cast<size_t>(idx[0])]));
+  // 2-D fields.
+  if (name == "player_gems") {
+    return std::any(static_cast<int>(
+        d.player_gems[static_cast<size_t>(idx[0])][static_cast<size_t>(idx[1])]));
+  }
+  if (name == "player_bonuses") {
+    return std::any(static_cast<int>(
+        d.player_bonuses[static_cast<size_t>(idx[0])][static_cast<size_t>(idx[1])]));
+  }
+  if (name == "tableau") {
+    return std::any(static_cast<int>(
+        d.tableau[static_cast<size_t>(idx[0])][static_cast<size_t>(idx[1])]));
+  }
+  if (name == "reserved_visible") {
+    return std::any(
+        d.reserved_visible[static_cast<size_t>(idx[0])][static_cast<size_t>(idx[1])] != 0
+            ? 1 : 0);
+  }
+  if (name == "reserved") {
+    // Only emitted when public — walker visits the slot iff its viewer
+    // bit is 1 for perspective. Caller (register.cpp) must keep viz_
+    // in sync with reserved_visible (sync_splendor_reserved_viz).
+    return std::any(static_cast<int>(
+        d.reserved[static_cast<size_t>(idx[0])][static_cast<size_t>(idx[1])]));
+  }
+  return {};
+}
+
+template <int NPlayers>
+void SplendorState<NPlayers>::write_field_slot(
+    const std::string& name, const std::vector<int>& idx,
+    const std::any& value) {
+  // Helper: cast value to int (handles AnyMap traversal where int may
+  // round-trip through pybind as int).
+  auto as_int = [&]() -> int {
+    if (value.type() == typeid(int)) return std::any_cast<int>(value);
+    if (value.type() == typeid(bool)) return std::any_cast<bool>(value) ? 1 : 0;
+    return 0;
+  };
+  auto as_bool = [&]() -> bool {
+    if (value.type() == typeid(bool)) return std::any_cast<bool>(value);
+    if (value.type() == typeid(int)) return std::any_cast<int>(value) != 0;
+    return false;
+  };
+
+  // Detach a writable SplendorData and reseat once per write. (register.cpp
+  // wraps the whole apply_public call in a single mutate_persistent so
+  // typical N-write batch is still O(1) reseats; this code path is only
+  // hit when called outside a wrapping mutate_persistent — kept correct
+  // either way.)
+  SplendorData<NPlayers> data = persistent.data();
+  auto& d = data;
+
+  bool handled = true;
+  if (name == "current_player") d.current_player = static_cast<std::int8_t>(as_int());
+  else if (name == "first_player") d.first_player = static_cast<std::int8_t>(as_int());
+  else if (name == "plies") d.plies = static_cast<std::int16_t>(as_int());
+  else if (name == "final_round_remaining") d.final_round_remaining = static_cast<std::int8_t>(as_int());
+  else if (name == "stage") d.stage = static_cast<std::int8_t>(as_int());
+  else if (name == "pending_returns") d.pending_returns = static_cast<std::int8_t>(as_int());
+  else if (name == "pending_nobles_size") d.pending_nobles_size = static_cast<std::int8_t>(as_int());
+  else if (name == "winner") d.winner = static_cast<std::int8_t>(as_int());
+  else if (name == "terminal") d.terminal = as_bool();
+  else if (name == "shared_victory") d.shared_victory = as_bool();
+  else if (name == "nobles_size") d.nobles_size = static_cast<std::int8_t>(as_int());
+  else if (name == "pending_noble_slots") {
+    d.pending_noble_slots[static_cast<size_t>(idx[0])] = static_cast<std::int8_t>(as_int());
+  }
+  else if (name == "scores") d.scores[static_cast<size_t>(idx[0])] = as_int();
+  else if (name == "bank") d.bank[static_cast<size_t>(idx[0])] = static_cast<std::int8_t>(as_int());
+  else if (name == "player_points") {
+    d.player_points[static_cast<size_t>(idx[0])] = static_cast<std::int16_t>(as_int());
+  }
+  else if (name == "player_cards_count") {
+    d.player_cards_count[static_cast<size_t>(idx[0])] = static_cast<std::int16_t>(as_int());
+  }
+  else if (name == "player_nobles_count") {
+    d.player_nobles_count[static_cast<size_t>(idx[0])] = static_cast<std::int16_t>(as_int());
+  }
+  else if (name == "reserved_size") {
+    d.reserved_size[static_cast<size_t>(idx[0])] = static_cast<std::int8_t>(as_int());
+  }
+  else if (name == "tableau_size") {
+    d.tableau_size[static_cast<size_t>(idx[0])] = static_cast<std::int8_t>(as_int());
+  }
+  else if (name == "deck_sizes") {
+    // Resize tier deck to the snapshot's public size. Truncate if the
+    // observer's deck is longer; pad with -1 placeholders that
+    // randomize_unseen later fills from belief. Mirrors the
+    // pre-schema snapshot-only `deck_sizes` apply path.
+    const int target = as_int();
+    if (target >= 0) {
+      auto& deck = d.decks[static_cast<size_t>(idx[0])];
+      if (static_cast<int>(deck.size()) > target) {
+        deck.resize(static_cast<size_t>(target));
+      } else {
+        while (static_cast<int>(deck.size()) < target) {
+          deck.push_back(-1);
+        }
+      }
+    }
+  }
+  else if (name == "nobles") {
+    d.nobles[static_cast<size_t>(idx[0])] = static_cast<std::int16_t>(as_int());
+  }
+  else if (name == "player_gems") {
+    d.player_gems[static_cast<size_t>(idx[0])][static_cast<size_t>(idx[1])] =
+        static_cast<std::int8_t>(as_int());
+  }
+  else if (name == "player_bonuses") {
+    d.player_bonuses[static_cast<size_t>(idx[0])][static_cast<size_t>(idx[1])] =
+        static_cast<std::int8_t>(as_int());
+  }
+  else if (name == "tableau") {
+    d.tableau[static_cast<size_t>(idx[0])][static_cast<size_t>(idx[1])] =
+        static_cast<std::int16_t>(as_int());
+  }
+  else if (name == "reserved_visible") {
+    d.reserved_visible[static_cast<size_t>(idx[0])][static_cast<size_t>(idx[1])] =
+        static_cast<std::int8_t>(as_int());
+  }
+  else if (name == "reserved") {
+    d.reserved[static_cast<size_t>(idx[0])][static_cast<size_t>(idx[1])] =
+        static_cast<std::int16_t>(as_int());
+  }
+  else handled = false;
+
+  if (!handled) return;
+  // Reseat persistent → new shared SplendorData.
+  auto node = std::make_shared<SplendorPersistentNode<NPlayers>>();
+  node->action_from_parent = -1;
+  node->materialized = std::make_shared<const SplendorData<NPlayers>>(std::move(data));
+  persistent = SplendorPersistentState<NPlayers>(std::move(node));
+  undo_stack.clear();
+}
+
+// mask_field_slot writes kPlaceholder into the only hidden field
+// Splendor declares — `reserved` (face-down id, owner_only_first_axis
+// base). All other fields are all_public, so the walker never visits
+// them as hidden.
+template <int NPlayers>
+void SplendorState<NPlayers>::mask_field_slot(
+    const std::string& name, const std::vector<int>& idx) {
+  if (name != "reserved") return;
+  SplendorData<NPlayers> data = persistent.data();
+  data.reserved[static_cast<size_t>(idx[0])][static_cast<size_t>(idx[1])] =
+      static_cast<std::int16_t>(kPlaceholderInt32);
+  auto node = std::make_shared<SplendorPersistentNode<NPlayers>>();
+  node->action_from_parent = -1;
+  node->materialized = std::make_shared<const SplendorData<NPlayers>>(std::move(data));
+  persistent = SplendorPersistentState<NPlayers>(std::move(node));
+  undo_stack.clear();
+}
+
+// COW-aware mask_all_hidden_slots. Detach once into a single writable
+// SplendorData, run the walker dispatch on it, reseat once at the end.
+// Avoids one shared_ptr reseat per masked slot.
+template <int NPlayers>
+void SplendorState<NPlayers>::mask_all_hidden_slots(
+    const viz::VisibilitySchema& schema, int perspective,
+    const std::unordered_map<std::string, viz::VizTensor>* belief_filled) {
+  SplendorData<NPlayers> data = persistent.data();
+  viz::for_each_hidden_slot(
+      *this, schema, perspective, belief_filled,
+      [&](const std::string& name, const std::vector<int>& idx,
+          const viz::VizTensor& /*v*/) {
+        if (name == "reserved") {
+          data.reserved[static_cast<size_t>(idx[0])][static_cast<size_t>(idx[1])] =
+              static_cast<std::int16_t>(kPlaceholderInt32);
+        }
+      });
+  auto node = std::make_shared<SplendorPersistentNode<NPlayers>>();
+  node->action_from_parent = -1;
+  node->materialized = std::make_shared<const SplendorData<NPlayers>>(std::move(data));
+  persistent = SplendorPersistentState<NPlayers>(std::move(node));
+  undo_stack.clear();
 }
 
 template <int NPlayers>
