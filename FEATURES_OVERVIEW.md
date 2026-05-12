@@ -274,7 +274,7 @@ vs best，胜率 ≥ 阈值更新 best）。N 人游戏 candidate 轮坐每个�
 | Quoridor | 完全信息确定游戏；heuristic_picker / tail_solver / adjudicator / auxiliary_scorer / training_action_filter 全配齐 |
 | Splendor | **端到端 walker 化参考实现**：reserve owner-only viz、`mask_field_slot` 走 COW shared_ptr 一次 detach、snapshot 走 `serialize_public(MaskedState)` walker 路径、`do_action_deterministic` 用 `forced_draw_override = -2` 占位符 |
 | Azul | 纯对称物理随机；belief_tracker 只驱动 `randomize_unseen`，schema 仍 all_public（袋子组成由公开 token 守恒派生） |
-| Love Letter | 非对称隐藏 + tracker 精确知识；`known_hand_[]` 跟踪 Priest 偷看 / Baron / King 后的确定信息 |
+| Love Letter | 非对称隐藏 + viz reveal 槽位承载确定信息（rules 通过 `reveal_slot_to` / `swap_slot_owned` 写入），tracker stateless 只做剩余牌池均匀采样 |
 | Coup | **自定义 randomize_unseen** 范例：claim/challenge 历史驱动加权联合采样，避免诈唬游戏的 uniform 退化均衡 |
 
 详见 [Guide §13 完整 Checklist](docs/guide/GAME_DEVELOPMENT_GUIDE.md#13-完整-checklist)。
@@ -285,12 +285,18 @@ vs best，胜率 ≥ 阈值更新 best）。N 人游戏 candidate 轮坐每个�
 
 **两层架构**：
 
-- **`tests/framework/`** —— 框架不变量，跑在固定 3 游戏 matrix
-  （`FRAMEWORK_GAMES = ["quoridor", "azul", "loveletter"]`）上，最小完
-  备覆盖确定/对称随机/非对称隐藏 × 2p/2-4p × tail solver / belief
-  tracker 等结构特征。其中 `test_visibility_schema` /
-  `test_snapshot_keys_match_schema` 守 walker 路径：schema 改了忘了同步
-  分发器 → CI 立刻 fail
+- **`tests/framework/`** —— 框架不变量，分两层：
+  - 纯 framework matrix 测试（encoder / sample_collection / 守恒律
+    类）跑在固定 3 游戏 matrix 上：`FRAMEWORK_GAMES = ["quoridor",
+    "azul", "loveletter"]`，最小完备覆盖确定/对称随机/非对称隐藏 ×
+    2p/2-4p × tail solver / belief tracker 等结构特征
+  - AI / observation 协议测试（`test_selfplay_no_truth_in_ai_path` /
+    `test_public_snapshot_round_trip` / `test_deployed_models_match_
+    encoder` 等）动态扫所有 in-scope 游戏（5 款：tictactoe / quoridor /
+    azul / splendor / loveletter）
+
+  其中 `test_visibility_schema` / `test_snapshot_keys_match_schema` 守
+  walker 路径：schema 改了忘了同步分发器 → CI 立刻 fail
 - **`tests/<game>/`** —— 每游戏完整验收清单，包含 `TestRuleInvariants`
   用 `run_random_episode_states` 驱动随机对局并断言**该游戏自己的守恒
   律**（token / 卡 / 棋子总量、容量上限等）

@@ -373,18 +373,23 @@ GT 端 snapshot 是另一条独立 mask 调用（perspective 是 GT 视角下当
 ```cpp
 class IFeatureEncoder {
   virtual void encode_public(const MaskedState&, int perspective,
+                             const IBeliefTracker* tracker,
                              std::vector<float>* out) const = 0;
   virtual void encode_private(const MaskedState&, int perspective,
+                              const IBeliefTracker* tracker,
                               std::vector<float>* out) const = 0;
 };
 
 class IPolicyValueEvaluator {
   virtual bool evaluate(const MaskedState& masked, int perspective_player,
+                        const IBeliefTracker* tracker,
                         const std::vector<ActionId>& legal_actions,
                         std::vector<float>* priors,
                         std::vector<float>* values) const = 0;
 };
 ```
+
+`tracker` 提供 perspective 视角下的公开衍生特征（如 Splendor 的 `seen_cards` 多重集统计、Coup 的 claim 历史聚合）；perspective 私密知识不在 tracker 上（它在 `state.viz_` 的 viz=1 槽位上），所以 encoder 读 tracker 拿到的永远是公开聚合，不会泄漏。游戏没注册 tracker 时传 `nullptr`。
 
 读 viz=0 槽位只能读到 placeholder——MaskedState 上 placeholder 自身就是
 "看不见"的信号，作者不需要查 viz 也不需要 `is_visible_to` 之类的辅助
@@ -552,8 +557,10 @@ perspective 视角准备好的 state**（公开字段从 snapshot 重建、hidde
 
 ### 8.2 简单情况 vs 加权情况
 
-- 纯信息博弈但简单（Love Letter）：tracker 维护 `known_hand_` 等确定信
-  息，未知槽位在剩余可能集合里均匀采样
+- 纯信息博弈但简单（Love Letter）：rules 通过 `reveal_slot_to` /
+  `swap_slot_owned` 把 Priest 偷看 / Baron / King 后的确定信息写到
+  viz=1 槽位；tracker 自身 stateless，`randomize_unseen` 只对剩余 viz=0
+  槽位做剩余牌池均匀采样
 - 隐藏多重集（Splendor 三层 deck 顶部）：tracker 维护剩余多重集，
   `randomize_unseen` uniform 抽取
 - bluff game（Coup）：tracker 维护 claim/challenge 历史，
