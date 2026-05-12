@@ -183,8 +183,12 @@ createApp({
   numPlayers: 2,
 
   renderBoard(container, gameState, ctx) {
-    if (!gameState) { window.DinoBoard.showNotStarted(); return; }
-    window.DinoBoard.hideNotStarted();
+    container.innerHTML = '';
+    if (!gameState) {
+      // 还没创建对局：渲染一份"空盘"占位（如空网格），让棋盘区尺寸保持稳定
+      renderEmptyBoard(container);
+      return;
+    }
     // 根据 gameState 渲染棋盘到 container
     // 用户交互后调用 ctx.submitAction(actionId)
   },
@@ -451,17 +455,9 @@ python3 platform/tools/eval_model.py \
 | 侧边栏收起 | 侧边栏边缘"收起/展开"按钮，状态保存到 localStorage |
 | 尚未开局提示 | 棋盘区域显示"尚未开局"占位文字 |
 
-**尚未开局提示**：`common.js` 在 `#board-stage` 中自动注入 `#not-started-placeholder`。游戏 JS 通过以下 API 控制显隐：
+**尚未开局提示**：layout.css 提供 `.not-started-placeholder` 样式类供游戏自由选用——但目前的参考实现（quoridor、azul、splendor、loveletter）都不依赖它，而是在 `gameState` 为空时直接 `renderEmptyBoard(container)` 渲染一份占位空盘（空网格 / 空 factory 区 / 空 tableau），让棋盘区域尺寸稳定。这个做法把"开局前的视觉占位"和"游戏专属的空盘语义"合在一起，省一层 DOM 注入。
 
-```javascript
-// 游戏开始后隐藏
-window.DinoBoard.hideNotStarted();
-
-// 需要重新显示时（如重置）
-window.DinoBoard.showNotStarted();
-```
-
-游戏的 `renderBoard()` 函数应在 `gameState` 为空时调用 `showNotStarted()`，在有状态时调用 `hideNotStarted()`。
+游戏的 `renderBoard()` 函数应在 `gameState` 为空时**返回一个空盘渲染**，而不是把 container 留空——后者会让侧边栏 / info 栏跟着塌缩，违反空间锚定原则（详见 `WEB_DESIGN_PRINCIPLES.md`）。
 
 ## 13. 核心 API
 

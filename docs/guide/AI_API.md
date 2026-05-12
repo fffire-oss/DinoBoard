@@ -41,18 +41,18 @@
   "game_id": "quoridor",
   "seed": 12345,
   "my_seat": 0,
-  "simulations": 800,
-  "temperature": 0.0
+  "initial_observation": {}
 }
 ```
 
 | 字段 | 说明 |
 |------|------|
 | `game_id` | 注册的游戏 ID（见 `docs/games/`）。多人变体用 `{game}_3p` / `{game}_4p` |
-| `seed` | AI 内部 RNG seed。**对有隐藏信息的游戏可以任意选**，不需要等于 ground truth 的 seed——AI 的内部世界本来就是采样的 |
+| `seed` | 可选。AI 内部 RNG seed。**对有隐藏信息的游戏可以任意选**，不需要等于 ground truth 的 seed——AI 的内部世界本来就是采样的；省略则服务端用 `secrets.randbits(64)` 自取 |
 | `my_seat` | AI 扮演的座位（0-indexed） |
-| `simulations` | 每次决策的 MCTS 模拟次数。800 对大多数游戏足够；复杂游戏（Splendor）可以给 1500+ |
-| `temperature` | 动作选择温度。0.0 = 确定性 argmax。0.3+ 增加随机性（适合和人对弈的娱乐性） |
+| `initial_observation` | 隐藏信息游戏开局时这个 perspective 才能看到的事实（如自己的初始手牌）。隐藏信息游戏必填；完全公开的游戏忽略此字段 |
+
+> AI 强度（`simulations` / `temperature`）由服务端从 `web.json::difficulty_overrides.expert` 解析（fallback `{simulations: 800, temperature: 0.0}`），**客户端不可指定**。
 
 **响应**：
 ```json
@@ -140,7 +140,7 @@
 # 1. 创建 session，AI 扮演玩家 0
 SID=$(curl -sX POST http://localhost:8000/ai/sessions \
   -H 'Content-Type: application/json' \
-  -d '{"game_id":"quoridor","seed":7,"my_seat":0,"simulations":800,"temperature":0.0}' \
+  -d '{"game_id":"quoridor","seed":7,"my_seat":0}' \
   | jq -r .session_id)
 
 # 2. AI 先手。要 AI 出招
@@ -195,7 +195,7 @@ curl -sX DELETE http://localhost:8000/ai/sessions/$SID
 ## 性能提示
 
 - 一个 session 对应一份独立的 ONNX 运行时实例。大量并发会话需要注意内存。
-- `simulations` 线性影响决策延迟。2p Quoridor 的 800 sim 大约 300ms（视 CPU），Splendor 大约 500ms。
+- 决策延迟主要由服务端配置的 `simulations` 决定（线性）。2p Quoridor 的 800 sim 大约 300ms（视 CPU），Splendor 大约 500ms。调整在 `web.json::difficulty_overrides.expert` 里改。
 - 单个 session 内部的 `decide` 是线程安全的——多个 session 间的并发 request 互不干扰。
 - 长时间不用的 session 应该及时 `DELETE`；没有自动 GC。
 

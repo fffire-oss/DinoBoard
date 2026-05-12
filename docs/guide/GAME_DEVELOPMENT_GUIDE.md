@@ -177,7 +177,9 @@ void reset_with_seed(std::uint64_t seed) override {
 
 ### 2.3 UndoRecord 设计模式
 
-每次 `do_action_fast` 执行前，将所有会被修改的字段快照保存到 `UndoRecord`，压入 `undo_stack`。`undo_action` 弹出最后一条记录并恢复状态。
+**只在实现 `do_action_deterministic` + `undo_action`（tail solver 路径）时才需要 UndoRecord。** `do_action_fast` 不支持 undo，不要在 fast 路径里 push `undo_stack`——MCTS / selfplay / web 都丢弃用完的 state，没有恢复需求。
+
+`do_action_deterministic` 执行前，将所有会被修改的字段快照保存到 `UndoRecord` 并压入 `undo_stack`；`undo_action` 弹出最后一条记录并恢复状态。Tail solver 在同一 state 上 do→recurse→undo 反复滚动。
 
 ```cpp
 struct UndoRecord {
@@ -213,7 +215,8 @@ class MyGameRules final : public IGameRules {
  public:
   bool validate_action(const IGameState& state, ActionId action) const override;
   std::vector<ActionId> legal_actions(const IGameState& state) const override;
-  UndoToken do_action_fast(IGameState& state, ActionId action) const override;
+  UndoToken do_action_fast(IGameState& state, ActionId action,
+                           std::mt19937_64& rng) const override;
   void undo_action(IGameState& state, const UndoToken& token) const override;
 };
 ```
@@ -238,33 +241,27 @@ Quoridor：action ∈ [0, 209)
 
 建议提供 `encode_xxx_action()` 和 `decode_xxx_action()` 辅助函数。
 
-#### `do_action_fast(state, action) -> UndoToken`
+#### `do_action_fast(state, action, rng) -> UndoToken`
 
-**核心热路径方法**。在状态上原地执行动作，返回 UndoToken。MCTS 每次模拟调用上千次。
+**核心热路径方法**。在状态上原地执行动作，返回 UndoToken。MCTS 每次模拟调用上千次。`rng` 由调用方持有（runner / session），用于消费物理随机（抽牌、翻牌）；不依赖随机的游戏忽略即可。**`do_action_fast` 不支持 undo**（MCTS / selfplay / web 都丢弃用完的 state，没有 undo_stack push 必要）；要接 tail solver 才需额外实现 §3.2 的 `do_action_deterministic` + `undo_action` 配对。
 
 **实现模板**：
 ```cpp
-UndoToken do_action_fast(IGameState& state, ActionId action) const override {
+UndoToken do_action_fast(IGameState& state, ActionId action,
+                         std::mt19937_64& rng) const override {
   auto* s = &checked_cast<MyGameState>(state);
-  UndoToken token{};
-  token.undo_depth = static_cast<std::uint32_t>(s->undo_stack.size());
+  s->begin_step();  // 框架要求：首行调用，bump step_count_ 保证 DAG 无环
 
-  // 1. 保存快照
-  UndoRecord rec{};
-  rec.prev_player = s->current_player_;
-  rec.prev_winner = s->winner_;
-  // ... 保存所有会被修改的字段 ...
-  s->undo_stack.push_back(rec);
+  // 1. 执行动作（不要 push undo_stack —— do_action_fast 不支持 undo）
+  //    用 rng 消费物理随机：例如 std::uniform_int_distribution<>(...)(rng)
+  // ... 修改棋盘状态、调用 reveal_slot / reset_to_base 维护 viz_ ...
 
-  // 2. 执行动作
-  // ... 修改棋盘状态 ...
-
-  // 3. 更新游戏元数据
+  // 2. 更新游戏元数据
   s->move_count += 1;
   // ... 检查胜负 ...
-  s->current_player_ = 1 - s->current_player_;  // 切换玩家
+  s->current_player_ = 1 - s->current_player_;
 
-  return token;
+  return {};  // UndoToken 在 fast 路径上是 vestige，返回空即可
 }
 ```
 
@@ -500,7 +497,7 @@ using AuxiliaryScorer = std::function<float(const IGameState& state, int player)
 
 // 训练动作过滤
 using TrainingActionFilter = std::function<std::vector<ActionId>(
-    IGameState& state, const IGameRules& rules, const std::vector<ActionId>& legal)>;
+    const IGameState& state, const IGameRules& rules, const std::vector<ActionId>& legal)>;
 ```
 
 ---
@@ -844,7 +841,7 @@ value = terminal_value + margin_weight × auxiliary_scorer(state, perspective)
 
 **用途**：在训练时缩小动作空间，去除明显不好的动作，加速早期学习。
 
-**签名**：`(IGameState&, const IGameRules&, const vector<ActionId>&) -> vector<ActionId>`
+**签名**：`(const IGameState&, const IGameRules&, const vector<ActionId>&) -> vector<ActionId>`
 
 **概率应用**：filter 不是永久生效的。通过 `training_filter_steps` 配置，filter 的应用概率从 `training_filter_initial_ratio`（默认 0.5）线性衰减到 0。每个 ply 独立掷骰决定是否使用 filter。这确保网络最终在全动作空间上训练，避免泛化问题。
 
@@ -854,7 +851,7 @@ value = terminal_value + margin_weight × auxiliary_scorer(state, perspective)
 ```
 
 **注意**：
-- filter 接收**可变**的 `IGameState&`（可以 do/undo 来评估动作质量）
+- filter 接收 `const IGameState&`（不可变）；评估动作质量需要前瞻时，应在副本上 clone 后再做（不要试图在原 state 上 do/undo）
 - 如果 filter 返回空 vector，框架会 **fallback 到完整合法动作集**
 - filter 同时影响 selfplay MCTS 和 constrained eval
 - 详见 [BUG-003](../KNOWN_ISSUES.md#bug-003-训练-评估动作空间不一致) 关于评估一致性的讨论
@@ -1072,16 +1069,24 @@ acyclic。**游戏开发者不要在 `hash_field_slot` 里重复 hash step_count
 ### 10.4 IBeliefTracker
 **用途**：维护当前玩家的信息认知，为 ISMCTS 根采样提供 prior。
 
-3 个必须实现的方法（观察-only 接口）：
+5 个必须实现的方法（观察-only 接口）：
 
 ```cpp
-virtual void init(int perspective_player, const AnyMap& initial_observation) = 0;
+virtual void init(const AnyMap& initial_observation) = 0;
 virtual void observe_public_event(
     int actor, ActionId action,
     const std::vector<PublicEvent>& events) = 0;
-virtual void randomize_unseen(IGameState& state, int perspective,
-                              std::mt19937_64& rng) = 0;
+virtual void randomize_unseen(IGameState& state, int observer,
+                              std::mt19937_64& rng) const = 0;
+virtual std::unique_ptr<IBeliefTracker> clone() const = 0;
+virtual AnyMap serialize() const = 0;
 ```
+
+**关于这几个方法**：
+- `init` **不接 perspective 形参**——tracker 是 perspective-agnostic 的，观察者座位由 `randomize_unseen` 的 `observer` 参数传入。
+- `randomize_unseen` 必须 `const`：MCTS sim 路径上调的是 cloned `sim_tracker`，不允许写回累积状态。
+- `clone()` 每次 sim determinization 都会被调用——把当前 belief 复制一份给 sim 用，主 session 的 tracker 不被 sim 写脏。
+- `serialize()` 输出 canonical 字典，给 `test_api_belief_matches_selfplay` 之类的回归测试做对比。
 
 **结构性约束（编译器层强制）**：`init` 和 `observe_public_event` 方法签名里没有 `IGameState*` —— tracker 在这两个方法里物理上拿不到 state 指针，**无法**偷看真实游戏状态。所有输入都来自游戏注册的两个 extractor：
 
@@ -1118,7 +1123,7 @@ Stale 采样(opp hidden 字段的旧 cid 现在已经被公开看到)必须从�
 ```
 游戏开始（每个座位 p = 0..num_players-1）：
   initial_obs_p = bundle.initial_observation_extractor(state, p)
-  per_perspective_trackers[p]->init(p, initial_obs_p)
+  per_perspective_trackers[p]->init(initial_obs_p)  // perspective-agnostic
 
 每一步 ply（acting player = cp）：
   1. MCTS 搜索                                                 // 见 §MCTS
@@ -1139,7 +1144,7 @@ web / API / per-seat selfplay 推 observer state（不调 do_action_fast）：
          seat, p, freshen_rng)                                  // tracker 重采
 ```
 
-游戏开发者只需实现 `IBeliefTracker` 的 3 个方法 + `initial_observation_extractor` + `public_event_extractor`（+ `public_state_applier`，隐藏信息游戏必装）。extractor 调用封装见 `bindings/py_engine.cpp`。
+游戏开发者只需实现 `IBeliefTracker` 的 5 个方法 + `initial_observation_extractor` + `public_event_extractor`（+ `public_state_applier`，隐藏信息游戏必装）。extractor 调用封装见 `bindings/py_engine.cpp`。
 
 ### 10.6 实现示例
 Belief tracker 有两种不同定位，由游戏的信息结构决定：
@@ -1226,7 +1231,7 @@ ISMCTS 根采样 + encoder 信息屏障在双人游戏中完全自洽；多人�
 
 ### 10.9 开发者 Checklist
 1. 确认游戏是否有非对称隐藏信息（玩家间知道的不一样）。**对称无知**（如 Azul 的 bag）不需要注册 `belief_tracker`——viz=0 槽位不存在，物理随机直接走 `do_action_fast` 里 `sim_rng` 即时抽。**只有非对称**才需要 tracker 来驱动 `randomize_unseen`
-2. 实现 `IBeliefTracker` 的三个方法（`init` / `observe_public_event` / `randomize_unseen`），遵守"接口签名根本拿不到 `IGameState*`"的结构性约束（§10.4）
+2. 实现 `IBeliefTracker` 的五个方法（`init` / `observe_public_event` / `randomize_unseen` / `clone` / `serialize`），遵守"接口签名根本拿不到 `IGameState*`"的结构性约束（§10.4）
 3. Encoder 接受 `MaskedState`——viz=0 槽位由 framework 替换为 `kPlaceholder`，encoder 必须分支处理 placeholder（§10.7），不要查询 viz、不要绕过 mask 读 truth
 4. **在 `<game>_state.cpp` 用 `viz::declare_field` 声明每个 state 字段的 name + data shape + base viz tensor**（`all_public` / `owner_only_first_axis` / `all_hidden`），实现 `hash_field_slot` / `read_field_slot` / `write_field_slot` / `mask_field_slot` 四个 per-slot dispatcher（§10.3b）。框架的 walker 按 schema 顺序遍历每个 slot——`viz[..., perspective]=1` 时调 `hash_field_slot` 把 truth mix 进 hash，`viz[..., perspective]=0` 时 mix `kPlaceholder` 哨兵——自动得到 `state_hash_for_perspective(p)` 作 DAG 节点键
 5. **在 `do_action_fast` 里调 `state.begin_step()`，在 `undo_action` 里调 `state.end_step()`**，`reset_with_seed` 里重置 `this->step_count_ = 0`。`step_count_` 单调递增保证 DAG 结构性 acyclic
@@ -1466,7 +1471,7 @@ GT 端每步产出 `PublicEventTrace { events, public_snapshot }`：
 |------|---------|---------|------|
 | Azul | `factory_refill` | stateless tracker，只同步 factories | `games/azul/azul_register.cpp` |
 | Splendor | `deck_flip`, `self_reserve_deck` | tracker 维护 seen_cards，盲预订时 AI 需要知道自己抽了什么 | `games/splendor/splendor_register.cpp` |
-| Love Letter | （无 events，靠 viz） | Priest/Baron/King/Prince 通过 `reveal_slot_to` / `swap_slot_owned` 把对手手牌写进 viz；snapshot 自带这些 cid | `games/loveletter/loveletter_register.cpp` |
+| Love Letter | 仅淘汰 / reset 性质事件，精确知识走 viz | Priest/Baron/King/Prince 的对手手牌信息由 rules 直接通过 `reveal_slot_to` / `swap_slot_owned` 写进 viz，snapshot 自带这些 cid；events 只在结构层面（座位淘汰、reveal 槽位变更通知 tracker 重算多重集）发声，tracker 不靠 events 重建 hand | `games/loveletter/loveletter_register.cpp` |
 
 **编写事件协议时的 checklist**：
 - [ ] GT 端 `do_action_fast` 每处读 / 写隐藏字段的地方（翻牌、抽牌、对手手牌揭露），`extract_events` 都要发对应事件

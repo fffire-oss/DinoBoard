@@ -495,7 +495,7 @@ def test_hidden_info_deterministic():
     assert ep1["total_plies"] == ep2["total_plies"]
     assert ep1["winner"] == ep2["winner"]
 
-def test_dag_reuse_hits_present(self):
+def test_dag_reuse_hits_present():
     """DAG 节点应被复用——高 sim 下信息集会被多次访问，dag_reuse_hits 应 > 0。
     调用 GameSession.apply_ai_action 获取 per-decision stats；不是每个 ep sample 都暴露。"""
     gs = dinoboard_engine.GameSession(GAME_ID, seed=42)
