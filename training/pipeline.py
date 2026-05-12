@@ -186,9 +186,14 @@ def run_eval_vs_heuristic(
     heuristic_temperature: float,
     max_workers: int,
 ) -> dict[str, Any]:
+    import dinoboard_engine
+    num_players = dinoboard_engine.game_metadata(game_id)["num_players"]
     tasks = []
     for i in range(num_games):
-        model_side = i % 2
+        # Rotate the model's seat across all N players so each seat carries
+        # the same number of games. `i % 2` would only test seats 0 and 1,
+        # leaving 3p/4p seats 2/3 unmeasured.
+        model_side = i % num_players
         tasks.append((
             game_id, base_seed + i, model_path, simulations,
             model_side, constrained, heuristic_temperature,
