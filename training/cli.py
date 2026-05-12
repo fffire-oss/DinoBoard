@@ -69,6 +69,7 @@ def main() -> int:
     episodes = args.episodes if args.episodes > 0 else train_cfg.get("episodes_per_step", 200)
     batch_size = args.batch_size if args.batch_size > 0 else train_cfg.get("batch_size", 512)
     lr = args.lr if args.lr > 0 else train_cfg.get("learning_rate", 0.001)
+    eval_benchmarks = args.eval_benchmark if args.eval_benchmark else train_cfg.get("eval_benchmarks")
 
     run_training_loop(
         game_id=args.game,
@@ -78,7 +79,7 @@ def main() -> int:
         episodes_per_step=episodes,
         eval_every=args.eval_every,
         eval_games=args.eval_games,
-        eval_benchmarks=args.eval_benchmark,
+        eval_benchmarks=eval_benchmarks,
         max_workers=args.workers,
         batch_size=batch_size,
         learning_rate=lr,

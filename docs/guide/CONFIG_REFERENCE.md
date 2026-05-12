@@ -81,10 +81,11 @@
 |------|------|--------|------|
 | `gating_accept_win_rate` | float | N 人自适应 | latest vs best 的晋升阈值。不显式设置时，框架按 `1/N` 零和基线 + 同等置信区间自动推算（见下方说明）。 |
 | `eval_temperature` | float | 0.0 | gating 和 ONNX benchmark 对局的动作选择温度。0=贪心，>0 引入随机性。确定性游戏建议 0.1 |
+| `eval_benchmarks` | list[str] | `null` | 默认 benchmark 列表。CLI `--eval-benchmark` 没传时使用此值；传了则 CLI 优先。每项是 `heuristic_constrained` / `heuristic_free` / ONNX 路径之一。 |
 
 每 `--eval-every` 步触发一轮评估，包含两部分：
 
-**Benchmark eval**（通过 CLI `--eval-benchmark` 配置，可同时指定多个）：
+**Benchmark eval**（先看 CLI `--eval-benchmark`，没传则 fallback 到 config 的 `training.eval_benchmarks`，可同时指定多个）：
 
 | Benchmark 值 | 说明 |
 |-------------|------|
@@ -93,13 +94,21 @@
 | ONNX 文件路径 | 模型 vs 指定 ONNX 模型 |
 
 示例：
-```bash
-# Quoridor: constrained + free + gating
-python3 -m training.cli --game quoridor --output runs/quoridor_v12 \
-  --eval-benchmark heuristic_constrained heuristic_free
+```jsonc
+// game.json — 把 benchmark 写进 config（推荐：训练参数全集中在一处）
+"training": {
+  ...
+  "eval_benchmarks": ["heuristic_constrained", "heuristic_free"]
+}
+```
 
-# 不传 --eval-benchmark，只跑 gating
-python3 -m training.cli --game quoridor --output runs/quoridor_v12
+```bash
+# 不传 --eval-benchmark，从 config 读
+python3 -m training.cli --game loveletter_4p --output runs/loveletter_4p_v3
+
+# CLI 显式覆盖（临时跑跨模型对比时用）
+python3 -m training.cli --game quoridor --output runs/quoridor_v12 \
+  --eval-benchmark heuristic_constrained runs/quoridor_v11/models/model_best.onnx
 ```
 
 **Gating eval**（固定执行，不受 `--eval-benchmark` 影响）：latest vs best 对打 `--eval-games` 局，胜率 ≥ `gating_accept_win_rate` 时 `shutil.copy2` 更新 `model_best.onnx`。

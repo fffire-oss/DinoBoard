@@ -58,19 +58,22 @@ class IGameState {
 
   // ========== Schema-driven hash API ==========
   //
-  // `state_hash_for_perspective(player)` walks the visibility schema in
-  // declaration order and dispatches `hash_field_slot(h, name, idx)`
-  // for every slot whose runtime viz is 1 for `player`. The visited
-  // set IS `player`'s information set — schema + viz tensor define
-  // both public and private partitions; the framework needs no separate
-  // hash_public/private API.
+  // `state_hash_for_perspective(player)` walks the FULL schema (every
+  // slot, visible and hidden) in declaration order × row-major idx.
+  // For each slot the framework first mixes the structural position
+  // (field index in schema + idx[]), then dispatches the value mix:
+  //   - visible to `player` (viz=1): call `hash_field_slot`, which
+  //     mixes only the slot's value.
+  //   - hidden from `player` (viz=0): mix `kHiddenHashSentinel`.
   //
-  // Off-schema state (variable-length lists, conditionally-public slots
-  // not yet wired through `viz::reveal_slot`) folds in via the optional
-  // `hash_extra_state_fields` hook, called after the walker pass.
-  // LoveLetter / Coup currently use this for `discard_piles` / deck
-  // size / revealed-influence patches; once those are schema-driven
-  // (Phase 3 §G), the hook drops to no-op and its overrides delete.
+  // Every piece of game state that participates in DAG node identity
+  // MUST be a schema slot. There is no off-schema escape hatch — if
+  // you find yourself wanting one, declare a fixed-shape count array
+  // and treat the variable-length structure as a (multiset, ordering)
+  // pair where ordering is purely a presentation concern reconstructed
+  // from the action stream. (Why: any off-schema state silently breaks
+  // the framework's "two states with the same observation history
+  // produce the same digest" guarantee — see BUG-037 postmortem.)
 
   // Typed value emission for one schema slot. The framework walker
   // visits every visible (name, idx) and dispatches here; games answer
@@ -78,13 +81,6 @@ class IGameState {
   // on viz, so this must NOT re-consult viz_.
   virtual void hash_field_slot(Hasher& /*h*/, const std::string& /*name*/,
                                const std::vector<int>& /*idx*/) const {}
-
-  // Hash off-schema state for `perspective`. Default no-op; games that
-  // hold variable-length lists or conditionally-public slots not yet
-  // expressed via the schema/viz pipeline override this. Called after
-  // the walker pass inside `state_hash_for_perspective`.
-  virtual void hash_extra_state_fields(int /*perspective*/,
-                                       Hasher& /*h*/) const {}
 
   // Typed slot read/write for walker-driven snapshot wire I/O
   // (`viz::serialize_public` / `viz::apply_public`). Game returns a
@@ -103,13 +99,11 @@ class IGameState {
   // this to drive the walker without knowing the concrete state type.
   virtual const viz::VisibilitySchema& schema_ref() const = 0;
 
-  // Framework-provided perspective hash. Walks the schema and dispatches
-  // `hash_field_slot` for every slot whose runtime viz is 1 for `player`,
-  // then folds in `hash_extra_state_fields(player, h)` for off-schema
-  // state. NOT virtual — games extend via `hash_field_slot` and the
-  // optional extras hook, not by overriding this. Definition lives in
-  // schema_hash.h to break the include cycle (walker depends on
-  // viz_runtime which depends on this header).
+  // Framework-provided perspective hash. Walks the FULL schema, mixes
+  // (field_pos, idx[]) for every slot, then dispatches the value mix:
+  // visible → `hash_field_slot`, hidden → `kHiddenHashSentinel`.
+  // NOT virtual — games extend only via `hash_field_slot`. Definition
+  // lives in schema_hash.h to break the include cycle.
   StateHash64 state_hash_for_perspective(int player) const;
 
   // ========== Framework-provided step counter ==========

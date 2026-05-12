@@ -49,11 +49,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "platform"))
 
 import dinoboard_engine as engine
-from conftest import get_test_model
+from conftest import get_test_model, games_with_capability
 
 
-HIDDEN_INFO_GAMES = [g for g in ["azul", "loveletter", "splendor", "coup"]
-                     if g in engine.available_games()]
+HIDDEN_INFO_GAMES = games_with_capability("hidden_info", "snapshot")
 
 # Per-game hidden keys to compare. These are keys returned by
 # state_serializer whose values vary across randomize_unseen samples.

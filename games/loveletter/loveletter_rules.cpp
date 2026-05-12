@@ -124,13 +124,38 @@ void eliminate_player(IGameState& state, LoveLetterData<NPlayers>& d, int player
   d.protected_flags[player] = 0;
   d.hand_exposed[player] = 0;
   if (d.hand[player] != 0) {
-    d.discard_piles[static_cast<size_t>(player)].push_back(d.hand[player]);
+    d.discard_count[static_cast<size_t>(player)]
+                   [static_cast<size_t>(d.hand[player])]++;
     d.hand[player] = 0;
   }
   // Hand contents now 0; drop any in-round reveals so viz returns to
   // owner_only_first_axis base (owner sees self, no other viewer sees).
   viz::reset_to_base(state, "hand",
                      LoveLetterState<NPlayers>::schema(), {player});
+}
+
+template <int NPlayers>
+int deck_total(const LoveLetterData<NPlayers>& d) {
+  int n = 0;
+  for (int i = 1; i <= kCardTypes; ++i) n += d.deck_count[static_cast<size_t>(i)];
+  return n;
+}
+
+template <int NPlayers>
+std::int8_t draw_from_deck_local(LoveLetterData<NPlayers>& d, std::mt19937_64& rng) {
+  int total = deck_total<NPlayers>(d);
+  if (total <= 0) return 0;
+  std::uint64_t r = rng();
+  int pick = static_cast<int>(r % static_cast<std::uint64_t>(total));
+  for (int i = 1; i <= kCardTypes; ++i) {
+    int n = d.deck_count[static_cast<size_t>(i)];
+    if (pick < n) {
+      d.deck_count[static_cast<size_t>(i)] = static_cast<std::int8_t>(n - 1);
+      return static_cast<std::int8_t>(i);
+    }
+    pick -= n;
+  }
+  return 0;
 }
 
 template <int NPlayers>
@@ -163,10 +188,17 @@ void check_end_game(LoveLetterData<NPlayers>& d) {
     return;
   }
 
-  if (d.deck.empty()) {
+  if (deck_total<NPlayers>(d) == 0) {
     int best_card = -1;
     int best_player = -1;
     bool tie = false;
+    auto pile_sum = [&](int p) {
+      int s = 0;
+      for (int c = 1; c <= kCardTypes; ++c) {
+        s += c * d.discard_count[static_cast<size_t>(p)][static_cast<size_t>(c)];
+      }
+      return s;
+    };
     for (int p = 0; p < NPlayers; ++p) {
       if (!d.alive[p]) continue;
       int card = d.hand[p];
@@ -175,10 +207,8 @@ void check_end_game(LoveLetterData<NPlayers>& d) {
         best_player = p;
         tie = false;
       } else if (card == best_card) {
-        int sum_p = 0;
-        for (auto c : d.discard_piles[static_cast<size_t>(p)]) sum_p += c;
-        int sum_best = 0;
-        for (auto c : d.discard_piles[static_cast<size_t>(best_player)]) sum_best += c;
+        int sum_p = pile_sum(p);
+        int sum_best = pile_sum(best_player);
         if (sum_p > sum_best) {
           best_player = p;
           tie = false;
@@ -192,13 +222,6 @@ void check_end_game(LoveLetterData<NPlayers>& d) {
   }
 }
 
-std::int8_t draw_from_deck_local(std::vector<std::int8_t>& deck) {
-  if (deck.empty()) return 0;
-  const std::int8_t card = deck.back();
-  deck.pop_back();
-  return card;
-}
-
 template <int NPlayers>
 int next_alive_player(const LoveLetterData<NPlayers>& d, int from) {
   for (int i = 1; i <= NPlayers; ++i) {
@@ -209,7 +232,8 @@ int next_alive_player(const LoveLetterData<NPlayers>& d, int from) {
 }
 
 template <int NPlayers>
-void advance_turn(IGameState& state, LoveLetterData<NPlayers>& d) {
+void advance_turn(IGameState& state, LoveLetterData<NPlayers>& d,
+                  std::mt19937_64& rng) {
   check_end_game(d);
   if (d.terminal) return;
 
@@ -218,12 +242,12 @@ void advance_turn(IGameState& state, LoveLetterData<NPlayers>& d) {
 
   d.protected_flags[static_cast<size_t>(next)] = 0;
 
-  if (d.deck.empty()) {
+  if (deck_total<NPlayers>(d) == 0) {
     check_end_game(d);
     return;
   }
 
-  d.drawn_card = draw_from_deck_local(d.deck);
+  d.drawn_card = draw_from_deck_local<NPlayers>(d, rng);
   // drawn_card scalar holds the new card. Base viz is all_hidden; reveal
   // only to the new current_player.
   viz::reset_to_base(state, "drawn_card",
@@ -275,7 +299,7 @@ std::vector<ActionId> LoveLetterRules<NPlayers>::legal_actions(const IGameState&
 
 template <int NPlayers>
 UndoToken LoveLetterRules<NPlayers>::do_action_fast(IGameState& state, ActionId action,
-                                                    std::mt19937_64& /*rng*/) const {
+                                                    std::mt19937_64& rng) const {
   auto& s = checked_cast<LoveLetterState<NPlayers>>(state);
   auto& d = s.data;
 
@@ -300,7 +324,8 @@ UndoToken LoveLetterRules<NPlayers>::do_action_fast(IGameState& state, ActionId 
   // drawn_card consumed → reset to base (all_hidden).
   viz::reset_to_base(state, "drawn_card",
                      LoveLetterState<NPlayers>::schema(), {});
-  d.discard_piles[static_cast<size_t>(me)].push_back(played_card);
+  d.discard_count[static_cast<size_t>(me)]
+                 [static_cast<size_t>(played_card)]++;
 
   if (played_from_hand) {
     d.hand_exposed[me] = 0;
@@ -366,7 +391,8 @@ UndoToken LoveLetterRules<NPlayers>::do_action_fast(IGameState& state, ActionId 
       case kPrince:
         if (target >= 0 && target < NPlayers && d.alive[target]) {
           std::int8_t discarded = d.hand[target];
-          d.discard_piles[static_cast<size_t>(target)].push_back(discarded);
+          d.discard_count[static_cast<size_t>(target)]
+                         [static_cast<size_t>(discarded)]++;
           if (discarded == kPrincess) {
             d.hand[target] = 0;
             eliminate_player(state, d, target);
@@ -375,8 +401,8 @@ UndoToken LoveLetterRules<NPlayers>::do_action_fast(IGameState& state, ActionId 
             // reveals before redraw.
             viz::reset_to_base(state, "hand",
                                LoveLetterState<NPlayers>::schema(), {target});
-            if (!d.deck.empty()) {
-              d.hand[target] = draw_from_deck_local(d.deck);
+            if (deck_total<NPlayers>(d) > 0) {
+              d.hand[target] = draw_from_deck_local<NPlayers>(d, rng);
             } else {
               d.hand[target] = d.set_aside_card;
               d.set_aside_card = 0;
@@ -411,7 +437,7 @@ UndoToken LoveLetterRules<NPlayers>::do_action_fast(IGameState& state, ActionId 
     }
   }
 
-  advance_turn(state, d);
+  advance_turn(state, d, rng);
 
   return UndoToken{static_cast<std::uint32_t>(s.undo_stack.size())};
 }

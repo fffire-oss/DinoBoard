@@ -36,9 +36,12 @@ import dinoboard_engine as engine
 from conftest import get_test_model
 
 
-# Games with hidden info worth checking. TicTacToe / Quoridor have no
-# private fields, so encoder invariance is trivial.
-HIDDEN_INFO_GAMES = ["loveletter", "splendor", "azul"]
+from conftest import hidden_info_games as _hidden_info_games
+
+# Games with hidden info worth checking — TTT / Quoridor have no private
+# fields and encoder invariance is trivial there. Derived from manifest
+# so new hidden-info games are picked up automatically.
+HIDDEN_INFO_GAMES = _hidden_info_games()
 
 
 @pytest.mark.parametrize("game_id", HIDDEN_INFO_GAMES)
@@ -122,8 +125,8 @@ def test_encoder_stable_within_info_set(game_id):
 # exercise `encode_public` / `encode_private` directly through the binding.
 # ---------------------------------------------------------------------------
 
-ALL_GAMES = [g for g in ["tictactoe", "quoridor", "splendor", "azul", "loveletter", "coup"]
-             if g in engine.available_games()]
+from conftest import enabled_games as _enabled_games
+ALL_GAMES = _enabled_games()
 
 
 @pytest.mark.parametrize("game_id", ALL_GAMES)

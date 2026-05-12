@@ -278,19 +278,12 @@ ActionId NetMcts::search_root(
   // hash lookup and (if the resulting node is unexpanded) the encoder
   // read from the SAME MaskedState copy.
   //
-  // For TTT / Quoridor / Azul / Splendor the per-perspective walker
-  // filter (`for_each_visible_slot` only visits viz=1 slots) makes
-  // hash-from-masked equivalent to hash-from-live: viz=0 slots never
-  // entered the digest on either path.
-  //
-  // For LoveLetter / Coup the off-schema `hash_extra_state_fields`
-  // hook reads live-state fields directly (drawn_card is all_hidden in
-  // schema, gets placeholder in MaskedState even for the actor) — DAG
-  // node identity changes when hashing the masked clone instead of
-  // truth. Per OVERVIEW_LANDING §A range constraint LL/Coup are out of
-  // scope until §G migrates their hidden state to viz reveals; they
-  // ride on this change as a fallback consequence rather than getting
-  // their own special path.
+  // The schema walker visits the FULL slot set: viz=1 slots route to
+  // game's `hash_field_slot` (truth value), viz=0 slots emit
+  // `kHiddenHashSentinel`. Hashing the live state and hashing its
+  // MaskedState clone produce the same digest — viz=0 slots in the
+  // clone hold kPlaceholder, but the walker's visible-flag check fires
+  // sentinel mode for them either way (BUG-037 postmortem).
   auto materialize_masked = [](const IGameState& s) -> std::unique_ptr<MaskedState> {
     return make_masked_state(s, s.schema_ref(), s.current_player());
   };

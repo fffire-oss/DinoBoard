@@ -261,10 +261,22 @@ vs best，胜率 ≥ 阈值更新 best）。N 人游戏 candidate 轮坐每个�
    `const MaskedState&`，读 placeholder 分流）
 6. 写 `register.cpp` 组装 GameBundle
 7. 写 `game.json` 配置
-8. 加入 setup.py（必须！否则编译过但 register 不上）+ CMake
+8. **在 `games/manifest.json` 追加一条**：`{ "id": ..., "enabled": true, "framework_whitelist": <bool>, "capabilities": [...], "sources": [...] }` —— 这是 **CMake 编译 / setup.py 编译 / `engine.available_games()` / web 列表 / framework 测试矩阵** 这五层的唯一事实源；漏了这一步 = 编译过但 register 不上 = web 看不见 = 测试不覆盖。临时下线一个游戏只要把 `enabled: false`（源码留在 disk 上但所有层都跳过它）
 9. 写 Web 前端
 10. 跑 `pytest tests/<game>/` 全绿
 11. 跑训练、看日志、调参
+
+### `games/manifest.json` 字段说明
+
+| 字段 | 含义 |
+|------|------|
+| `id` | 游戏 id；建议是 `<base>` 名字（变体 `<base>_2p` / `_3p` / `_4p` 由 GameRegistrar 在 register 时派生） |
+| `enabled` | bool，默认 true。false = 完全跳过这条目（不编译、不出现在 `available_games()`、不上 web、所有 framework 测试自动忽略） |
+| `framework_whitelist` | bool，默认 false。true 表示这个游戏**必须**通过 framework matrix 守的所有 invariant（无 truth 泄漏、hash perspective 正确、snapshot round-trip 等）。新游戏开发期可以先 false，跑通验收清单后再翻成 true |
+| `capabilities` | 字符串列表，driving framework 测试矩阵：`"hidden_info"`（有 perspective-private 槽）/ `"snapshot"`（注册了 public_state_applier）/ `"tracker"`（注册了 belief_tracker factory）。每加一个标签，对应那条 capability 的 framework 测试就会自动覆盖这个游戏 |
+| `sources` | 编译进 `_dinoboard_engine` 的 `.cpp` 文件名，相对 `games/<id>/`。CMake 和 setup.py 都按这个列表喂给编译器 |
+
+下线 / 重新启用一个游戏的全部操作：改 manifest 的一行 `enabled` 字段，跑 `pip install -e .` 重新编译，结束。
 
 参考实现按接入模式分类：
 
@@ -292,8 +304,11 @@ vs best，胜率 ≥ 阈值更新 best）。N 人游戏 candidate 轮坐每个�
     2p/2-4p × tail solver / belief tracker 等结构特征
   - AI / observation 协议测试（`test_selfplay_no_truth_in_ai_path` /
     `test_public_snapshot_round_trip` / `test_deployed_models_match_
-    encoder` 等）动态扫所有 in-scope 游戏（5 款：tictactoe / quoridor /
-    azul / splendor / loveletter）
+    encoder` 等）按 capability 标签从 `games/manifest.json` 动态派生覆盖
+    集（`enabled_games()` / `games_with_capability("hidden_info")` /
+    `games_with_capability("hidden_info", "snapshot")` 等 helper 在
+    `tests/conftest.py`），新游戏 manifest 一加 capability 测试矩阵自动
+    跟上、不需要改测试源
 
   其中 `test_visibility_schema` / `test_snapshot_keys_match_schema` 守
   walker 路径：schema 改了忘了同步分发器 → CI 立刻 fail

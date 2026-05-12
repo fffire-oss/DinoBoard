@@ -35,9 +35,11 @@ sys.path.insert(0, str(PROJECT_ROOT / "platform"))
 import dinoboard_engine as engine
 
 
-ALL_GAMES = [g for g in ["tictactoe", "quoridor", "azul", "loveletter", "splendor", "coup"]
-             if g in engine.available_games()]
-FULLY_PUBLIC_GAMES = ["tictactoe", "quoridor"]
+from conftest import enabled_games, hidden_info_games
+
+ALL_GAMES = enabled_games()
+# Fully public = enabled and not flagged hidden_info.
+FULLY_PUBLIC_GAMES = [g for g in ALL_GAMES if g not in hidden_info_games()]
 
 
 def _make_session(game_id: str, seed: int) -> engine.GameSession:

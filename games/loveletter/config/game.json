@@ -23,15 +23,16 @@
     "dirichlet_epsilon": 0.10,
     "dirichlet_on_first_n_plies": 5,
     "max_game_plies": 30,
-    "episodes_per_step": 200,
-    "batch_size": 256,
+    "episodes_per_step": 100,
+    "batch_size": 512,
     "learning_rate": 0.0005,
     "steps": 4000,
     "heuristic_guidance_hold_steps": 10,
     "heuristic_guidance_steps": 200,
     "heuristic_guidance_initial_ratio": 1.0,
     "heuristic_guidance_temperature": 1.5,
-    "heuristic_temperature": 0.0
+    "heuristic_temperature": 0.0,
+    "eval_benchmarks": ["heuristic_constrained", "heuristic_free"]
   },
   "network": {
     "type": "mlp",

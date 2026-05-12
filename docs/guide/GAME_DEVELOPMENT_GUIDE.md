@@ -112,10 +112,14 @@ visibility schema 序遍历每个 slot,只对 `viz[..., p] = 1` 的槽位调
 - 内容覆盖完整,因为 tail solver 在解析路径上会同 hash 共享子树
 
 **`hash_field_slot(Hasher& h, name, idx)` 要求**:
-- 一个 slot 一次 `h.add(...)`,内容 = 该 slot 的真值
+- 一个 slot 一次 `h.add(...)`,内容 = 该 slot 的**真值**
 - schema 里声明的所有字段都要在 `if (name == "...")` 分支里覆盖
-- viz=0 的 slot 走框架自动写入的 sentinel 占位,**不要**在
+- viz=0 的 slot 走框架自动写入的 `kHiddenHashSentinel`,**不要**在
   `hash_field_slot` 里自己判 viz
+- **不要** mix `idx` —— framework 在调用 `hash_field_slot` 之前
+  已经把 `(field_pos, idx[])` mix 进 hash 了。重复 mix idx 不算 bug,
+  但是冗余;**漏掉 idx 也不再是 bug**(BUG-037 postmortem:framework
+  现在守住 idx,游戏只管值)
 
 **示例**:
 ```cpp
@@ -1010,20 +1014,32 @@ void hash_field_slot(Hasher& h, const std::string& name,
                      const std::vector<int>& idx) const override;
 ```
 
-框架自动派生节点 hash:
+框架自动派生节点 hash(`for_each_slot` 走 schema 全集 × row-major
+idx,**framework 自己 mix `(field_pos, idx[])` 做结构盐**,然后再分发
+值的 mix):
 
 ```cpp
 StateHash64 state_hash_for_perspective(int player) const {
   Hasher h;
   h.add(step_count_);                 // DAG 结构性防环
-  for_each_visible_slot(schema_ref(), viz_, player,
-      [&](const std::string& name, const std::vector<int>& idx) {
-        hash_field_slot(h, name, idx);   // viz=1 槽位调真值 emit
-      },
-      [&](...) { h.add(/* sentinel */); }); // viz=0 槽位 emit sentinel
+  for_each_slot(*this, schema_ref(), player,
+      [&](const std::string& name, const std::vector<int>& idx,
+          const VizTensor&, bool visible) {
+        h.add(field_pos_of(name));     // 框架 mix 槽位结构盐
+        for (int x : idx) h.add(x);
+        if (visible) hash_field_slot(h, name, idx);  // 游戏只 mix 真值
+        else         h.combine(kHiddenHashSentinel); // 隐藏槽走哨兵
+      });
   return h.finalize();
 }
 ```
+
+**重点**:`hash_field_slot` 现在**只负责 mix slot 的值**,不要 mix
+`idx`(framework 已经在调你之前把 `(field_pos, idx[])` mix 进去了)。
+BUG-037 postmortem:LL 4p step-125 DAG mismatch 的根因就是 `hash_field_slot`
+对 `hand[idx]` 只 mix 了值丢了 idx,导致 `{hand[1]=5, hand[3]=7}` 与
+`{hand[0]=5, hand[1]=7}` digest 相同。framework 接管 idx 编码后,这
+一类"游戏忘记 mix idx"的 bug 在源头消失。
 
 **字段归类(由 schema base viz 决定,运行时由 rules 通过 `viz::reveal_slot`
 / `reveal_slot_to` / `reset_to_base` 改写 viz)**:

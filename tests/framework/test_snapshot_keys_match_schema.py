@@ -31,6 +31,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 GAMES_DIR = PROJECT_ROOT / "games"
 
+from conftest import games_with_snapshot
+
 
 # Per-game allowlist of snapshot keys that intentionally have no schema
 # counterpart. Each entry must have a comment explaining why — usually
@@ -132,7 +134,7 @@ def _matches_schema_field(snap_key: str, schema_fields: set[str]) -> bool:
     return False
 
 
-GAMES_WITH_SNAPSHOT = ("loveletter", "coup", "splendor", "azul")
+GAMES_WITH_SNAPSHOT = tuple(games_with_snapshot())
 
 
 def test_every_snapshot_key_aligns_with_schema_or_is_whitelisted() -> None:

@@ -65,12 +65,19 @@ def _load_game_sources() -> list[str]:
 
     Single source of truth for "what gets compiled into the engine"; the
     same manifest is consumed by CMakeLists.txt for the cmake build.
+
+    Entries with `enabled: false` are skipped — set the flag to drop a
+    game from the build without removing its sources from the tree. The
+    optional `framework_whitelist` and `capabilities` fields are ignored
+    here; they are consumed by tests/framework/conftest.py.
     """
     manifest_path = ROOT / "games" / "manifest.json"
     with open(manifest_path, encoding="utf-8") as f:
         manifest = json.load(f)
     out = []
     for game in manifest["games"]:
+        if not game.get("enabled", True):
+            continue
         gid = game["id"]
         for src in game["sources"]:
             out.append(f"games/{gid}/{src}")

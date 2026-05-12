@@ -10,6 +10,13 @@ using StateHash64 = std::uint64_t;
 
 constexpr std::uint64_t kGoldenRatio64 = 0x9e3779b97f4a7c15ULL;
 
+// Hash sentinel mixed in by the framework when a schema slot is hidden
+// from the hashing perspective (viz=0). Combined into the digest in
+// place of the slot's truth value, so "which slots are hidden" is part
+// of the hash structure without leaking the truth payload. Picked to be
+// a value no game's `hash_field_slot` would naturally mix.
+constexpr std::uint64_t kHiddenHashSentinel = 0xD1DAB0A2DD11DD11ULL;
+
 inline void hash_combine(std::size_t& seed, std::size_t v) {
   seed ^= v + kGoldenRatio64 + (seed << 6U) + (seed >> 2U);
 }

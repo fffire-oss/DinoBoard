@@ -61,10 +61,30 @@ const viz::VisibilitySchema& LoveLetterState<NPlayers>::schema() {
     viz::declare_field(schema, "set_aside_card",
                        viz::all_hidden({}, Cfg::kPlayers));
 
-    // Variable-length vectors NOT in schema:
-    //   - deck: hidden contents, public size, randomize_unseen handles.
-    //   - discard_piles[N]: all-public stacks, hashed slot-by-slot.
-    //   - face_up_removed: 2p-only, all-public, hashed slot-by-slot.
+    // ---- multiset counts (all_public, fixed shape) ----
+    // discard_count[N, kCardTypes+1]: per-player public discard
+    // multiset. Walker visits every slot; observer reconstructs
+    // visual order from the action stream client-side.
+    viz::declare_field(
+        schema, "discard_count",
+        viz::all_public({Cfg::kPlayers, kCardTypes + 1}, Cfg::kPlayers));
+    // face_up_count[kCardTypes+1]: 2p-only public count of cards
+    // burned face-up at game start. Other variants leave it all-zero.
+    viz::declare_field(
+        schema, "face_up_count",
+        viz::all_public({kCardTypes + 1}, Cfg::kPlayers));
+    // deck_count[kCardTypes+1]: per-type counts in the hidden deck.
+    // Total (sum) is public — but per-type counts are NOT something
+    // every observer can see in the actual game (an observer only
+    // knows total minus what they've witnessed), so we declare the
+    // total via a separate `deck_size` scalar and treat
+    // `deck_count` itself as all_hidden — randomize_unseen fills
+    // it from the tracker's information set on each sim.
+    viz::declare_field(
+        schema, "deck_count",
+        viz::all_hidden({kCardTypes + 1}, Cfg::kPlayers));
+    viz::declare_field(schema, "deck_size",
+                       viz::all_public({}, Cfg::kPlayers));
 
     return schema;
   }();
@@ -73,11 +93,35 @@ const viz::VisibilitySchema& LoveLetterState<NPlayers>::schema() {
 
 namespace {
 
-std::int8_t pop_top(std::vector<std::int8_t>& deck) {
-  if (deck.empty()) return 0;
-  const std::int8_t card = deck.back();
-  deck.pop_back();
-  return card;
+// Draw one card from a count-array deck using the supplied rng,
+// weighted by remaining count per type. Returns 0 if the deck is
+// empty. Decrements the chosen entry. Functionally equivalent to
+// "shuffle once + pop_back" — both produce a uniformly distributed
+// permutation, the count-array form just integrates the lazy rng.
+template <std::size_t Size>
+std::int8_t draw_from_count(std::array<std::int8_t, Size>& count,
+                            std::mt19937_64& rng) {
+  int total = 0;
+  for (std::size_t i = 1; i < Size; ++i) total += count[i];
+  if (total <= 0) return 0;
+  std::uint64_t r = rng();
+  int pick = static_cast<int>(r % static_cast<std::uint64_t>(total));
+  for (std::size_t i = 1; i < Size; ++i) {
+    int n = count[i];
+    if (pick < n) {
+      count[i] = static_cast<std::int8_t>(n - 1);
+      return static_cast<std::int8_t>(i);
+    }
+    pick -= n;
+  }
+  return 0;
+}
+
+template <int NPlayers>
+int deck_total(const LoveLetterData<NPlayers>& d) {
+  int n = 0;
+  for (int i = 1; i <= kCardTypes; ++i) n += d.deck_count[static_cast<size_t>(i)];
+  return n;
 }
 
 }  // namespace
@@ -102,44 +146,37 @@ void LoveLetterState<NPlayers>::reset_with_seed(std::uint64_t seed) {
   d.protected_flags.fill(0);
   d.hand_exposed.fill(0);
   d.set_aside_card = 0;
-  d.face_up_removed.clear();
+  d.face_up_count.fill(0);
   for (int p = 0; p < Cfg::kPlayers; ++p) {
-    d.discard_piles[static_cast<size_t>(p)].clear();
+    d.discard_count[static_cast<size_t>(p)].fill(0);
   }
   undo_stack.clear();
 
-  d.deck.clear();
-  d.deck.reserve(kTotalCards);
+  d.deck_count.fill(0);
   for (int card = 1; card <= kCardTypes; ++card) {
-    for (int c = 0; c < kCardCounts[static_cast<size_t>(card)]; ++c) {
-      d.deck.push_back(static_cast<std::int8_t>(card));
-    }
+    d.deck_count[static_cast<size_t>(card)] =
+        static_cast<std::int8_t>(kCardCounts[static_cast<size_t>(card)]);
   }
 
-  // One-shot rng for the initial deck shuffle. RNG is not stored on
+  // One-shot rng for the initial draws. RNG is not stored on
   // state — caller of do_action_fast supplies its own rng for any
   // subsequent randomness.
-  {
-    std::mt19937_64 rng(seed);
-    for (size_t i = d.deck.size(); i > 1; --i) {
-      const size_t j = static_cast<size_t>(rng() % i);
-      std::swap(d.deck[i - 1], d.deck[j]);
-    }
-  }
+  std::mt19937_64 rng(seed);
 
-  d.set_aside_card = pop_top(d.deck);
+  d.set_aside_card = draw_from_count(d.deck_count, rng);
 
   if constexpr (NPlayers == 2) {
     for (int i = 0; i < 3; ++i) {
-      d.face_up_removed.push_back(pop_top(d.deck));
+      std::int8_t c = draw_from_count(d.deck_count, rng);
+      d.face_up_count[static_cast<size_t>(c)]++;
     }
   }
 
   for (int p = 0; p < Cfg::kPlayers; ++p) {
-    d.hand[static_cast<size_t>(p)] = pop_top(d.deck);
+    d.hand[static_cast<size_t>(p)] = draw_from_count(d.deck_count, rng);
   }
 
-  d.drawn_card = pop_top(d.deck);
+  d.drawn_card = draw_from_count(d.deck_count, rng);
 
   viz::init_viz(*this, schema());
   // Start-of-game viz reveals (drawn_card → current_player) live in
@@ -154,6 +191,11 @@ void LoveLetterState<NPlayers>::reseed_viz() {
 
 template <int NPlayers>
 StateHash64 LoveLetterState<NPlayers>::state_hash() const {
+  // Hand-rolled fallback for callers that don't go through the
+  // perspective-aware framework path. Mirrors what the schema walker
+  // produces for current_player's view, minus the framework's
+  // structural (field_pos, idx) salt — close enough for parity tests
+  // that don't compare bit-for-bit with the framework hash.
   const auto& d = data;
   std::size_t h = 0;
   hash_combine(h, static_cast<std::size_t>(d.current_player + 3));
@@ -165,48 +207,34 @@ StateHash64 LoveLetterState<NPlayers>::state_hash() const {
   for (int p = 0; p < Cfg::kPlayers; ++p) {
     hash_combine(h, static_cast<std::size_t>(d.alive[p] + 13));
     hash_combine(h, static_cast<std::size_t>(d.protected_flags[p] + 17));
+    hash_combine(h, static_cast<std::size_t>(d.hand_exposed[p] + 53));
     if (p == d.current_player) {
       hash_combine(h, static_cast<std::size_t>(d.hand[p] + 19));
     } else {
       hash_combine(h, static_cast<std::size_t>(0 + 19));
     }
-    for (auto c : d.discard_piles[static_cast<size_t>(p)]) {
-      hash_combine(h, static_cast<std::size_t>(c + 23));
+    for (int c = 1; c <= kCardTypes; ++c) {
+      hash_combine(h, static_cast<std::size_t>(
+          d.discard_count[static_cast<size_t>(p)][static_cast<size_t>(c)] + 23 + c));
     }
-    hash_combine(h, static_cast<std::size_t>(d.discard_piles[static_cast<size_t>(p)].size() + 29));
   }
 
   if (d.drawn_card != 0) {
     hash_combine(h, static_cast<std::size_t>(d.drawn_card + 31));
   }
 
-  hash_combine(h, static_cast<std::size_t>(d.deck.size() + 37));
-
-  for (auto c : d.face_up_removed) {
-    hash_combine(h, static_cast<std::size_t>(c + 47));
+  for (int c = 1; c <= kCardTypes; ++c) {
+    hash_combine(h, static_cast<std::size_t>(
+        d.face_up_count[static_cast<size_t>(c)] + 47 + c));
   }
+
+  int deck_size = 0;
+  for (int c = 1; c <= kCardTypes; ++c) {
+    deck_size += d.deck_count[static_cast<size_t>(c)];
+  }
+  hash_combine(h, static_cast<std::size_t>(deck_size + 37));
 
   return static_cast<StateHash64>(h);
-}
-
-template <int NPlayers>
-void LoveLetterState<NPlayers>::hash_extra_state_fields(int perspective,
-                                                         Hasher& h) const {
-  // Off-schema state: variable-length public lists (discard_piles, deck
-  // size, face_up_removed) plus the actor-private drawn_card during
-  // their own turn. §G migrates these to schema variable_length / viz
-  // reveal; until then this hook preserves hash semantics.
-  if (perspective < 0 || perspective >= Cfg::kPlayers) return;
-  const auto& d = data;
-  for (int p = 0; p < Cfg::kPlayers; ++p) {
-    for (auto c : d.discard_piles[static_cast<size_t>(p)]) h.add(c + 23);
-    h.add(d.discard_piles[static_cast<size_t>(p)].size() + 29);
-  }
-  h.add(d.deck.size() + 37);
-  for (auto c : d.face_up_removed) h.add(c + 47);
-  if (d.current_player == perspective && d.drawn_card != 0) {
-    h.add(d.drawn_card + 31);
-  }
 }
 
 template <int NPlayers>
@@ -230,15 +258,47 @@ void LoveLetterState<NPlayers>::hash_field_slot(
   if (name == "hand_exposed") {
     h.add(d.hand_exposed[static_cast<size_t>(idx[0])] + 53); return;
   }
-  // Owner-only.
+  // Owner-only with dynamic reveals (Priest peek / Baron showdown / King
+  // swap / hand_exposed). The framework hash mixes (field_pos, idx[])
+  // structurally before dispatching here, so this branch only mixes
+  // the value — see schema_hash.h. BUG-037 (the {hand[1]=5,hand[3]=7}
+  // vs {hand[0]=5,hand[1]=7} collision) is now defended at the
+  // framework level: the structural mix differs between the two
+  // worlds, so the digests no longer collide even though the value
+  // multisets are identical.
   if (name == "hand") {
-    h.add(d.hand[static_cast<size_t>(idx[0])] + 19); return;
+    h.add(d.hand[static_cast<size_t>(idx[0])] + 19);
+    return;
   }
-  // all_hidden in schema → walker never visits these. drawn_card is
-  // appended manually in hash_private_fields; set_aside_card is
-  // permanently hidden and excluded from the hash entirely.
-  if (name == "drawn_card") { return; }
+  // drawn_card: schema-base all_hidden, but rules `reveal_slot_to` it to
+  // the current player on draw — visible to actor, walker visits it.
+  // Mix the value so two worlds with the same hand but different draws
+  // hash distinctly (governs legal actions via Countess rule + plays).
+  if (name == "drawn_card") { h.add(d.drawn_card + 31); return; }
+  // set_aside_card: never revealed; walker always emits sentinel.
   if (name == "set_aside_card") { return; }
+  // Multiset count slots. Framework already mixed (field_pos, idx[]),
+  // so we just mix the value.
+  if (name == "discard_count") {
+    h.add(d.discard_count[static_cast<size_t>(idx[0])]
+                          [static_cast<size_t>(idx[1])] + 23);
+    return;
+  }
+  if (name == "face_up_count") {
+    h.add(d.face_up_count[static_cast<size_t>(idx[0])] + 47);
+    return;
+  }
+  // deck_count is all_hidden — walker emits sentinel for every viewer,
+  // never reaches here.
+  if (name == "deck_count") { return; }
+  if (name == "deck_size") {
+    int total = 0;
+    for (int c = 1; c <= kCardTypes; ++c) {
+      total += d.deck_count[static_cast<size_t>(c)];
+    }
+    h.add(total + 37);
+    return;
+  }
 }
 
 // Walker-driven snapshot I/O. read_field_slot returns std::any of int /
@@ -274,6 +334,25 @@ std::any LoveLetterState<NPlayers>::read_field_slot(
   }
   if (name == "set_aside_card") {
     return std::any(static_cast<int>(d.set_aside_card));
+  }
+  if (name == "discard_count") {
+    return std::any(static_cast<int>(
+        d.discard_count[static_cast<size_t>(idx[0])][static_cast<size_t>(idx[1])]));
+  }
+  if (name == "face_up_count") {
+    return std::any(static_cast<int>(
+        d.face_up_count[static_cast<size_t>(idx[0])]));
+  }
+  if (name == "deck_count") {
+    return std::any(static_cast<int>(
+        d.deck_count[static_cast<size_t>(idx[0])]));
+  }
+  if (name == "deck_size") {
+    int total = 0;
+    for (int c = 1; c <= kCardTypes; ++c) {
+      total += d.deck_count[static_cast<size_t>(c)];
+    }
+    return std::any(total);
   }
   return {};
 }
@@ -317,6 +396,23 @@ void LoveLetterState<NPlayers>::write_field_slot(
   else if (name == "set_aside_card") {
     d.set_aside_card = static_cast<std::int8_t>(as_int());
   }
+  else if (name == "discard_count") {
+    d.discard_count[static_cast<size_t>(idx[0])][static_cast<size_t>(idx[1])] =
+        static_cast<std::int8_t>(as_int());
+  }
+  else if (name == "face_up_count") {
+    d.face_up_count[static_cast<size_t>(idx[0])] =
+        static_cast<std::int8_t>(as_int());
+  }
+  else if (name == "deck_count") {
+    d.deck_count[static_cast<size_t>(idx[0])] =
+        static_cast<std::int8_t>(as_int());
+  }
+  else if (name == "deck_size") {
+    // Read-only derived; observer-side reconstruction is owned by
+    // randomize_unseen via deck_count. Accepting the write would let
+    // truth and observer drift; ignore.
+  }
 }
 
 template <int NPlayers>
@@ -345,6 +441,10 @@ void LoveLetterState<NPlayers>::mask_field_slot(
   }
   if (name == "set_aside_card") {
     data.set_aside_card = kPlaceholderInt8;
+    return;
+  }
+  if (name == "deck_count") {
+    data.deck_count[static_cast<size_t>(idx[0])] = kPlaceholderInt8;
     return;
   }
 }

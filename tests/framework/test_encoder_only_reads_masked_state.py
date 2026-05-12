@@ -50,10 +50,10 @@ PLACEHOLDER_INT32 = float(np.iinfo(np.int32).min)
 PLACEHOLDER_INT8 = -128.0
 
 
-ALL_GAMES = [g for g in ["tictactoe", "quoridor", "azul", "splendor", "loveletter", "coup"]
-             if g in engine.available_games()]
-_HIDDEN_INFO_GAMES = [g for g in ["loveletter", "coup", "splendor", "azul"]
-                      if g in engine.available_games()]
+from conftest import enabled_games, hidden_info_games
+
+ALL_GAMES = enabled_games()
+_HIDDEN_INFO_GAMES = hidden_info_games()
 
 
 @pytest.mark.parametrize("game_id", ALL_GAMES)

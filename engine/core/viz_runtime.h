@@ -165,5 +165,14 @@ using SlotVisitor = std::function<void(
     const std::string& /*name*/, const std::vector<int>& /*idx*/,
     const VizTensor& /*viz*/)>;
 
+// SlotVisitorWithVisibility: callback for `for_each_slot` (the full-set
+// walker that visits every schema slot, regardless of viz). Adds a
+// `visible` flag indicating whether `viz[idx..., perspective] == 1`.
+// Used by the framework hash to dispatch visible slots to the game's
+// `hash_field_slot` and hidden slots to a fixed sentinel.
+using SlotVisitorWithVisibility = std::function<void(
+    const std::string& /*name*/, const std::vector<int>& /*idx*/,
+    const VizTensor& /*viz*/, bool /*visible*/)>;
+
 }  // namespace viz
 }  // namespace board_ai

@@ -30,20 +30,23 @@ void LoveLetterFeatureEncoder<NPlayers>::encode_public(
     out->push_back(d.current_player == pid ? 1.0f : 0.0f);
     out->push_back(d.hand_exposed[pid] ? 1.0f : 0.0f);
 
+    int discard_total_pid = 0;
     for (int c = 1; c <= kCardTypes; ++c) {
-      int count = 0;
-      for (auto card : d.discard_piles[static_cast<size_t>(pid)]) {
-        if (card == c) ++count;
-      }
+      int count = d.discard_count[static_cast<size_t>(pid)][static_cast<size_t>(c)];
       out->push_back(static_cast<float>(count) /
                      static_cast<float>(kCardCounts[static_cast<size_t>(c)]));
+      discard_total_pid += count;
     }
 
-    out->push_back(static_cast<float>(d.discard_piles[static_cast<size_t>(pid)].size()) / 8.0f);
+    out->push_back(static_cast<float>(discard_total_pid) / 8.0f);
   }
 
   // Global public.
-  out->push_back(static_cast<float>(d.deck.size()) / 16.0f);
+  int deck_size = 0;
+  for (int c = 1; c <= kCardTypes; ++c) {
+    deck_size += d.deck_count[static_cast<size_t>(c)];
+  }
+  out->push_back(static_cast<float>(deck_size) / 16.0f);
   out->push_back(static_cast<float>(d.ply) / 20.0f);
   out->push_back(d.first_player == perspective_player ? 1.0f : 0.0f);
 
@@ -54,10 +57,7 @@ void LoveLetterFeatureEncoder<NPlayers>::encode_public(
   out->push_back(static_cast<float>(alive_count) / static_cast<float>(NPlayers));
 
   for (int c = 1; c <= kCardTypes; ++c) {
-    int count = 0;
-    for (auto card : d.face_up_removed) {
-      if (card == c) ++count;
-    }
+    int count = d.face_up_count[static_cast<size_t>(c)];
     out->push_back(static_cast<float>(count) /
                    static_cast<float>(kCardCounts[static_cast<size_t>(c)]));
   }
@@ -176,9 +176,15 @@ void LoveLetterBeliefTracker<NPlayers>::randomize_unseen(
   };
 
   for (int p = 0; p < NPlayers; ++p) {
-    for (auto card : d.discard_piles[static_cast<size_t>(p)]) consume(card);
+    for (int c = 1; c <= kCardTypes; ++c) {
+      int n = d.discard_count[static_cast<size_t>(p)][static_cast<size_t>(c)];
+      remaining[static_cast<size_t>(c)] -= n;
+    }
   }
-  for (auto card : d.face_up_removed) consume(card);
+  for (int c = 1; c <= kCardTypes; ++c) {
+    int n = d.face_up_count[static_cast<size_t>(c)];
+    remaining[static_cast<size_t>(c)] -= n;
+  }
   for (int p = 0; p < NPlayers; ++p) {
     if (!d.alive[p]) continue;
     if (hand_visible(p)) consume(d.hand[static_cast<size_t>(p)]);
@@ -235,9 +241,10 @@ void LoveLetterBeliefTracker<NPlayers>::randomize_unseen(
     }
   }
 
-  d.deck.clear();
+  d.deck_count.fill(0);
   while (idx < unseen.size()) {
-    d.deck.push_back(unseen[idx++]);
+    d.deck_count[static_cast<size_t>(unseen[idx])]++;
+    ++idx;
   }
 }
 

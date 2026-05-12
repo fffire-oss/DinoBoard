@@ -61,6 +61,7 @@
 - [BUG-030] Love Letter encoder 把 tracker 知识泄漏到非 perspective 玩家视角
 - [BUG-033] Azul 轮末结算飞砖落地后砖消失 + 多行同结算时 +score 偏高 (OB-012 / OB-008)
 - [BUG-035] Azul 轮末地板扣分用错时间点的 floor_count——actor 在结算回合扔的砖没算进去
+- [BUG-037] LoveLetter `hand` 槽 hash 只 mix value 不 mix idx，dynamic-reveal 视野下两套 (idx,value) 序列哈希撞车 → DAG node legal-action mismatch
 
 ---
 
@@ -1842,4 +1843,77 @@ CLAUDE.md 的「AI Pipeline Independence」第二条（session 公开字段被 m
 3. **encoder 不再读 tracker 私字段是 §G 的硬指标**。任何"tracker 上有 perspective-private 数据"都是 §G 没收尾的信号——§G.2 Coup 收尾时同样适用。
 
 ---
+
+## [BUG-037] LoveLetter `hand` 槽 hash 只 mix value 不 mix idx，dynamic-reveal 视野下两套 (idx,value) 序列哈希撞车 → DAG node legal-action mismatch
+
+### 背景
+
+- 训练运行 `runs/loveletter_4p_20260512_113903` 在 step 125 selfplay 抛 `MCTS: DAG node legal-action mismatch`：node 缓存 `node_edges=[37,38,39,40,...]`（Prince 系列）而当前 sim 世界的 `current_legal=[45,...]`（must-Countess）。两个看上去毫无相似度的合法集落进同一个 DAG node。
+- 单种子复现：`BASE_SEED + 129 = 21510452`（step 125 的 episode 129）一次跑就 byte-equal 重现，`hash_pub=17913659907566068133`。
+- 用户对 5000 局规模做随机 rollout 验证："不可能就是 hash 64-bit 量级的随机碰撞" — 实测 0 collision，事实站在用户这边。
+- 在 `engine/search/net_mcts.cpp` 加 `DINOBOARD_DAG_DEBUG=1` 网关下的 insertion-time vs throw-time MaskedState slot dump，重跑同一个种子，拿到两条 byte-equal 的 dump：
+  - INSERTION（perspective=1）：`hand[1]=5 | hand[3]=7 | drawn_card=1`
+  - CURRENT（perspective=1）：`hand[0]=5 | hand[1]=7 | drawn_card=1`
+  - 两者除 `hand` 槽外所有公开字段、ply、step_count 完全一致；`hand` 的"被访问到的索引集"和值不同，但 `state_hash_for_perspective(1)` 落在同一个 64-bit 桶。
+
+### 根因
+
+LoveLetter `hash_field_slot` 对 `hand` 槽只 mix 了 value，没 mix `idx[0]`：
+
+```cpp
+// games/loveletter/loveletter_state.cpp（修复前）
+if (name == "hand") {
+  h.add(d.hand[static_cast<size_t>(idx[0])] + 19); return;
+}
+```
+
+`hand` 在 schema 里是 `owner_only_first_axis`，配合规则的动态 reveal（Priest peek、Baron showdown、King swap、`hand_exposed` 翻牌、淘汰后 `reset_to_base`），**不同世界 perspective=p 看到的 `hand[*]` 索引集会不同**：上面例子里世界 A 的 perspective=1 看到 `hand[1], hand[3]`，世界 B 看到 `hand[0], hand[1]`。两者都向 hash 喂一对 `(value+19)`：A 喂 `5+19, 7+19`，B 喂 `5+19, 7+19`——除了第二个值的位置互换之外字面相同；只要顺序和值相等，hash 就相等。
+
+walker 在每个 viz=1 槽位调用 `hash_field_slot(name, idx, ...)` 时把索引送进来，正是为了让 `(name, idx, value)` 一起决定哈希。LL 的实现丢了 `idx`，等价于把"哪个玩家的手牌是 5"这个事实降级成"某玩家手牌是 5"——一旦 perspective 看到的 owner 集合在不同 sim 世界里漂移，碰撞就成必然。这跟"hash 不可观察 RNG"和 BUG-028 同源：可观察事实在 hash 里**完整**编码才能保住 DAG 节点身份。
+
+为什么之前没爆：早期 LL 跑通的回合数较少，sim 深度浅；step 125 的 selfplay 进入 ply=9（4 人都活着 + Priest peek 已经发生 + 一次淘汰把 hand[2] 撤掉）的局面才触发。规模一上来 sim 进入此类深节点时碰撞概率就足以稳定吃到。
+
+### 修复
+
+`games/loveletter/loveletter_state.cpp` `hash_field_slot` 的 `hand` 分支额外 mix `idx[0]`：
+
+```cpp
+if (name == "hand") {
+  h.add(static_cast<int>(idx[0]) + 71);
+  h.add(d.hand[static_cast<size_t>(idx[0])] + 19);
+  return;
+}
+```
+
+200-episode 复现器全过；`tests/loveletter` 全过；`tests/framework`（含 `test_public_hash_excludes_internal_rng[loveletter*]` 和 `test_public_snapshot_round_trip[loveletter*]`、`test_dag_acyclic`）全过。
+
+### 教训
+
+1. **walker-driven hash 必须 mix `(name, idx, value)` 全三元组**。schema + viz 决定 visit 序列，但 visit 序列不是常数：动态 reveal（Priest / Baron / King / `hand_exposed` / 淘汰）让 perspective 在不同 sim 世界里看到不同的 owner 子集。任何把 idx 丢掉、只 mix value 的实现都隐含"被访问的 idx 集合是世界无关的"假设——一旦 dynamic reveal 进来这个假设就废了。规约：所有 `hash_field_slot` 实现里凡接受非空 `idx` 的字段，至少 mix 一次 `idx[k]`，无论 base viz 当前看起来"是不是固定的"。
+2. **DAG 碰撞复现路径要走规则 + 网络的 byte-equal 重放**。普通 random rollout 的 5000 局测不出，因为 prior 不会真的把 sim 推进 ply=9 的稀疏节点。带 model + selfplay schedule 的 single-seed 重放把 prior 收敛固定，就能稳定吃到。"训练崩了能不能复现"的标准回答：保留模型 + episode_seed，单种子单线程跑 `run_selfplay_episode` byte-equal 重现 — 这次成立，下次也应保留这条路径。
+3. **insertion-time vs throw-time MaskedState dump 是 DAG 撞车的高信噪比工具**。比起在 hash 内部加 trace（每个槽都打），存一份 node→insertion dump、撞了再 print insertion + current 两份对比，差异立刻 evidently 落在 `hand[1],hand[3]` vs `hand[0],hand[1]`。这个 pattern（gated on env var、dump 仅在 DAG 缓存命中且 legal 不一致时打）值得保留为可启用的诊断，不是常驻代码——本次修完后已下线。
+
+### 不在范围
+
+- Coup 的同模式问题暂不修：Coup 的 `hash_field_slot` 对 `influence` 也没 mix `idx`，但 Coup 的 owner-only viz 在当前规则下未被动态收缩（"revealed" 是 public flag，不撤 viz；hand 数永远 2），visited idx 集合稳定，未触发；此外 Coup 整体走 §G.2 重写路径，按用户指示不动。
+
+### 已被框架层防御性修复覆盖
+
+LL 一行修复完成后，`idx` 编码上交给 framework：`state_hash_for_perspective` 改成走 schema 全集（visible + hidden），每槽先 mix `(field_pos, idx[])` 做结构盐，然后视 viz 派发——visible 调游戏的 `hash_field_slot`（**只 mix 值**），hidden mix 一个固定常量 `kHiddenHashSentinel`（`engine/core/types.h`）。改动落在 `engine/core/types.h` / `engine/core/viz_walker.h`（新增 `for_each_slot` 全集 walker）/ `engine/core/schema_hash.h`，同时回滚 `loveletter_state.cpp` 里 `idx[0]+71` 的临时修复（变成框架行为的一部分）。
+
+副作用：之前 LL `apply_public_state` 在 owner_overlay 全 -1 时不撤 `drawn_card` 的 viz，旧 hash 因为隐藏槽不进 hash 而掩盖了这个不一致；新的"hidden 也算 hash 结构"立刻让 `test_public_snapshot_round_trip[loveletter]` 抓到，顺带在 `loveletter_register.cpp` 把 `apply_public_state` 改成 wholesale-replace（>=0 设值+viz=1，-1 撤 viz=0）。
+
+整套修复后："游戏忘记 mix idx" 这一类 bug 从游戏层消失（framework 接管），未来加新 reveal/swap 机制都不再需要 audit `hash_field_slot` 是否漏 idx。
+
+### 后续：彻底删除 off-schema 后门（2026-05-12）
+
+第一版的"框架接管 idx 编码"保留了 `IGameState::hash_extra_state_fields(perspective, h)` 钩子作为"还没迁进 schema 的字段"的临时通道——LL 用它 hash `discard_piles` / `face_up_removed` / `drawn_card`、Coup 用它 hash `revealed` / `court_deck` / `exchange_drawn`。这个口子一旦留下，新游戏作者就会无意识地把"我懒得迁 schema 的字段"塞进去；而它的语义是"绕过 schema walker"，所以 BUG-037 类的结构碰撞会再次出现。
+
+这一轮把它彻底删掉：
+
+1. **LL 变长字段全部转 count 数组并迁进 schema**：`std::vector<int8_t> deck` → `std::array<std::int8_t, kCardTypes+1> deck_count`（`all_hidden`，randomize_unseen 重建）；`std::vector<int8_t> discard_piles[N]` → `discard_count[N, kCardTypes+1]`（`all_public`）；`std::vector<int8_t> face_up_removed` → `face_up_count[kCardTypes+1]`（`all_public`，仅 2p 用）。视觉上还需要"按时间顺序展示弃牌堆"的 UI 从 action stream 重建，不进 hash。`drawn_card` 已经在 schema 里（base `all_hidden`），rules 在抽牌时 `reveal_slot_to(current_player)`，hash 视 viz 决定走值还是哨兵。
+2. **`hash_extra_state_fields` 从 `IGameState` 删掉**：`engine/core/game_interfaces.h` 移除 virtual 声明，`engine/core/schema_hash.h` 移除调用点。Coup 的 override 留在 `games/coup/coup_state.{h,cpp}` 里但已不会被调用——按用户指示 Coup 此轮不修，索性把整块从 `games/manifest.json` 摘掉，不参与编译（CMakeLists 和 setup.py 都从 manifest 读，不需要改）。
+3. **新立场，文档化**：`engine/core/game_interfaces.h` 的 `IGameState` 注释明确写"every piece of state that participates in DAG node identity MUST be a schema slot"——变长结构通过定长 count 数组表达，视觉顺序是表现层关切，从 action stream 重建。
+
+效果：framework 不再有让"半成品 schema"通过的口子；新游戏作者写 `hash_field_slot` 时只能 mix 已声明 slot 的值，schema-外的 hash 输入物理上不存在。`tests/{loveletter,quoridor,tictactoe,azul,splendor,framework}` 全过，BUG-037 200-episode 复现器仍 0 撞车。
 

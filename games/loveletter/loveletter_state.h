@@ -78,10 +78,14 @@ struct LoveLetterData {
   std::array<std::int8_t, Cfg::kPlayers> protected_flags{};
   std::array<std::int8_t, Cfg::kPlayers> hand_exposed{};
 
-  std::vector<std::int8_t> deck;
+  // Multiset bookkeeping. Card values are 1..kCardTypes; index 0 unused.
+  // Engine never needs ordering — discards are summed for tie-break,
+  // deck is "draw-from-multiset" (handled by rules with rng), face-up
+  // is initial-draw-only and read by encoder/heuristic as a count.
+  std::array<std::int8_t, kCardTypes + 1> deck_count{};
   std::int8_t set_aside_card = 0;
-  std::array<std::vector<std::int8_t>, Cfg::kPlayers> discard_piles;
-  std::vector<std::int8_t> face_up_removed;
+  std::array<std::array<std::int8_t, kCardTypes + 1>, Cfg::kPlayers> discard_count{};
+  std::array<std::int8_t, kCardTypes + 1> face_up_count{};
 };
 
 template <int NPlayers>
@@ -113,12 +117,16 @@ struct LoveLetterState final : public CloneableState<LoveLetterState<NPlayers>> 
   //     (never revealed to anyone — it's the card removed from the
   //     bottom of the deck at game start).
   //
-  // Variable-length vectors NOT declared as schema slots:
-  //   - deck: hidden contents, public size — randomize_unseen handles.
-  //   - discard_piles[N]: all-public stack, variable length — already
-  //     hashed in hash_public_fields slot-by-slot.
-  //   - face_up_removed: 2p-only, all-public, variable length —
-  //     already hashed in hash_public_fields.
+  // Multiset count arrays (all schema-declared, fixed shape):
+  //   - deck_count[kCardTypes+1]: per-type remaining count in the
+  //     hidden deck. The size is public; per-type contents are NOT
+  //     declared all_public — randomize_unseen fills from the
+  //     tracker's information set.
+  //   - discard_count[N, kCardTypes+1]: per-player public discard
+  //     multiset. Order is purely visual; UI reconstructs from the
+  //     action stream.
+  //   - face_up_count[kCardTypes+1]: 2p-only, public, set once at
+  //     game start.
   //
   // Higher-order belief reasoning (e.g. tracking "what does opp infer
   // from my last Guard guess?") is an MCTS-tracker concern, not a
@@ -139,7 +147,6 @@ struct LoveLetterState final : public CloneableState<LoveLetterState<NPlayers>> 
   StateHash64 state_hash() const override;
   void hash_field_slot(Hasher& h, const std::string& name,
                        const std::vector<int>& idx) const override;
-  void hash_extra_state_fields(int perspective, Hasher& h) const override;
   void mask_field_slot(const std::string& name,
                        const std::vector<int>& idx) override;
   std::any read_field_slot(const std::string& name,

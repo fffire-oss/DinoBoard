@@ -32,7 +32,11 @@ AnyMap serialize_loveletter(const IGameState& state) {
   m["winner"] = std::any(state.winner());
   m["num_players"] = std::any(NPlayers);
   m["ply"] = std::any(d.ply);
-  m["deck_size"] = std::any(static_cast<int>(d.deck.size()));
+  int deck_size = 0;
+  for (int c = 1; c <= board_ai::loveletter::kCardTypes; ++c) {
+    deck_size += d.deck_count[static_cast<size_t>(c)];
+  }
+  m["deck_size"] = std::any(deck_size);
 
   std::vector<AnyMap> players;
   for (int p = 0; p < NPlayers; ++p) {
@@ -43,11 +47,27 @@ AnyMap serialize_loveletter(const IGameState& state) {
     pm["hand_name"] = std::any(std::string(
         d.hand[p] >= 1 && d.hand[p] <= 8 ? kCardNames[d.hand[p]] : ""));
 
-    std::vector<int> discards;
-    for (auto c : d.discard_piles[static_cast<size_t>(p)]) {
-      discards.push_back(static_cast<int>(c));
+    // Discard counts (per card type 1..kCardTypes); UI reconstructs
+    // visual order from the action stream. Ship the multiset count
+    // vector indexed 0..kCardTypes (slot 0 is unused but kept for
+    // alignment with card values).
+    std::vector<int> discard_counts;
+    discard_counts.reserve(board_ai::loveletter::kCardTypes + 1);
+    for (int c = 0; c <= board_ai::loveletter::kCardTypes; ++c) {
+      discard_counts.push_back(static_cast<int>(
+          d.discard_count[static_cast<size_t>(p)][static_cast<size_t>(c)]));
     }
-    pm["discards"] = std::any(discards);
+    pm["discard_count"] = std::any(discard_counts);
+
+    // Display-side derived list: enumerate every count copy as a flat
+    // sequence in card-type order. Tests and any "show me a pile"
+    // consumers iterate this; engine-side hash / encoder do not.
+    std::vector<int> discards_flat;
+    for (int c = 1; c <= board_ai::loveletter::kCardTypes; ++c) {
+      int n = d.discard_count[static_cast<size_t>(p)][static_cast<size_t>(c)];
+      for (int i = 0; i < n; ++i) discards_flat.push_back(c);
+    }
+    pm["discards"] = std::any(discards_flat);
 
     players.push_back(std::move(pm));
   }
@@ -57,9 +77,21 @@ AnyMap serialize_loveletter(const IGameState& state) {
   m["drawn_card_name"] = std::any(std::string(
       d.drawn_card >= 1 && d.drawn_card <= 8 ? kCardNames[d.drawn_card] : ""));
 
-  std::vector<int> face_up;
-  for (auto c : d.face_up_removed) face_up.push_back(static_cast<int>(c));
-  m["face_up_removed"] = std::any(face_up);
+  std::vector<int> face_up_count_v;
+  face_up_count_v.reserve(board_ai::loveletter::kCardTypes + 1);
+  for (int c = 0; c <= board_ai::loveletter::kCardTypes; ++c) {
+    face_up_count_v.push_back(static_cast<int>(
+        d.face_up_count[static_cast<size_t>(c)]));
+  }
+  m["face_up_count"] = std::any(face_up_count_v);
+
+  // Display-side derived list (face-up burn pile, 2p only).
+  std::vector<int> face_up_flat;
+  for (int c = 1; c <= board_ai::loveletter::kCardTypes; ++c) {
+    int n = d.face_up_count[static_cast<size_t>(c)];
+    for (int i = 0; i < n; ++i) face_up_flat.push_back(c);
+  }
+  m["face_up_removed"] = std::any(face_up_flat);
 
   // The "set-aside" card is the topmost card removed from the deck at game
   // start (always exactly 1 — Love Letter rule). It's hidden from all
@@ -166,12 +198,18 @@ double score_action(
     int seen = 0;
     std::array<int, 9> played{};
     for (int p = 0; p < NPlayers; ++p) {
-      for (int c : d.discard_piles[p]) { played[c]++; seen++; }
+      for (int c = 1; c <= board_ai::loveletter::kCardTypes; ++c) {
+        int n = d.discard_count[p][c];
+        played[c] += n;
+        seen += n;
+      }
     }
     // Count own + drawn + face-up removed so we know those too.
     played[my_hand]++;
     if (my_drawn > 0) played[my_drawn]++;
-    for (int c : d.face_up_removed) played[c]++;
+    for (int c = 1; c <= board_ai::loveletter::kCardTypes; ++c) {
+      played[c] += d.face_up_count[c];
+    }
     // Card counts in Love Letter:
     const std::array<int, 9> total = {0, 5, 2, 2, 2, 2, 1, 1, 1};
     double prob_guess = std::max(0.0, static_cast<double>(total[guess] - played[guess]));
@@ -335,10 +373,15 @@ AnyMap extract_initial_observation(const IGameState& state, int perspective) {
   } else {
     out["my_drawn_card"] = std::any(0);
   }
-  // In 2p, 3 cards are face-up removed; public to all.
-  std::vector<int> face_up;
-  for (auto c : d.face_up_removed) face_up.push_back(static_cast<int>(c));
-  out["face_up_removed"] = std::any(face_up);
+  // In 2p, 3 cards are face-up removed; public to all. Ship as a
+  // count vector indexed 0..kCardTypes.
+  std::vector<int> face_up_count_v;
+  face_up_count_v.reserve(board_ai::loveletter::kCardTypes + 1);
+  for (int c = 0; c <= board_ai::loveletter::kCardTypes; ++c) {
+    face_up_count_v.push_back(static_cast<int>(
+        d.face_up_count[static_cast<size_t>(c)]));
+  }
+  out["face_up_count"] = std::any(face_up_count_v);
   return out;
 }
 
@@ -366,10 +409,10 @@ void apply_initial_observation(IGameState& state, int perspective, const AnyMap&
     my_drawn = static_cast<std::int8_t>(std::any_cast<int>(it_draw->second));
   }
 
-  std::vector<int> face_up_v;
-  auto it_fu = obs.find("face_up_removed");
+  std::vector<int> face_up_count_v;
+  auto it_fu = obs.find("face_up_count");
   if (it_fu != obs.end()) {
-    face_up_v = std::any_cast<std::vector<int>>(it_fu->second);
+    face_up_count_v = std::any_cast<std::vector<int>>(it_fu->second);
   }
 
   // Pool of remaining cards = full deck minus face_up minus my_hand.
@@ -377,15 +420,24 @@ void apply_initial_observation(IGameState& state, int perspective, const AnyMap&
   for (int c = 1; c <= kCardTypes; ++c) {
     remaining[c] = kCardCounts[c];
   }
-  for (int c : face_up_v) {
-    if (c >= 1 && c <= kCardTypes) remaining[c]--;
+  // Apply face_up_count vector (indexed 0..kCardTypes; slot 0 unused).
+  for (int c = 1; c <= kCardTypes; ++c) {
+    int n = (c < static_cast<int>(face_up_count_v.size()))
+                ? face_up_count_v[static_cast<size_t>(c)]
+                : 0;
+    remaining[c] -= n;
   }
   if (my_hand >= 1 && my_hand <= kCardTypes) remaining[my_hand]--;
   if (my_drawn >= 1 && my_drawn <= kCardTypes) remaining[my_drawn]--;
 
-  // Rebuild face_up_removed from observation.
-  d.face_up_removed.clear();
-  for (int c : face_up_v) d.face_up_removed.push_back(static_cast<std::int8_t>(c));
+  // Rebuild face_up_count from observation.
+  d.face_up_count.fill(0);
+  for (int c = 1; c <= kCardTypes; ++c) {
+    int n = (c < static_cast<int>(face_up_count_v.size()))
+                ? face_up_count_v[static_cast<size_t>(c)]
+                : 0;
+    d.face_up_count[static_cast<size_t>(c)] = static_cast<std::int8_t>(n);
+  }
 
   // Seed each other player's hand with ANY remaining card (doesn't matter
   // which — AI's belief is "unknown"; randomize_unseen will re-sample when
@@ -409,15 +461,14 @@ void apply_initial_observation(IGameState& state, int perspective, const AnyMap&
     d.alive[p] = 1;
     d.protected_flags[p] = 0;
     d.hand_exposed[p] = 0;
-    d.discard_piles[p].clear();
+    d.discard_count[p].fill(0);
   }
   d.set_aside_card = take_one();
-  // Rebuild deck from what's left.
-  d.deck.clear();
+  // Rebuild deck_count from what's left.
+  d.deck_count.fill(0);
   for (int c = 1; c <= kCardTypes; ++c) {
-    for (int i = 0; i < remaining[c]; ++i) {
-      d.deck.push_back(static_cast<std::int8_t>(c));
-    }
+    d.deck_count[static_cast<size_t>(c)] =
+        static_cast<std::int8_t>(remaining[c]);
   }
   // drawn_card: if perspective is the starting current_player, we know it.
   // Otherwise assign a random placeholder (consistent-by-count; the actual
@@ -425,6 +476,11 @@ void apply_initial_observation(IGameState& state, int perspective, const AnyMap&
   if (d.current_player == perspective) {
     d.drawn_card = my_drawn;
   } else {
+    // take_one() decrements `remaining`, but deck_count was already
+    // populated above. The observer's local deck thus carries one
+    // extra placeholder card relative to truth — randomize_unseen
+    // overwrites contents on the next ply, so the count discrepancy
+    // is harmless.
     d.drawn_card = take_one();
   }
 
@@ -504,27 +560,11 @@ PublicEventTrace extract_events(
   }
   snap["owner_overlay"] = std::any(owner_overlay);
 
-  // Snapshot-only keys (variable-length, no schema counterpart):
-  //   deck_size   — public count of the hidden deck
-  //   discard_piles — per-player all-public stacks
-  //   face_up_removed — 2p-only public vector
-  snap["deck_size"] = std::any(static_cast<int>(da.deck.size()));
-
-  std::vector<std::vector<int>> discards_all(NPlayers);
-  for (int p = 0; p < NPlayers; ++p) {
-    std::vector<int> discards;
-    discards.reserve(da.discard_piles[static_cast<size_t>(p)].size());
-    for (auto c : da.discard_piles[static_cast<size_t>(p)]) {
-      discards.push_back(static_cast<int>(c));
-    }
-    discards_all[p] = std::move(discards);
-  }
-  snap["discard_piles"] = std::any(discards_all);
-
-  std::vector<int> face_up;
-  face_up.reserve(da.face_up_removed.size());
-  for (auto c : da.face_up_removed) face_up.push_back(static_cast<int>(c));
-  snap["face_up_removed"] = std::any(face_up);
+  // No more variable-length sidecar keys: discard_count / face_up_count
+  // / deck_size are all_public schema slots, walked into `snap` above
+  // by `viz::serialize_public`. deck_count is all_hidden (per-type
+  // contents not knowable to non-actor) and reconstructed by
+  // randomize_unseen.
 
   out.public_snapshot = std::move(snap);
   return out;
@@ -606,96 +646,47 @@ void apply_public_state(IGameState& state, const AnyMap& snap) {
       auto& drawn_v = board_ai::viz::viz_get(state, "drawn_card");
       const int n_viewers_h = hand_v.viewer_count();
       const int n_viewers_d = drawn_v.viewer_count();
+      // Wholesale-replace semantics: the producer's overlay encodes
+      // exactly what the receiver should see now. >=0 → visible (set
+      // value + viz=1); -1 → hidden (clear viz=0). Without the
+      // viz=0 path, an earlier reveal in this session sticks
+      // forever and observer's hash diverges from truth's after rules
+      // run reset_to_base on the truth side.
       for (int p = 0; p < NPlayers; ++p) {
+        if (receiver >= 0 && receiver < n_viewers_h) {
+          const std::size_t off =
+              static_cast<std::size_t>(p) *
+                  static_cast<std::size_t>(n_viewers_h) +
+              static_cast<std::size_t>(receiver);
+          if (off < hand_v.data.size()) {
+            hand_v.data[off] =
+                (overlay[static_cast<size_t>(p)] >= 0) ? 1 : 0;
+          }
+        }
         if (overlay[static_cast<size_t>(p)] >= 0) {
           d.hand[static_cast<size_t>(p)] =
               static_cast<std::int8_t>(overlay[static_cast<size_t>(p)]);
-          if (receiver >= 0 && receiver < n_viewers_h) {
-            const std::size_t off =
-                static_cast<std::size_t>(p) *
-                    static_cast<std::size_t>(n_viewers_h) +
-                static_cast<std::size_t>(receiver);
-            if (off < hand_v.data.size()) hand_v.data[off] = 1;
-          }
         }
       }
       const int dval = overlay[static_cast<size_t>(NPlayers)];
+      if (receiver >= 0 && receiver < n_viewers_d) {
+        const std::size_t off = static_cast<std::size_t>(receiver);
+        if (off < drawn_v.data.size()) {
+          drawn_v.data[off] = (dval >= 0) ? 1 : 0;
+        }
+      }
       if (dval >= 0) {
         d.drawn_card = static_cast<std::int8_t>(dval);
-        if (receiver >= 0 && receiver < n_viewers_d) {
-          const std::size_t off = static_cast<std::size_t>(receiver);
-          if (off < drawn_v.data.size()) drawn_v.data[off] = 1;
-        }
       }
     }
   }
 
-  auto get_int = [&](const char* key) -> int {
-    auto it = snap.find(key);
-    return (it != snap.end()) ? std::any_cast<int>(it->second) : 0;
-  };
-  auto get_iv = [&](const char* key) -> std::vector<int> {
-    auto it = snap.find(key);
-    if (it == snap.end()) return {};
-    if (it->second.type() == typeid(std::vector<int>)) {
-      return std::any_cast<std::vector<int>>(it->second);
-    }
-    if (it->second.type() == typeid(std::vector<std::any>)) {
-      const auto& av = std::any_cast<const std::vector<std::any>&>(it->second);
-      std::vector<int> out;
-      out.reserve(av.size());
-      for (const auto& x : av) {
-        if (x.type() == typeid(int)) out.push_back(std::any_cast<int>(x));
-      }
-      return out;
-    }
-    return {};
-  };
-
-  // discard_piles: list-of-lists. C++ side ships vector<vector<int>>;
-  // Python round-trip can produce vector<any> wrapping vector<int>.
-  auto it_d = snap.find("discard_piles");
-  if (it_d != snap.end()) {
-    auto set_pile = [&](int p, const std::vector<int>& row) {
-      if (p < 0 || p >= NPlayers) return;
-      d.discard_piles[static_cast<size_t>(p)].clear();
-      for (int c : row) {
-        d.discard_piles[static_cast<size_t>(p)].push_back(static_cast<std::int8_t>(c));
-      }
-    };
-    if (it_d->second.type() == typeid(std::vector<std::vector<int>>)) {
-      const auto& piles =
-          std::any_cast<const std::vector<std::vector<int>>&>(it_d->second);
-      for (int p = 0; p < NPlayers && p < static_cast<int>(piles.size()); ++p) {
-        set_pile(p, piles[static_cast<size_t>(p)]);
-      }
-    } else if (it_d->second.type() == typeid(std::vector<std::any>)) {
-      const auto& outer =
-          std::any_cast<const std::vector<std::any>&>(it_d->second);
-      for (int p = 0; p < NPlayers && p < static_cast<int>(outer.size()); ++p) {
-        if (outer[p].type() == typeid(std::vector<int>)) {
-          set_pile(p, std::any_cast<const std::vector<int>&>(outer[p]));
-        }
-      }
-    }
-  }
-
-  auto face_up_v = get_iv("face_up_removed");
-  d.face_up_removed.clear();
-  for (int c : face_up_v) d.face_up_removed.push_back(static_cast<std::int8_t>(c));
-
-  // deck_size: public count, hidden contents. Resize observer's deck;
-  // the trailing randomize_unseen call rebuilds the contents.
-  const int target_size = get_int("deck_size");
-  if (target_size >= 0) {
-    if (static_cast<int>(d.deck.size()) > target_size) {
-      d.deck.resize(static_cast<size_t>(target_size));
-    } else {
-      while (static_cast<int>(d.deck.size()) < target_size) {
-        d.deck.push_back(0);  // placeholder; randomize_unseen overwrites
-      }
-    }
-  }
+  // Variable-length sidecar keys are gone. discard_count / face_up_count
+  // / deck_size flowed back via `viz::apply_public` into the
+  // corresponding schema slots; deck_count is all_hidden and gets
+  // refilled by the trailing randomize_unseen call (the tracker keeps
+  // the observer's marginal-distribution view of the hidden deck and
+  // samples per-type counts from it).
 }
 
 }  // namespace loveletter_events

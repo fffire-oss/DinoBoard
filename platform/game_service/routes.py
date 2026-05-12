@@ -1,6 +1,8 @@
 """Game API routes."""
 from __future__ import annotations
 
+import json
+from functools import lru_cache
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -43,21 +45,27 @@ class ActionRequest(BaseModel):
     action_id: int
 
 
-_GAME_DISPLAY_ORDER = ["azul", "splendor", "quoridor", "loveletter", "coup", "tictactoe"]
+@lru_cache(maxsize=1)
+def _manifest_display_order() -> list[str]:
+    """Display order = the order of `enabled` games in games/manifest.json.
+    Single source of truth so adding/removing games happens in exactly one place."""
+    manifest_path = PROJECT_ROOT / "games" / "manifest.json"
+    with open(manifest_path, encoding="utf-8") as f:
+        manifest = json.load(f)
+    return [g["id"] for g in manifest["games"] if g.get("enabled", True)]
 
 
 @router.get("/available")
 def available_games():
-    order_index = {gid: i for i, gid in enumerate(_GAME_DISPLAY_ORDER)}
-    # Filter to only games whose engine bundle is registered. A game's
-    # config files (game.json / web.json) may exist on disk while its
-    # GameRegistrar is intentionally commented out (e.g. coup pending
-    # §G.2 viz migration); those games must not surface to the UI since
-    # the engine cannot create a session for them.
+    display_order = _manifest_display_order()
+    order_index = {gid: i for i, gid in enumerate(display_order)}
+    # Filter to only games whose engine bundle is registered. A game may be
+    # marked `enabled: false` in manifest (and thus not built) while still
+    # having config files on disk; those games must not surface to the UI.
     registered = set(engine.available_games())
     sorted_items = sorted(
         ((gid, cfg) for gid, cfg in GAME_CONFIGS.items() if gid in registered),
-        key=lambda kv: (order_index.get(kv[0], len(_GAME_DISPLAY_ORDER)), kv[0]),
+        key=lambda kv: (order_index.get(kv[0], len(display_order)), kv[0]),
     )
     games = []
     for gid, cfg in sorted_items:

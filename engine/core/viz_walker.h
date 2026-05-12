@@ -195,5 +195,62 @@ inline void for_each_hidden_slot(
   }
 }
 
+namespace detail {
+
+// Full-set dual: visits every (idx) regardless of viz, passing through
+// the perspective's visibility bit so the caller can route visible vs
+// hidden uniformly. Used by the framework hash to pin slot structure
+// (field_pos × idx) and dispatch the value mix accordingly.
+inline void walk_all_data_axes_recursive(
+    const std::string& name, const VizTensor& v, int perspective,
+    std::vector<int>& idx, int axis,
+    const SlotVisitorWithVisibility& fn) {
+  const int data_rank = v.rank() - 1;
+  if (axis == data_rank) {
+    const std::size_t base = flat_offset_data_only(v.shape, idx);
+    const std::size_t off = base + static_cast<std::size_t>(perspective);
+    const bool visible = v.data[off] != 0;
+    fn(name, idx, v, visible);
+    return;
+  }
+  for (int i = 0; i < v.shape[axis]; ++i) {
+    idx[axis] = i;
+    walk_all_data_axes_recursive(name, v, perspective, idx, axis + 1, fn);
+  }
+}
+
+}  // namespace detail
+
+// for_each_slot — schema declaration order × row-major idx, every
+// slot visited (no viz filter). Callback gets the visibility bit so
+// callers (currently the framework hash) can branch on visible vs
+// hidden without re-querying viz.
+inline void for_each_slot(const IGameState& state,
+                          const VisibilitySchema& schema, int perspective,
+                          const SlotVisitorWithVisibility& fn) {
+  for (const auto& field : schema.fields) {
+    const VizTensor& v = viz_get(state, field.name);
+    if (v.empty()) continue;
+    if (perspective < 0 || perspective >= v.viewer_count()) {
+      throw std::out_of_range(
+          "viz::for_each_slot: perspective " +
+          std::to_string(perspective) +
+          " out of range for field '" + field.name + "' (viewer_count=" +
+          std::to_string(v.viewer_count()) + ")");
+    }
+    const int data_rank = v.rank() - 1;
+    if (data_rank == 0) {
+      const std::size_t off = static_cast<std::size_t>(perspective);
+      const bool visible = v.data[off] != 0;
+      std::vector<int> empty_idx;
+      fn(field.name, empty_idx, v, visible);
+      continue;
+    }
+    std::vector<int> idx(static_cast<std::size_t>(data_rank), 0);
+    detail::walk_all_data_axes_recursive(field.name, v, perspective, idx, 0,
+                                         fn);
+  }
+}
+
 }  // namespace viz
 }  // namespace board_ai

@@ -1,8 +1,16 @@
 {
-  "_doc": "Single source of truth for the games registered into the C++ engine. Adding a game = appending an entry here. setup.py and CMakeLists.txt both consume this file. Each entry's `sources` is relative to games/<id>/ and is consumed verbatim.",
+  "_doc": "Single source of truth for what gets compiled, surfaced to the web, and tested across the framework matrix. setup.py / CMakeLists.txt / tests/framework/conftest.py / platform/game_service all consume this file. Schema per entry: id (str), enabled (bool, default true — disabled games skip build entirely), sources (list[str]; relative to games/<id>/, consumed verbatim by the build), capabilities (list[str]; tags consumed by the framework test matrix — see capability glossary below), framework_whitelist (bool, default false — true means the game must satisfy the core invariants the framework guards). To add a game: append an entry. To temporarily disable: set enabled=false. Display order in the web UI follows declaration order here.",
+  "_capabilities_doc": {
+    "hidden_info": "Game has perspective-private slots (viz != all_public). Triggers tests that verify AI cannot read truth's hidden fields.",
+    "snapshot": "Game registers public_state_applier — public state flows wire-side via PublicEventTrace.public_snapshot rather than via do_action_fast. Triggers public-snapshot round-trip tests.",
+    "tracker": "Game registers a belief_tracker factory. Triggers tracker-consistency tests."
+  },
   "games": [
     {
       "id": "tictactoe",
+      "enabled": true,
+      "framework_whitelist": true,
+      "capabilities": [],
       "sources": [
         "tictactoe_state.cpp",
         "tictactoe_rules.cpp",
@@ -12,6 +20,9 @@
     },
     {
       "id": "splendor",
+      "enabled": true,
+      "framework_whitelist": true,
+      "capabilities": ["hidden_info", "snapshot", "tracker"],
       "sources": [
         "splendor_state.cpp",
         "splendor_rules.cpp",
@@ -21,6 +32,9 @@
     },
     {
       "id": "azul",
+      "enabled": true,
+      "framework_whitelist": true,
+      "capabilities": ["hidden_info", "snapshot", "tracker"],
       "sources": [
         "azul_state.cpp",
         "azul_rules.cpp",
@@ -30,6 +44,9 @@
     },
     {
       "id": "quoridor",
+      "enabled": true,
+      "framework_whitelist": true,
+      "capabilities": [],
       "sources": [
         "quoridor_state.cpp",
         "quoridor_rules.cpp",
@@ -39,6 +56,9 @@
     },
     {
       "id": "loveletter",
+      "enabled": true,
+      "framework_whitelist": true,
+      "capabilities": ["hidden_info", "snapshot", "tracker"],
       "sources": [
         "loveletter_state.cpp",
         "loveletter_rules.cpp",
@@ -48,6 +68,9 @@
     },
     {
       "id": "coup",
+      "enabled": false,
+      "framework_whitelist": false,
+      "capabilities": ["hidden_info", "snapshot", "tracker"],
       "sources": [
         "coup_state.cpp",
         "coup_rules.cpp",

@@ -5,8 +5,15 @@ carrier (quoridor + azul + loveletter). Per-game tests in tests/<game>/
 are responsible for their own assertions and load their own config via
 the load_game_config helper. The framework layer never embeds rules,
 constants, or assertions for any specific game outside the matrix.
+
+Manifest-driven test-matrix helpers (`enabled_games`, `games_with_capability`,
+`hidden_info_games`, `games_with_snapshot`, `games_with_tracker`,
+`framework_whitelist_games`) read `games/manifest.json` so the framework
+test matrix self-extends when a game is enabled or a capability tag is
+added to a manifest entry. No hardcoded game lists in framework tests.
 """
 import json
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
@@ -15,6 +22,65 @@ import torch
 import dinoboard_engine
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_MANIFEST_PATH = PROJECT_ROOT / "games" / "manifest.json"
+
+
+@lru_cache(maxsize=1)
+def _manifest() -> dict:
+    with open(_MANIFEST_PATH, encoding="utf-8") as f:
+        return json.load(f)
+
+
+@lru_cache(maxsize=1)
+def _registered() -> frozenset:
+    return frozenset(dinoboard_engine.available_games())
+
+
+def _entries() -> list:
+    return _manifest()["games"]
+
+
+def enabled_games() -> list:
+    """Manifest-enabled AND engine-registered. Declaration order preserved."""
+    reg = _registered()
+    return [g["id"] for g in _entries()
+            if g.get("enabled", True) and g["id"] in reg]
+
+
+def games_with_capability(*caps: str) -> list:
+    """Enabled games whose capability set contains every cap in `caps`."""
+    reg = _registered()
+    out = []
+    for g in _entries():
+        if not g.get("enabled", True):
+            continue
+        if g["id"] not in reg:
+            continue
+        gcaps = set(g.get("capabilities", []))
+        if all(c in gcaps for c in caps):
+            out.append(g["id"])
+    return out
+
+
+def framework_whitelist_games() -> list:
+    """Enabled + framework_whitelist=true. The set of games the framework
+    structurally guarantees core invariants for."""
+    reg = _registered()
+    return [g["id"] for g in _entries()
+            if g.get("enabled", True) and g.get("framework_whitelist", False)
+            and g["id"] in reg]
+
+
+def hidden_info_games() -> list:
+    return games_with_capability("hidden_info")
+
+
+def games_with_snapshot() -> list:
+    return games_with_capability("snapshot")
+
+
+def games_with_tracker() -> list:
+    return games_with_capability("tracker")
 
 # Framework matrix — minimal carrier set used by tests/framework/. These
 # three games together cover every structural feature the framework cares
