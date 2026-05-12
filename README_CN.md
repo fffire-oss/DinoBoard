@@ -27,7 +27,7 @@ tensor。`viz[..., p] = 1` 表示玩家 p 现在能看见这个槽位的真值�
 rules 是 viz 唯一 writer——`do_action_fast` 里改业务字段的同时调
 `reveal_slot` / `reveal_slot_to` / `reset_to_base` 维护 viz。
 
-`make_masked_state(state, schema, perspective, belief_filled)` 走
+`make_masked_state(state, schema, perspective)` 走
 schema 派一份 MaskedState，三家消费者（snapshot / hash / encoder
 tensor）共享同一对象——viz=0 槽位结构性读到 placeholder。"对哪个
 玩家可见"这件事变成 **state 字段**，不是 observer 实现内部的代码逻

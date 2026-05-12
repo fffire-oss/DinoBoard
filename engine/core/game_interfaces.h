@@ -154,11 +154,10 @@ class IGameState {
   std::unordered_map<std::string, viz::VizTensor> viz_;
 
   // Per-slot placeholder write for hidden slots. Walker calls this for
-  // each (name, idx) where viz[idx, perspective] == 0 (or belief_filled
-  // is set). Game writes kPlaceholderInt32 / kPlaceholderInt8 /
-  // kPlaceholderBool into the matching typed slot. Must be idempotent.
-  // Default no-op covers fully-public games whose walker never visits
-  // a hidden slot.
+  // each (name, idx) where viz[idx, perspective] == 0. Game writes
+  // kPlaceholderInt32 / kPlaceholderInt8 / kPlaceholderBool into the
+  // matching typed slot. Must be idempotent. Default no-op covers
+  // fully-public games whose walker never visits a hidden slot.
   virtual void mask_field_slot(const std::string& /*name*/,
                                const std::vector<int>& /*idx*/) {}
 
@@ -167,8 +166,7 @@ class IGameState {
   // Splendor's shared_ptr<const SplendorData>) can detach a writable
   // copy once before running the walker, instead of reseating per slot.
   virtual void mask_all_hidden_slots(
-      const viz::VisibilitySchema& schema, int perspective,
-      const std::unordered_map<std::string, viz::VizTensor>* belief_filled);
+      const viz::VisibilitySchema& schema, int perspective);
 };
 
 template <typename Derived>

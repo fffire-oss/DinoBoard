@@ -32,7 +32,7 @@ currently see the slot's truth. Rules are the sole writer of viz —
 `do_action_fast` updates business fields and calls `reveal_slot` /
 `reveal_slot_to` / `reset_to_base` alongside.
 
-`make_masked_state(state, schema, perspective, belief_filled)` walks
+`make_masked_state(state, schema, perspective)` walks
 the schema once and emits a MaskedState shared by three consumers
 (snapshot serialization / hash / encoder tensor) — viz=0 slots
 structurally read as `kPlaceholder`. "Which slot is visible to whom"

@@ -331,20 +331,19 @@ viz **不是**单调累积量——槽位内容变化时 rules 主动 `reset_to_
 ### 5.1 `make_masked_state`
 
 ```cpp
-auto masked = make_masked_state(state, schema, perspective, belief_filled);
+auto masked = make_masked_state(state, schema, perspective);
 // MaskedState = IGameState typedef，跟 State 同 struct layout
 ```
 
-内部用 walker 按 schema 遍历每槽，对每槽计算 mask
-（`viz[..., perspective]=1` ∧ `!belief_filled`）：
+内部用 walker 按 schema 遍历每槽，对每槽位检查 `viz[..., perspective]`：
 
-- 命中 → 复制真值
-- 未命中 → 写 `kPlaceholder` sentinel
+- =1 → 复制真值
+- =0 → 写 `kPlaceholder` sentinel
   (`INT32_MIN / INT8_MIN / false`；变长字段长度保留、内容置 placeholder)
 
 物化由 `IGameState::mask_all_hidden_slots` 驱动——非虚的 base 实现走
-walker，对每个 viz=0（或 `belief_filled=1`）的槽位调虚的
-`mask_field_slot(name, idx)`，游戏 override 它写 placeholder。
+walker，对每个 viz=0 的槽位调虚的 `mask_field_slot(name, idx)`，游戏
+override 它写 placeholder。
 
 ### 5.2 三家消费者，同一份 MaskedState
 
@@ -442,12 +441,8 @@ placeholder。
 
 | 槽位状态 | MaskedState 里的值 | encoder 行为 |
 |---|---|---|
-| `viz[slot, perspective]=1` ∧ !belief_filled | 真值 | 编码具体特征 |
-| `viz[slot, perspective]=0` 或 belief_filled | `kPlaceholder` | emit 占位符特征 |
-
-`belief_filled=1` 槽位也走占位符——belief sample 出来的具体值不是事实，
-编码进网络等于让 NN 学 sample 噪声。walker 物化 MaskedState 时 belief
-位也按 mask 处理（同样置 placeholder），encoder 不需要分情况判断。
+| `viz[slot, perspective]=1` | 真值 | 编码具体特征 |
+| `viz[slot, perspective]=0` | `kPlaceholder` | emit 占位符特征 |
 
 座位旋转就是 encoder 自己排 tensor 时的索引顺序：
 `mstate.hand[(perspective+i) % N]`——layout 排序，不是 mask 工序，框架
@@ -1064,7 +1059,7 @@ viz=1 还是 0,见 `docs/FRAMEWORK_DESIGN_RATIONALE.md` §3.3。
 | I8 | tracker 不存 belief prior | belief sampling 在 `randomize_unseen` 现场算,不缓存 prior 字段 |
 | I9 | sim 入口 clone sim-local tracker | session 持有的 tracker 不被 sim 写入;sim_tracker 在 sim 结束时和 state 一起丢弃 |
 | I10 | belief sample 范围 = `viz[..., perspective]=0` 全部槽位 | 单点判断 |
-| I11 | belief_filled 槽位永禁 encoder 读 | walker 物化 MaskedState 时直接置 placeholder |
+| I11 | encoder 永远读不到 belief 噪声 | walker 在 `make_masked_state` 时把 viz=0 槽位置 placeholder;接口锁 `const MaskedState&`,encoder 结构上读不到 viz=0 真值 |
 | I12 | encoder 输入面 = MaskedState + tracker | `IFeatureEncoder` / `IPolicyValueEvaluator` 接口锁 `const MaskedState&`,viz=0 槽位读到 placeholder;`test_encoder_respects_hash_scope` 守护 |
 | I13 | 节点 hash perspective = `state.current_player()` | framework 实现,游戏不写 hash |
 | I14 | step_count 进 hash 保证 DAG 无环 | framework 自动加 |

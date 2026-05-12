@@ -13,10 +13,9 @@
 namespace board_ai {
 
 void IGameState::mask_all_hidden_slots(
-    const viz::VisibilitySchema& schema, int perspective,
-    const std::unordered_map<std::string, viz::VizTensor>* belief_filled) {
+    const viz::VisibilitySchema& schema, int perspective) {
   viz::for_each_hidden_slot(
-      *this, schema, perspective, belief_filled,
+      *this, schema, perspective,
       [this](const std::string& name, const std::vector<int>& idx,
              const viz::VizTensor& /*v*/) {
         this->mask_field_slot(name, idx);

@@ -636,11 +636,10 @@ void SplendorState<NPlayers>::mask_field_slot(
 // Avoids one shared_ptr reseat per masked slot.
 template <int NPlayers>
 void SplendorState<NPlayers>::mask_all_hidden_slots(
-    const viz::VisibilitySchema& schema, int perspective,
-    const std::unordered_map<std::string, viz::VizTensor>* belief_filled) {
+    const viz::VisibilitySchema& schema, int perspective) {
   SplendorData<NPlayers> data = persistent.data();
   viz::for_each_hidden_slot(
-      *this, schema, perspective, belief_filled,
+      *this, schema, perspective,
       [&](const std::string& name, const std::vector<int>& idx,
           const viz::VizTensor& /*v*/) {
         if (name == "reserved") {

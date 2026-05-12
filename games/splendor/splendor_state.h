@@ -184,8 +184,7 @@ struct SplendorState final : public CloneableState<SplendorState<NPlayers>> {
   // mask_field_slot would write through `persistent.data()` const ref
   // and undefined-behave.
   void mask_all_hidden_slots(
-      const viz::VisibilitySchema& schema, int perspective,
-      const std::unordered_map<std::string, viz::VizTensor>* belief_filled) override;
+      const viz::VisibilitySchema& schema, int perspective) override;
   const viz::VisibilitySchema& schema_ref() const override { return schema(); }
   int current_player() const override;
   int first_player() const override;

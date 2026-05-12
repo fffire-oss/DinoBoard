@@ -108,36 +108,23 @@ inline void for_each_visible_slot(const IGameState& state,
 namespace detail {
 
 // Hidden dual of walk_data_axes_recursive: visits idx whose viewer bit
-// is 0 OR whose belief_filled bit (if provided) is 1.
+// is 0.
 inline void walk_hidden_data_axes_recursive(
-    const std::string& name, const VizTensor& v,
-    const VizTensor* belief_v, int perspective,
+    const std::string& name, const VizTensor& v, int perspective,
     std::vector<int>& idx, int axis,
     const SlotVisitor& fn) {
   const int data_rank = v.rank() - 1;
   if (axis == data_rank) {
     const std::size_t base = flat_offset_data_only(v.shape, idx);
     const std::size_t off = base + static_cast<std::size_t>(perspective);
-    const bool viz_off = (v.data[off] == 0);
-    bool belief_marked = false;
-    if (belief_v && !belief_v->empty()) {
-      // Same flat layout (callers must allocate belief_filled with the
-      // same shape as state.viz_ for that field).
-      const std::size_t bbase = flat_offset_data_only(belief_v->shape, idx);
-      const std::size_t boff = bbase + static_cast<std::size_t>(perspective);
-      if (boff < belief_v->data.size()) {
-        belief_marked = belief_v->data[boff] != 0;
-      }
-    }
-    if (viz_off || belief_marked) {
+    if (v.data[off] == 0) {
       fn(name, idx, v);
     }
     return;
   }
   for (int i = 0; i < v.shape[axis]; ++i) {
     idx[axis] = i;
-    walk_hidden_data_axes_recursive(name, v, belief_v, perspective, idx,
-                                    axis + 1, fn);
+    walk_hidden_data_axes_recursive(name, v, perspective, idx, axis + 1, fn);
   }
 }
 
@@ -146,9 +133,8 @@ inline void walk_hidden_data_axes_recursive(
 // for_each_hidden_slot — dual of for_each_visible_slot.
 //
 // Visits every (non-internal) field × data-axis slot whose
-// viz[idx..., perspective] == 0, OR whose belief_filled[idx...,
-// perspective] == 1 (when belief_filled is provided). Used by
-// `make_masked_state` to drive per-slot placeholder writes.
+// viz[idx..., perspective] == 0. Used by `make_masked_state` to drive
+// per-slot placeholder writes.
 //
 // Visit order: same as for_each_visible_slot — schema declaration
 // order × row-major indices. The yielded VizTensor is the field's
@@ -156,7 +142,6 @@ inline void walk_hidden_data_axes_recursive(
 // need it).
 inline void for_each_hidden_slot(
     const IGameState& state, const VisibilitySchema& schema, int perspective,
-    const std::unordered_map<std::string, VizTensor>* belief_filled,
     const SlotVisitor& fn) {
   for (const auto& field : schema.fields) {
     const VizTensor& v = viz_get(state, field.name);
@@ -168,30 +153,18 @@ inline void for_each_hidden_slot(
           " out of range for field '" + field.name + "' (viewer_count=" +
           std::to_string(v.viewer_count()) + ")");
     }
-    const VizTensor* belief_v = nullptr;
-    if (belief_filled) {
-      auto it = belief_filled->find(field.name);
-      if (it != belief_filled->end()) belief_v = &it->second;
-    }
     const int data_rank = v.rank() - 1;
     if (data_rank == 0) {
       const std::size_t off = static_cast<std::size_t>(perspective);
-      const bool viz_off = (v.data[off] == 0);
-      bool belief_marked = false;
-      if (belief_v && !belief_v->empty() &&
-          static_cast<std::size_t>(perspective) < belief_v->data.size()) {
-        belief_marked =
-            belief_v->data[static_cast<std::size_t>(perspective)] != 0;
-      }
-      if (viz_off || belief_marked) {
+      if (v.data[off] == 0) {
         std::vector<int> empty_idx;
         fn(field.name, empty_idx, v);
       }
       continue;
     }
     std::vector<int> idx(static_cast<std::size_t>(data_rank), 0);
-    detail::walk_hidden_data_axes_recursive(field.name, v, belief_v,
-                                            perspective, idx, 0, fn);
+    detail::walk_hidden_data_axes_recursive(field.name, v, perspective, idx,
+                                            0, fn);
   }
 }
 
