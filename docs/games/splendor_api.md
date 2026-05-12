@@ -103,8 +103,10 @@ sid = sess["session_id"]
 # 假设 ground truth 从 splendor_rules 自己维护。它在每一步计算 observation 事件。
 # 这里用伪代码表示。
 def apply_on_ground_truth(action_id):
-    """返回 (pre_events, post_events) — 由 ground truth 端计算。
-    具体实现见 games/splendor/splendor_register.cpp::extract_events 的翻译版。"""
+    """返回 (events, public_snapshot) — 由 ground truth 端计算。
+    具体实现见 games/splendor/splendor_register.cpp::extract_events 的翻译版。
+    events: 这次 transition 里 observer 能看到的公开事实序列（按 producer 顺序）。
+    public_snapshot: 动作之后 GT 端所有公开 slot 的值（按 schema field name 索引）。"""
     ...
 
 while True:
@@ -117,9 +119,9 @@ while True:
     else:
         action_id = opp_pick_action()  # 你的对手逻辑
 
-    pre, post = apply_on_ground_truth(action_id)  # 你的 ground truth 算事件
+    events, snapshot = apply_on_ground_truth(action_id)  # 你的 ground truth 算事件 + snapshot
     requests.post(f"{BASE}/ai/sessions/{sid}/observe", json={
-        "action_id": action_id, "pre_events": pre, "post_events": post,
+        "action_id": action_id, "events": events, "public_snapshot": snapshot,
     })
 
 requests.delete(f"{BASE}/ai/sessions/{sid}")
@@ -137,4 +139,4 @@ Splendor 注册了 tail solver。`decide` 返回 `stats.tail_solved=true` 时表
 
 - **不发 `deck_flip` → AI 的 tableau 滞后**：接入方最容易忘的是"只卡换了新牌时发事件"，但**位移也算变化**——任何 slot 的 card_id 变了就要发
 - **对手盲预订不发 `self_reserve_deck`**：这是隐藏信息，AI 不应该看到。AI 会在 `randomize_unseen` 里自己采样一个占位牌
-- **`opp_buy_reserved_reveal` 必须是 pre_event**：放在 post_events 里 AI 已经用错的占位牌算过 cost 了
+- **`opp_buy_reserved_reveal` 必须出现在 `events` 里**：observer 不会重放规则，所以"对手盲预订的牌被买出"这种揭露事实必须显式发到 tracker，否则 belief 会偏（observer state 的公开部分由 `public_snapshot` 整体覆写——cost 不会算错；事件主要是给 tracker 维护对手盲预订集合用的）

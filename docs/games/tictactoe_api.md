@@ -6,7 +6,7 @@
 - **玩家数**：固定 2
 - **动作空间**：9
 - **隐藏信息**：无（完全可观察）
-- **公开事件**：无（`pre_events` / `post_events` 总是 `[]`）
+- **公开事件**：无（`events` 总是 `[]`，`public_snapshot` 总是 `{}`）
 
 ---
 
@@ -90,8 +90,8 @@ while True:
     # 回喂 AI
     r = requests.post(f"{BASE}/ai/sessions/{sid}/observe", json={
         "action_id": action_id,
-        "pre_events": [],
-        "post_events": [],
+        "events": [],
+        "public_snapshot": {},
     }).json()
 
     if r["is_terminal"]:

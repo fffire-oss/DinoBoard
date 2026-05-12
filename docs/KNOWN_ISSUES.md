@@ -1007,7 +1007,7 @@ std::vector<std::unique_ptr<OnnxPolicyValueEvaluator>> ai_evaluators_;
 
 都在 `NetMctsConfig` 里塞 `root_belief_tracker` + `root_observer_perspective` + `full_action_space`。旧的 NoPeek `traversal_limiter` 在 ISMCTS-A 路径下置 nullptr（不删除，给没 belief_tracker 的纯物理随机游戏留着）。
 
-**API 模式兼容**：`external_obs_mode_` flag，`apply_initial_observation` / `apply_observation` / `apply_event` 会翻 true。外部调用方通过事件协议驱动 `bundle_->state`，此模式下 bundle_->state 就是 AI view，MCTS 走老路径（测试用）
+**API 模式兼容**（历史描述，当时的协议）：`external_obs_mode_` flag，`apply_initial_observation` / `apply_observation` / `apply_event` 会翻 true。外部调用方通过事件协议驱动 `bundle_->state`，此模式下 bundle_->state 就是 AI view，MCTS 走老路径（测试用）。当前协议已不再有 `apply_event` 入口，observer 路径只走 `apply_observation(action, events, public_snapshot)`
 
 同时 **revert 了 BUG-023 的 loveletter nonce bump**。新架构让那个补丁变成无用代码——即使规则里的 `apply()` 读了 `d.hand[target]`，读的也是 `ai_views_[p]` 里的占位值而不是真相。BUG-023 的黑盒测试（Guard 命中率 ~14% 而不是 76%）依然通过。
 

@@ -102,9 +102,9 @@ while True:
     else:
         action_id = opp_pick()
 
-    pre, post = ground_truth_apply(action_id)  # ground truth 计算 factory_refill 若有
+    events, snapshot = ground_truth_apply(action_id)  # ground truth 计算 factory_refill 等事件 + snapshot
     requests.post(f"{BASE}/ai/sessions/{sid}/observe", json={
-        "action_id": action_id, "pre_events": pre, "post_events": post,
+        "action_id": action_id, "events": events, "public_snapshot": snapshot,
     })
 
 requests.delete(f"{BASE}/ai/sessions/{sid}")
@@ -114,6 +114,6 @@ requests.delete(f"{BASE}/ai/sessions/{sid}")
 
 ## 常见踩坑
 
-- **忘发 `factory_refill`**：round 结束那一步的 `observe` 之后，下一 round 开始前必须发。如果漏发，AI 会用"上一 round 剩下什么 × 袋中采样"算，和 ground truth 不一致
-- **不需要单独 `take_tiles` 事件**：动作本身（action_id）已经表达了"从哪个 source 拿什么色"，AI 内部的 rules 会自己维护 factories/center 的更新
-- **AI 的袋子顺序可能和 ground truth 不同**：Azul 的"袋中各色总数"是公开的（写在 state_dict），但具体翻到工厂的是哪几张是随机的。每次 `factory_refill` 事件覆盖 AI 自己的采样结果就行
+- **忘传 `public_snapshot`**：observer 路径上不重放规则，所有公开字段（factories、center、各家面板、丢弃区、袋中色数）每步都要从 snapshot 整体覆写。漏传一个公开 slot，observer 会跟 truth 立刻偏
+- **`factory_refill` 事件给 tracker 用**：Azul 全部公开，本身没强信息差，但事件流仍然按 schema 在做，tracker 只是空操作；snapshot 才是 observer 同步公开局面的主路径
+- **不需要单独 `take_tiles` 事件**：动作本身（action_id）已经表达了"从哪个 source 拿什么色"，public_snapshot 把对应槽位刷新即可

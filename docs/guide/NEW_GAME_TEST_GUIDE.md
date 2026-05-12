@@ -710,7 +710,7 @@ python -m pytest tests/<your_game>/ -v -k api
 如果游戏有 `belief_tracker`（随机或信息不对称），必须实现 public-event 协议并通过 belief 等价测试。详见 GAME_DEVELOPMENT_GUIDE.md §17。
 
 ```bash
-# 实现 public_event_extractor / public_event_applier /
+# 实现 public_event_extractor / public_state_applier /
 # initial_observation_extractor / initial_observation_applier 并在 GameBundle 注册
 # 实现 IBeliefTracker::serialize() 输出 canonical 字典
 # 在 tests/<your_game>/test_checklist.py 里加 belief / public state / legal actions 三层等价断言
@@ -740,9 +740,9 @@ python -m pytest tests/framework/test_public_hash_excludes_internal_rng.py -v -k
 | 症状 | 可能原因 | 修复 |
 |------|---------|------|
 | belief 第一步就发散 | `initial_observation_extractor` 漏传某个 perspective 可见字段 | 对照 encoder 看 perspective 能看到什么，extractor 都要返回 |
-| belief 中途发散（比如某动作之后） | 该动作的 event 没提取或 apply 错了 | 读 `do_action_fast` 看它碰了哪些隐藏字段 |
-| public state 发散但 belief 相等 | apply_event 改了可见字段但没同步 deck（或者反过来） | event applier 要维护 state 内部一致性，不只是表面字段 |
-| `no matching hidden reserved slot found` 之类运行时错 | event payload 缺 player 或 slot 等关键字段 | 事件必须自包含，不能让 applier 猜 |
+| belief 中途发散（比如某动作之后） | 该动作的 event 没塞进 `events` 列表，或 payload 字段错 | 对照 `extract_events` 看 GT 端为这个动作发什么事件，tracker 端对照 `observe_public_event` 看怎么消费 |
+| public state 发散但 belief 相等 | `public_snapshot` 漏了某个公开 slot，或 GT 端 schema 没把它声明成公开 | observer 不重放规则，公开字段全靠 snapshot 整体覆写——所有 viz 设为 public 的 slot 都必须出现在 snapshot 里 |
+| `no matching hidden reserved slot found` 之类运行时错 | event payload 缺 player 或 slot 等关键字段 | 事件必须自包含，不能让 tracker 猜 |
 
 ---
 

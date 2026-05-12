@@ -109,10 +109,10 @@ while True:
 
     # Ground truth 端必须：
     # 1. 应用 action 到自己的 state
-    # 2. 检测是否有 card_revealed / exchange_complete 事件
-    pre, post = compute_events(action_id)
+    # 2. 算出公开事件序列（card_revealed / exchange_complete / 等）+ 动作之后的 public_snapshot
+    events, snapshot = compute_trace(action_id)
     requests.post(f"{BASE}/ai/sessions/{sid}/observe", json={
-        "action_id": action_id, "pre_events": pre, "post_events": post,
+        "action_id": action_id, "events": events, "public_snapshot": snapshot,
     })
 
 requests.delete(f"{BASE}/ai/sessions/{sid}")

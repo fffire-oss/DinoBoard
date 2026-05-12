@@ -110,7 +110,7 @@ while True:
         action_id = int(input("Your move (0-208): "))
 
     requests.post(f"{BASE}/ai/sessions/{sid}/observe", json={
-        "action_id": action_id, "pre_events": [], "post_events": [],
+        "action_id": action_id, "events": [], "public_snapshot": {},
     })
 
 requests.delete(f"{BASE}/ai/sessions/{sid}")

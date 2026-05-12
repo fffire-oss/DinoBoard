@@ -100,10 +100,12 @@ sess = requests.post(f"{BASE}/ai/sessions", json={
 }).json()
 sid = sess["session_id"]
 
-# Ground truth 端要实现：每个动作算出 pre/post events
-def compute_events(state_before, action_id, state_after, perspective):
+# Ground truth 端要实现：每个动作算出 events + public_snapshot
+def compute_trace(state_before, action_id, state_after, perspective):
     """对照 games/loveletter/loveletter_register.cpp::extract_events 的语义，
-    返回 {"pre_events": [...], "post_events": [...]}。"""
+    返回 {"events": [...], "public_snapshot": {...}}。
+    events 是按 producer 顺序排的公开事实序列（hand_override / drawn_override / 弃牌 / 淘汰...）；
+    public_snapshot 是动作之后所有公开 slot 的值，observer 收到后整体覆写公开字段。"""
     ...
 
 while True:
@@ -116,9 +118,11 @@ while True:
     else:
         action_id = opp_pick()
 
-    pre, post = compute_events(state_before, action_id, state_after, perspective=1)
+    trace = compute_trace(state_before, action_id, state_after, perspective=1)
     requests.post(f"{BASE}/ai/sessions/{sid}/observe", json={
-        "action_id": action_id, "pre_events": pre, "post_events": post,
+        "action_id": action_id,
+        "events": trace["events"],
+        "public_snapshot": trace["public_snapshot"],
     })
 
 requests.delete(f"{BASE}/ai/sessions/{sid}")
@@ -128,7 +132,7 @@ requests.delete(f"{BASE}/ai/sessions/{sid}")
 
 ## 常见踩坑
 
-- **`hand_override` 必须是 pre_event**：Guard/Baron/King/Prince 的效果依赖对手手牌。如果放在 post_events，AI 已经用错的占位手牌算过结果
+- **`hand_override` 用来给 tracker reveal 对手手牌**：Guard/Baron/King/Prince 在某些时机会让 actor 看到 target 的牌，GT 端把这些公开揭露事实塞进 `events` 列表喂给 tracker。observer 路径上不重放规则——动作的具体后果（弃牌、King 后双方的新手牌、谁淘汰）已经体现在动作之后的 `public_snapshot` 和 viz=1 hand 槽位里——`events` 只负责告诉 tracker "这次 transition 里 observer 学到了什么事实"
 - **Priest 仅对 actor 发事件**：其他玩家的 session 不应收到这个 `hand_override`——那是信息泄漏
 - **淘汰时手牌自然公开**：被 Guard 猜中、Baron 比输、Prince 弃的 Princess 等情况，被淘汰的玩家手牌进入 discard pile，AI 通过 discard_piles state 自然知道
 - **多人座位轮转**：`target` 是**相对座位**。3/4 人局里同一 action_id 对不同的 actor 指的 target 玩家不同
