@@ -14,7 +14,6 @@ namespace {
 using board_ai::AnyMap;
 using board_ai::ActionId;
 using board_ai::IGameState;
-using board_ai::EventPhase;
 using board_ai::PublicEvent;
 using board_ai::PublicEventTrace;
 
@@ -565,7 +564,7 @@ PublicEventTrace extract_events(
   if (sa.round_index > sb.round_index && !sa.terminal) {
     AnyMap payload;
     payload["factories"] = std::any(factories_to_any(sa));
-    out.post_events.emplace_back("factory_refill", std::move(payload));
+    out.events.emplace_back("factory_refill", std::move(payload));
   }
 
   // Public snapshot mirrors AzulState::hash_public_fields. Azul has no
@@ -595,29 +594,6 @@ void apply_public_state(IGameState& state, const AnyMap& snap) {
   board_ai::viz::apply_snapshot(state, AzulState<NPlayers>::schema(),
                                 azul_snapshot_io<NPlayers>(), snap,
                                 /*skip=*/{"game_first_player"});
-}
-
-template <int NPlayers>
-void apply_event(IGameState& state, EventPhase phase,
-                 const std::string& kind, const AnyMap& payload) {
-  if (phase != EventPhase::kPostAction) {
-    throw std::runtime_error(
-        "azul: unexpected pre-action event '" + kind + "' (Azul has only post-action events)");
-  }
-  if (kind != "factory_refill") {
-    throw std::runtime_error("azul: unknown event kind '" + kind + "'");
-  }
-  auto& s = board_ai::checked_cast<AzulState<NPlayers>>(state);
-  auto it = payload.find("factories");
-  if (it == payload.end()) {
-    throw std::runtime_error("azul factory_refill missing 'factories'");
-  }
-  overwrite_factories_from_any(s, it->second);
-  // Refill always clears center and resets first_player_token — these are
-  // already handled by apply_round_settlement before we got here, so just
-  // ensure center is empty (defensive).
-  for (int c = 0; c < kColors; ++c) s.center[c] = 0;
-  recompute_bag_from_visible(s);
 }
 
 }  // namespace azul_events
@@ -788,7 +764,6 @@ board_ai::GameBundle make_azul(const std::string& game_id, std::uint64_t seed) {
   b.action_descriptor = describe_azul<NPlayers>;
   b.heuristic_picker = azul_heuristic::pick<NPlayers>;
   b.public_event_extractor = azul_events::extract_events<NPlayers>;
-  b.public_event_applier = azul_events::apply_event<NPlayers>;
   b.public_state_applier = azul_events::apply_public_state<NPlayers>;
   b.initial_observation_extractor = azul_events::extract_initial_observation<NPlayers>;
   b.initial_observation_applier = azul_events::apply_initial_observation<NPlayers>;

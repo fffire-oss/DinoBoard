@@ -54,7 +54,7 @@ inline void tracker_observe(IBeliefTracker& bt, const GameBundle& bundle,
     trace = bundle.public_event_extractor(before, action, after, perspective);
   }
   const int actor = before.current_player();
-  bt.observe_public_event(actor, action, trace.pre_events, trace.post_events);
+  bt.observe_public_event(actor, action, trace.events);
 }
 
 std::any py_to_any(const py::handle& obj);
@@ -202,26 +202,16 @@ py::dict result_to_py(const runtime::SelfplayEpisodeResult& result) {
       entry["ply"] = t.ply;
       entry["actor"] = t.actor;
       entry["action"] = static_cast<int>(t.action);
-      py::list pre;
-      for (const auto& [kind, payload] : t.pre_events) {
+      py::list ev_list;
+      for (const auto& [kind, payload] : t.events) {
         py::dict e;
         e["kind"] = kind;
         py::dict p;
         for (const auto& [pk, pv] : payload) p[py::cast(pk)] = any_to_py(pv);
         e["payload"] = p;
-        pre.append(e);
+        ev_list.append(e);
       }
-      entry["pre_events"] = pre;
-      py::list post;
-      for (const auto& [kind, payload] : t.post_events) {
-        py::dict e;
-        e["kind"] = kind;
-        py::dict p;
-        for (const auto& [pk, pv] : payload) p[py::cast(pk)] = any_to_py(pv);
-        e["payload"] = p;
-        post.append(e);
-      }
-      entry["post_events"] = post;
+      entry["events"] = ev_list;
       // Truth-side public snapshot. Empty for games without
       // public_state_applier registered.
       py::dict snap;
@@ -372,7 +362,6 @@ py::dict run_selfplay_episode_py(
       *bundle.state, *bundle.rules, *bundle.value_model, *eval_ptr, cfg, seed,
       pp_trackers,
       per_seat_states,
-      bundle.public_event_applier,
       bundle.public_state_applier,
       bundle.encoder.get(),
       bundle.tail_solver.get(),
@@ -484,7 +473,6 @@ py::dict run_arena_match_py(
       bundle.initial_observation_extractor,
       pp_trackers,
       per_seat_states,
-      bundle.public_event_applier,
       bundle.public_state_applier);
 
   py::gil_scoped_acquire acquire;
@@ -685,7 +673,6 @@ py::dict run_heuristic_episode_py(
       bundle.auxiliary_scorer, bundle.adjudicator,
       pp_trackers,
       per_seat_states,
-      bundle.public_event_applier,
       bundle.public_state_applier,
       bundle.public_event_extractor,
       bundle.initial_observation_extractor);
@@ -743,7 +730,7 @@ py::dict encode_state_for_perspective_py(
     bundle.rules->do_action_fast(*bundle.state, action, step_rng);
     if (tracker_init_done && bundle.public_event_extractor) {
       auto ev = bundle.public_event_extractor(*before, action, *bundle.state, tracker_perspective);
-      bundle.belief_tracker->observe_public_event(actor, action, ev.pre_events, ev.post_events);
+      bundle.belief_tracker->observe_public_event(actor, action, ev.events);
     }
   }
 
@@ -901,61 +888,38 @@ class GameSessionWrapper {
     }
   }
 
-  // Advance ai_view for a single perspective using the public-event
-  // protocol: extract events from the truth transition for this observer,
-  // then apply (pre-events → action → post-events) on ai_views_[p]. This
-  // mirrors the external AI API's apply_observation flow, including the
-  // public_snapshot override and the randomize_unseen freshening.
+  // Advance ai_view for a single perspective. Hidden-info games: snapshot
+  // overwrites the public part, tracker observes the events, randomize_unseen
+  // re-samples viz=0 slots. Fully-public games (no extractor registered):
+  // the action itself is enough to advance, so we just run do_action_fast
+  // on the seat — there is no snapshot to apply and the tracker (if any)
+  // has nothing to observe.
   void advance_ai_view_(int perspective, const IGameState& truth_before,
                         ActionId action) {
     if (perspective < 0 || perspective >= static_cast<int>(ai_views_.size())) return;
     if (!ai_views_[perspective]) return;
     const int actor = truth_before.current_player();
-    // ai_views_ run on a sampled-hidden world that gets re-overwritten by
-    // public_snapshot + randomize_unseen below; their step rng must not be
-    // shared with truth's step_rng_ or truth's draw sequence drifts (truth
-    // consumes one draw per action; sharing would consume N+1).
-    const std::uint64_t view_step_seed = board_ai::rng::derive_subseed(
-        seed_, "session.view_step",
-        static_cast<std::uint64_t>(ply_count_) * 17ULL +
-            static_cast<std::uint64_t>(perspective));
-    std::mt19937_64 view_step_rng(view_step_seed);
-    if (!bundle_->public_event_extractor || !bundle_->public_event_applier) {
-      // Fully-public game: just replay the action on ai_view, tracker
-      // gets empty events (it has no hidden info to track).
+    if (!bundle_->public_event_extractor) {
+      const std::uint64_t view_step_seed = board_ai::rng::derive_subseed(
+          seed_, "session.view_step",
+          static_cast<std::uint64_t>(ply_count_) * 17ULL +
+              static_cast<std::uint64_t>(perspective));
+      std::mt19937_64 view_step_rng(view_step_seed);
       bundle_->rules->do_action_fast(*ai_views_[perspective], action, view_step_rng);
       if (ai_trackers_[perspective]) {
-        ai_trackers_[perspective]->observe_public_event(actor, action, {}, {});
+        ai_trackers_[perspective]->observe_public_event(actor, action, {});
       }
       return;
     }
-    // Selfplay path: there is no external ground truth feeding messages —
-    // ai_view must advance via the action itself. do_action_fast runs in
-    // the per-perspective sampled-hidden world; the resulting state may
-    // diverge from truth on hidden-dependent fields, but the public
-    // snapshot below overwrites public fields and tracker resampling
-    // refreshes hidden fields, so the observer's information set ends up
-    // correct.
     PublicEventTrace trace = bundle_->public_event_extractor(
         truth_before, action, *bundle_->state, perspective);
-    for (const auto& [kind, payload] : trace.pre_events) {
-      bundle_->public_event_applier(
-          *ai_views_[perspective], EventPhase::kPreAction, kind, payload);
-    }
-    bundle_->rules->do_action_fast(*ai_views_[perspective], action, view_step_rng);
-    for (const auto& [kind, payload] : trace.post_events) {
-      bundle_->public_event_applier(
-          *ai_views_[perspective], EventPhase::kPostAction, kind, payload);
-    }
+    ai_views_[perspective]->begin_step();
     if (bundle_->public_state_applier && !trace.public_snapshot.empty()) {
       bundle_->public_state_applier(*ai_views_[perspective], trace.public_snapshot);
     }
     if (ai_trackers_[perspective]) {
       ai_trackers_[perspective]->observe_public_event(
-          actor, action, trace.pre_events, trace.post_events);
-      // Re-sample ai_view's hidden fields from the tracker's current
-      // information set. Deterministic RNG from (seed_, ply_count_,
-      // perspective) so behavior is reproducible.
+          actor, action, trace.events);
       const std::uint64_t freshen_seed = board_ai::rng::derive_subseed(
           seed_, "session.view_freshen",
           static_cast<std::uint64_t>(ply_count_) * 17ULL +
@@ -1050,62 +1014,45 @@ class GameSessionWrapper {
   }
 
   // Combined action + events step for the AI API. Sequence:
-  //   1. Snapshot actor = current_player (before the action)
-  //   2. Apply all pre-action events (hidden info the action depends on)
-  //   3. Apply the action itself
-  //   4. Apply all post-action events (override random outcomes)
-  //   5. public_state_applier overwrites session state_'s public fields
-  //      from the truth snapshot (so public state is message-driven, not
-  //      derived from do_action_fast's read of sampled hidden)
-  //   6. belief_tracker.observe_public_event(actor, action, pre, post)
-  //   7. belief_tracker.randomize_unseen(state_, freshen_rng) — session
-  //      hidden fields re-sampled from tracker's current information set
+  //   1. begin_step() bumps step_count for DAG acyclicity (do_action_fast
+  //      is intentionally skipped — the AI session never runs rules).
+  //   2. public_state_applier(snapshot) overwrites session state_'s public
+  //      fields from the truth snapshot.
+  //   3. belief_tracker.observe_public_event(actor, action, events) — the
+  //      events list is fed only to the tracker; it does not mutate state.
+  //   4. belief_tracker.randomize_unseen(state_, freshen_rng) — session
+  //      hidden fields re-sampled from tracker's current information set.
   //
-  // The tracker is fed event payloads directly; no state ref crosses its
-  // observe interface. Pre/post lists are the same events the extractor
-  // would have produced on a selfplay state diff, so tracker behavior
-  // matches across selfplay and API paths (enforced by
-  // test_api_belief_matches_selfplay).
-  //
-  // Together, steps 5 and 7 guarantee that after apply_observation returns:
+  // After apply_observation returns:
   //   - session state_'s public fields equal the truth snapshot exactly
   //     (test_public_snapshot_round_trip);
   //   - session state_'s hidden fields are a fresh tracker-consistent
   //     sample, not a copy of truth (test_session_hidden_fields_resampled);
   //   - `state_hash_for_perspective(own)` on the session is byte-equal to
-  //     running the same observation stream on any other seed, so the AI
-  //     has zero surface to leak truth through
+  //     running the same observation stream on any other seed
   //     (test_public_hash_excludes_internal_rng / test_api_belief_matches_selfplay).
   //
-  // `pre_events` / `post_events` are lists of {"kind": str, "payload": dict}.
-  // `public_snapshot` is the truth-side dump of all public fields; when
-  // non-empty + game has public_state_applier, it OVERWRITES session
-  // state_'s public fields regardless of what do_action_fast computed.
-  // All 4 hidden-info games register the applier; fully-public games
-  // (tictactoe, quoridor) don't.
+  // `events` is a list of {"kind": str, "payload": dict} entries describing
+  // public observations from this transition. `public_snapshot` is the
+  // truth-side dump of all public fields; when non-empty + game has
+  // public_state_applier, it overwrites session state_'s public fields.
+  // Fully-public games (tictactoe, quoridor) register no applier.
   void apply_observation(ActionId action,
-                         py::list pre_events,
-                         py::list post_events,
+                         py::list events,
                          py::dict public_snapshot) {
-    if (!bundle_->public_event_applier) {
+    if (!bundle_->public_state_applier) {
       throw std::runtime_error(
           "apply_observation: game '" + game_id_ +
-          "' has no public_event_applier registered");
+          "' has no public_state_applier registered");
     }
-    // Convert Python events to (kind, AnyMap) pairs BEFORE releasing GIL.
-    std::vector<std::pair<std::string, AnyMap>> pre_list, post_list;
-    auto convert = [](py::list src, std::vector<std::pair<std::string, AnyMap>>& dst) {
-      for (py::handle item : src) {
-        py::dict d = py::cast<py::dict>(item);
-        std::string kind = py::cast<std::string>(d["kind"]);
-        AnyMap payload = py_dict_to_any_map(py::cast<py::dict>(d["payload"]));
-        dst.emplace_back(std::move(kind), std::move(payload));
-      }
-    };
-    convert(pre_events, pre_list);
-    convert(post_events, post_list);
+    std::vector<std::pair<std::string, AnyMap>> event_list;
+    for (py::handle item : events) {
+      py::dict d = py::cast<py::dict>(item);
+      std::string kind = py::cast<std::string>(d["kind"]);
+      AnyMap payload = py_dict_to_any_map(py::cast<py::dict>(d["payload"]));
+      event_list.emplace_back(std::move(kind), std::move(payload));
+    }
 
-    // Convert snapshot dict BEFORE releasing GIL.
     AnyMap snap_map;
     bool have_snapshot = false;
     if (public_snapshot && py::len(public_snapshot) > 0) {
@@ -1116,38 +1063,14 @@ class GameSessionWrapper {
     py::gil_scoped_release release;
     external_obs_mode_ = true;
     const int actor = bundle_->state->current_player();
-    // AI session does NOT run game rules. State is rebuilt from the
-    // message stream:
-    //   1. pre_events  — hidden info the action depends on / reveals
-    //                    BEFORE the action (e.g. opp hand exposed).
-    //   2. snapshot    — overwrites all public fields to the post-action
-    //                    truth (current_player, reserved_size, scores, ...).
-    //   3. post_events — hidden info the action produces AFTER the action
-    //                    (e.g. self-reserved card_id) — applied last so
-    //                    snapshot can't clobber, and so post-event
-    //                    handlers see the updated public state from (2).
-    // We also bump step_count manually since do_action_fast (which would
-    // normally call begin_step) is intentionally skipped here. step_count
-    // is framework-managed bookkeeping included in state_hash_for_perspective
-    // for DAG acyclicity.
     bundle_->state->begin_step();
-    for (const auto& [kind, payload] : pre_list) {
-      bundle_->public_event_applier(*bundle_->state, EventPhase::kPreAction, kind, payload);
-    }
-    if (have_snapshot && bundle_->public_state_applier) {
+    if (have_snapshot) {
       bundle_->public_state_applier(*bundle_->state, snap_map);
-    }
-    for (const auto& [kind, payload] : post_list) {
-      bundle_->public_event_applier(*bundle_->state, EventPhase::kPostAction, kind, payload);
     }
 
     if (bt_) {
-      std::vector<PublicEvent> pre_events_v(pre_list.begin(), pre_list.end());
-      std::vector<PublicEvent> post_events_v(post_list.begin(), post_list.end());
-      bt_->observe_public_event(actor, action, pre_events_v, post_events_v);
-      // Re-sample session state_'s hidden fields from the tracker's
-      // information set. Deterministic RNG from (seed_, ply_count_) so
-      // behavior is reproducible.
+      std::vector<PublicEvent> events_v(event_list.begin(), event_list.end());
+      bt_->observe_public_event(actor, action, events_v);
       const std::uint64_t freshen_seed = board_ai::rng::derive_subseed(
           seed_, "session.truth_freshen",
           static_cast<std::uint64_t>(ply_count_));
@@ -1158,17 +1081,16 @@ class GameSessionWrapper {
   }
 
   // Test/integration helper: apply an action on the truth state and ALSO
-  // return the public-event trace (pre/post events + public_snapshot) for
-  // a given perspective. This is what selfplay's trace machinery records
-  // per-ply, exposed in a step-driven form so tests can drive a ground-truth
-  // session and forward the resulting trace to a separate API/AI session.
+  // return the public-event trace (events + public_snapshot) for a given
+  // perspective. This is what selfplay's trace machinery records per-ply,
+  // exposed in a step-driven form so tests can drive a ground-truth session
+  // and forward the resulting trace to a separate API/AI session.
   //
   // The trace dict shape matches `observation_trace[i]` from
-  // run_selfplay_episode: {"pre_events": [...], "post_events": [...],
-  // "public_snapshot": {...}}. For deterministic games (no extractor)
-  // returns empty lists / dict.
+  // run_selfplay_episode: {"events": [...], "public_snapshot": {...}}.
+  // For deterministic games (no extractor) returns empty list / dict.
   py::dict apply_action_with_trace(ActionId action, int perspective) {
-    std::vector<std::pair<std::string, AnyMap>> pre_list, post_list;
+    std::vector<std::pair<std::string, AnyMap>> event_list;
     AnyMap snap_map;
     bool have_extractor = false;
     {
@@ -1180,10 +1102,8 @@ class GameSessionWrapper {
         have_extractor = true;
         PublicEventTrace trace = bundle_->public_event_extractor(
             *state_before, action, *bundle_->state, perspective);
-        for (auto& ev : trace.pre_events)
-          pre_list.emplace_back(std::move(ev.first), std::move(ev.second));
-        for (auto& ev : trace.post_events)
-          post_list.emplace_back(std::move(ev.first), std::move(ev.second));
+        for (auto& ev : trace.events)
+          event_list.emplace_back(std::move(ev.first), std::move(ev.second));
         snap_map = std::move(trace.public_snapshot);
       }
       if (bt_) {
@@ -1199,26 +1119,16 @@ class GameSessionWrapper {
       ++ply_count_;
     }
     py::dict out;
-    py::list pre;
-    for (const auto& [kind, payload] : pre_list) {
+    py::list ev_list;
+    for (const auto& [kind, payload] : event_list) {
       py::dict e;
       e["kind"] = kind;
       py::dict p;
       for (const auto& [pk, pv] : payload) p[py::cast(pk)] = any_to_py(pv);
       e["payload"] = p;
-      pre.append(e);
+      ev_list.append(e);
     }
-    out["pre_events"] = pre;
-    py::list post;
-    for (const auto& [kind, payload] : post_list) {
-      py::dict e;
-      e["kind"] = kind;
-      py::dict p;
-      for (const auto& [pk, pv] : payload) p[py::cast(pk)] = any_to_py(pv);
-      e["payload"] = p;
-      post.append(e);
-    }
-    out["post_events"] = post;
+    out["events"] = ev_list;
     py::dict snap;
     if (have_extractor) {
       for (const auto& [k, v] : snap_map) snap[py::cast(k)] = any_to_py(v);
@@ -1237,33 +1147,6 @@ class GameSessionWrapper {
     AnyMap obs = bundle_->initial_observation_extractor(*bundle_->state, perspective);
     for (const auto& [k, v] : obs) out[py::cast(k)] = any_to_py(v);
     return out;
-  }
-
-  // Public-event protocol (used by the AI API). Applies an event to the
-  // internal game state. `phase` is "pre" or "post" relative to an action;
-  // the caller is responsible for ordering pre events BEFORE apply_action
-  // and post events AFTER. The game's registered applier decides what
-  // fields to mutate. Throws if the game did not register an applier.
-  //
-  // Prefer apply_observation() for the API driving use case — it handles
-  // the action + events + observe sequencing atomically. apply_event is
-  // kept for tests and debugging that want to drive the pieces separately.
-  void apply_event(const std::string& phase, const std::string& kind, py::dict payload) {
-    if (!bundle_->public_event_applier) {
-      throw std::runtime_error(
-          "apply_event: game '" + game_id_ + "' has no public_event_applier registered");
-    }
-    EventPhase ph;
-    if (phase == "pre") ph = EventPhase::kPreAction;
-    else if (phase == "post") ph = EventPhase::kPostAction;
-    else throw std::invalid_argument("apply_event: phase must be 'pre' or 'post', got '" + phase + "'");
-    AnyMap payload_map = py_dict_to_any_map(payload);
-    py::gil_scoped_release release;
-    // Switch into external observation mode: caller now drives the state
-    // via the public-event protocol, so bundle_->state IS the AI view.
-    // ai_views_ (set up in the constructor) are discarded as stale.
-    external_obs_mode_ = true;
-    bundle_->public_event_applier(*bundle_->state, ph, kind, payload_map);
   }
 
   // Partner-provided initial observation: perspective-specific info the AI
@@ -1696,18 +1579,18 @@ PYBIND11_MODULE(dinoboard_engine, m) {
     const int num_players = bundle.state->num_players();
     const int action_space = bundle.encoder->action_space();
     const int feature_dim = bundle.encoder->feature_dim();
-    const bool has_public_event_applier = static_cast<bool>(bundle.public_event_applier);
+    const bool has_public_state_applier = static_cast<bool>(bundle.public_state_applier);
     const bool has_initial_observation_applier = static_cast<bool>(bundle.initial_observation_applier);
     py::gil_scoped_acquire acquire;
     py::dict out;
     out["num_players"] = num_players;
     out["action_space"] = action_space;
     out["feature_dim"] = feature_dim;
-    // Capability flags: hidden-info games register a public_event_applier
+    // Capability flags: hidden-info games register a public_state_applier
     // (and usually an initial_observation_applier); fully-public games
     // (tictactoe, quoridor) don't. The REST AI API uses these to dispatch
     // between the action_id-only path and the full apply_observation path.
-    out["has_public_event_applier"] = has_public_event_applier;
+    out["has_public_state_applier"] = has_public_state_applier;
     out["has_initial_observation_applier"] = has_initial_observation_applier;
     return out;
   }, py::arg("game_id"));
@@ -1746,11 +1629,8 @@ PYBIND11_MODULE(dinoboard_engine, m) {
            py::arg("perspective"))
       .def("apply_observation", &GameSessionWrapper::apply_observation,
            py::arg("action"),
-           py::arg("pre_events") = py::list(),
-           py::arg("post_events") = py::list(),
+           py::arg("events") = py::list(),
            py::arg("public_snapshot") = py::dict())
-      .def("apply_event", &GameSessionWrapper::apply_event,
-           py::arg("phase"), py::arg("kind"), py::arg("payload"))
       .def("apply_initial_observation", &GameSessionWrapper::apply_initial_observation,
            py::arg("perspective_player"), py::arg("initial_observation"))
       .def("get_belief_snapshot", &GameSessionWrapper::get_belief_snapshot)

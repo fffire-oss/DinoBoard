@@ -18,7 +18,6 @@ SelfplayEpisodeResult run_selfplay_episode(
     std::uint64_t episode_seed,
     std::vector<IBeliefTracker*> per_perspective_trackers,
     std::vector<IGameState*> per_seat_states,
-    PublicEventApplier public_event_applier,
     PublicStateApplier public_state_applier,
     const IFeatureEncoder* encoder,
     const search::ITailSolver* tail_solver,
@@ -149,48 +148,40 @@ SelfplayEpisodeResult run_selfplay_episode(
 
   // Per-seat session-state advance: mirrors py_engine::advance_ai_view_.
   // Called after truth has been advanced by `chosen`, with the truth state
-  // before/after both available. For each seat: extract per-perspective
-  // events, replay (pre → action → post) on the seat's session state with
-  // a seat-specific step rng (NOT the GT step rng), then have
-  // public_state_applier overwrite public fields and tracker resample
-  // hidden. Returns immediately when use_per_seat_states is false.
+  // before/after both available. For each seat:
+  //   - hidden-info game (public_event_extractor registered): public_snapshot
+  //     overwrites public fields. Hidden is later freshened by tracker.
+  //     do_action_fast is NOT run on the seat — the observer has incomplete
+  //     information so replaying the action there would just sample one
+  //     world; the public projection arrives whole via the snapshot, and
+  //     the eventual decision will be made off whatever world MCTS samples.
+  //   - fully-public game (no extractor): the seat just replays do_action_fast
+  //     deterministically. Returns immediately when use_per_seat_states is false.
   auto advance_per_seat_states =
       [&](const IGameState& truth_before, const IGameState& truth_after,
-          ActionId chosen, int actor) {
+          ActionId chosen, int /*actor*/) {
     if (!use_per_seat_states) return;
     const int num_players = static_cast<int>(per_seat_states.size());
     for (int p = 0; p < num_players; ++p) {
       IGameState& seat = *per_seat_states[p];
-      const std::uint64_t view_step_seed = board_ai::rng::derive_subseed(
-          episode_seed, "selfplay.view_step",
-          static_cast<std::uint64_t>(ply) * 17ULL +
-              static_cast<std::uint64_t>(p));
-      std::mt19937_64 view_step_rng(view_step_seed);
-      if (!public_event_extractor || !public_event_applier) {
+      if (!public_event_extractor) {
         // Fully-public game: just replay the action on the seat state.
+        const std::uint64_t view_step_seed = board_ai::rng::derive_subseed(
+            episode_seed, "selfplay.view_step",
+            static_cast<std::uint64_t>(ply) * 17ULL +
+                static_cast<std::uint64_t>(p));
+        std::mt19937_64 view_step_rng(view_step_seed);
         rules.do_action_fast(seat, chosen, view_step_rng);
         continue;
       }
       PublicEventTrace evt_p = public_event_extractor(
           truth_before, chosen, truth_after, p);
-      for (const auto& [kind, payload] : evt_p.pre_events) {
-        public_event_applier(seat, EventPhase::kPreAction, kind, payload);
-      }
-      rules.do_action_fast(seat, chosen, view_step_rng);
-      for (const auto& [kind, payload] : evt_p.post_events) {
-        public_event_applier(seat, EventPhase::kPostAction, kind, payload);
-      }
+      seat.begin_step();
       if (public_state_applier && !evt_p.public_snapshot.empty()) {
         public_state_applier(seat, evt_p.public_snapshot);
       }
-      if (use_per_perspective &&
-          p < static_cast<int>(per_perspective_trackers.size()) &&
-          per_perspective_trackers[p]) {
-        // Note: tracker.observe_public_event is also called in the
-        // existing per_perspective loop below for every seat — we
-        // intentionally do NOT duplicate that call here. Hidden-fields
-        // freshening happens after observe.
-      }
+      // tracker.observe_public_event is called in the per_perspective loop
+      // immediately below; freshening of hidden happens after observe.
     }
   };
 
@@ -311,7 +302,7 @@ SelfplayEpisodeResult run_selfplay_episode(
             evt_p = public_event_extractor(*state_before, chosen, *state, p);
           }
           per_perspective_trackers[p]->observe_public_event(
-              player, chosen, evt_p.pre_events, evt_p.post_events);
+              player, chosen, evt_p.events);
         }
       }
       // Advance per-seat session states via the public-event protocol so
@@ -326,11 +317,10 @@ SelfplayEpisodeResult run_selfplay_episode(
         t.action = chosen;
         auto evt = public_event_extractor(
             *state_before, chosen, *state, trace_perspective);
-        t.pre_events = evt.pre_events;
-        t.post_events = evt.post_events;
+        t.events = evt.events;
         t.public_snapshot = evt.public_snapshot;
         trace_belief_tracker->observe_public_event(
-            player, chosen, evt.pre_events, evt.post_events);
+            player, chosen, evt.events);
         t.belief_snapshot_after = trace_belief_tracker->serialize();
         result.observation_trace.push_back(std::move(t));
       }
@@ -439,7 +429,7 @@ SelfplayEpisodeResult run_selfplay_episode(
           evt_p = public_event_extractor(*state_before, chosen, *state, p);
         }
         per_perspective_trackers[p]->observe_public_event(
-            player, chosen, evt_p.pre_events, evt_p.post_events);
+            player, chosen, evt_p.events);
       }
     }
     advance_per_seat_states(*state_before, *state, chosen, player);
@@ -451,11 +441,10 @@ SelfplayEpisodeResult run_selfplay_episode(
       t.action = chosen;
       auto evt = public_event_extractor(
           *state_before, chosen, *state, trace_perspective);
-      t.pre_events = evt.pre_events;
-      t.post_events = evt.post_events;
+      t.events = evt.events;
       t.public_snapshot = evt.public_snapshot;
       trace_belief_tracker->observe_public_event(
-          player, chosen, evt.pre_events, evt.post_events);
+          player, chosen, evt.events);
       t.belief_snapshot_after = trace_belief_tracker->serialize();
       result.observation_trace.push_back(std::move(t));
     }

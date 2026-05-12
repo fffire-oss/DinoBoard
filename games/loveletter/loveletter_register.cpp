@@ -14,7 +14,6 @@ namespace {
 using board_ai::AnyMap;
 using board_ai::ActionId;
 using board_ai::IGameState;
-using board_ai::EventPhase;
 using board_ai::PublicEvent;
 using board_ai::PublicEventTrace;
 
@@ -459,9 +458,8 @@ void apply_initial_observation(IGameState& state, int perspective, const AnyMap&
 // schema walker (`viz::serialize_public`); per-perspective reveals
 // (owner-visible `hand[p]`, current-player-visible `drawn_card`,
 // Priest/Baron peeks) ride the `owner_overlay` sidecar below — same
-// pattern Splendor uses for face-up reserved cards. `pre_events` /
-// `post_events` are reserved for true public happenings (none
-// currently emitted by LL).
+// pattern Splendor uses for face-up reserved cards. LL emits no
+// public events; `out.events` stays empty.
 template <int NPlayers>
 PublicEventTrace extract_events(
     const IGameState& /*before*/,
@@ -711,14 +709,6 @@ void apply_public_state(IGameState& state, const AnyMap& snap) {
   }
 }
 
-// LL no longer emits any pre/post public events — every per-perspective
-// reveal travels through state.viz_ and the schema-driven snapshot.
-template <int NPlayers>
-void apply_event(IGameState& /*state*/, EventPhase /*phase*/,
-                 const std::string& kind, const AnyMap& /*payload*/) {
-  throw std::runtime_error("loveletter: unknown event kind '" + kind + "'");
-}
-
 }  // namespace loveletter_events
 
 template <int NPlayers>
@@ -741,7 +731,6 @@ board_ai::GameBundle make_loveletter(const std::string& game_id, std::uint64_t s
   b.action_descriptor = describe_loveletter;
   b.heuristic_picker = loveletter_heuristic::pick<NPlayers>;
   b.public_event_extractor = loveletter_events::extract_events<NPlayers>;
-  b.public_event_applier = loveletter_events::apply_event<NPlayers>;
   b.public_state_applier = loveletter_events::apply_public_state<NPlayers>;
   b.initial_observation_extractor = loveletter_events::extract_initial_observation<NPlayers>;
   b.initial_observation_applier = loveletter_events::apply_initial_observation<NPlayers>;

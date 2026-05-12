@@ -22,31 +22,27 @@ namespace board_ai {
 // so different games can carry different payload types.
 using AnyMap = std::map<std::string, std::any>;
 
-// Phase of a public event relative to the action it describes:
-//   kPreAction  — the event describes hidden info the action depends on
-//                 (e.g. Baron target's hand in Love Letter). Applied BEFORE
-//                 rules.apply() during event replay.
-//   kPostAction — the event describes a random outcome the action produced
-//                 (e.g. Splendor deck flip). Applied AFTER rules.apply().
-enum class EventPhase { kPreAction = 0, kPostAction = 1 };
-
 // A single public event: (kind, payload). Kind is a stable string chosen by
-// the game (e.g. "deck_flip", "hand_override"). Payload keys/values are
-// game-defined.
+// the game (e.g. "deck_flip", "opp_buy_reserved_reveal"). Payload keys/values
+// are game-defined.
 using PublicEvent = std::pair<std::string, AnyMap>;
 
-// Events for a single action, split by phase.
+// Events + public snapshot for a single action.
 //
-// `public_snapshot` — truth-side serialization of the post-action public
-// fields. Games that register a `public_state_applier` (see game_registry.h)
+// `events` — public observations the perspective player can derive from this
+// transition. Consumed only by the belief tracker (observer sessions never
+// run `do_action_fast`, so events have no in-rules timing to ride). The list
+// order matches the producer's emission order; the tracker treats it as an
+// observation log.
+//
+// `public_snapshot` — truth-side serialization of the post-action visible
+// fields for this perspective. Games that register a `public_state_applier`
 // populate this in their extractor; observer sessions then overwrite their
-// state_'s public fields from it at the end of apply_observation, so the
-// observer's public state is rebuilt from the message stream and never
-// depends on `do_action_fast(observer_state_)`'s output. Empty map for
-// fully-public games (tictactoe, quoridor) that do not register an applier.
+// state_'s public fields from it at the end of apply_observation. Empty map
+// for fully-public games (tictactoe, quoridor) that do not register an
+// applier.
 struct PublicEventTrace {
-  std::vector<PublicEvent> pre_events{};
-  std::vector<PublicEvent> post_events{};
+  std::vector<PublicEvent> events{};
   AnyMap public_snapshot{};
 };
 

@@ -124,8 +124,7 @@ def test_tracker_known_facts_match_truth(game_id: str, seed: int):
         gt2.apply_action(action)
         obs_gs2.apply_observation(
             action,
-            pre_events=step["pre_events"],
-            post_events=step["post_events"],
+            events=step["events"],
             public_snapshot=step.get("public_snapshot", {}),
         )
         if gt2.is_terminal:

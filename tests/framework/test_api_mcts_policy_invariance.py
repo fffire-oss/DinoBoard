@@ -117,8 +117,7 @@ def test_api_mcts_policy_matches_selfplay(game_id):
                         tv_samples.append(_tv_distance(sp_dist, api_dist))
             api_gs.apply_observation(
                 step["action"],
-                pre_events=step["pre_events"],
-                post_events=step["post_events"],
+                events=step["events"],
                 public_snapshot=step.get("public_snapshot", {}),
             )
             ply_i += 1

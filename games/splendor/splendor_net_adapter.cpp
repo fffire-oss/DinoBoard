@@ -211,9 +211,8 @@ template <int NPlayers>
 void SplendorBeliefTracker<NPlayers>::observe_public_event(
     int /*actor*/,
     ActionId /*action*/,
-    const std::vector<PublicEvent>& /*pre_events*/,
-    const std::vector<PublicEvent>& post_events) {
-  // deck_flip post-events carry tableau card IDs revealed by drawing
+    const std::vector<PublicEvent>& events) {
+  // deck_flip events carry tableau card IDs revealed by drawing
   // from the deck to replace a bought/reserved card. Public to every
   // observer, so accumulate unconditionally.
   //
@@ -221,7 +220,7 @@ void SplendorBeliefTracker<NPlayers>::observe_public_event(
   // already on state.reserved with viz=1 for the owner — owners read
   // it through state, not through the tracker. Other observers learn
   // nothing from a blind reserve, which is correct.
-  for (const auto& ev : post_events) {
+  for (const auto& ev : events) {
     if (ev.first == "deck_flip") {
       auto cit = ev.second.find("card_id");
       if (cit != ev.second.end()) {

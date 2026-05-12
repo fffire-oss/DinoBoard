@@ -8,10 +8,10 @@ Endpoints:
   GET /ai/sessions/{id}          — status (actions observed, turn, terminal)
 
 Hidden-info games (splendor / azul / loveletter / coup) require the caller
-to pass `pre_events`, `post_events`, and `public_snapshot` on every observe
-call so the AI's belief tracker stays consistent with truth — the action_id
-alone is not enough information for the AI to update hidden state.
-Deterministic games (tictactoe / quoridor) only need `action_id`.
+to pass `events` and `public_snapshot` on every observe call so the AI's
+belief tracker stays consistent with truth — the action_id alone is not
+enough information for the AI to update hidden state. Deterministic games
+(tictactoe / quoridor) only need `action_id`.
 
 AI strength is server-controlled — `simulations` and `temperature` are not
 wire fields. The server resolves them per-game from `web.json`
@@ -71,14 +71,9 @@ class ObserveRequest(BaseModel):
     action_id: int = Field(..., description="The action that was just played by the "
                                             "current player (NOT the AI's own moves — "
                                             "those come from /decide).")
-    pre_events: list[PublicEvent] = Field(
+    events: list[PublicEvent] = Field(
         default_factory=list,
-        description="Public events emitted BEFORE the action resolved. "
-                    "Required for hidden-info games; ignored for deterministic games.",
-    )
-    post_events: list[PublicEvent] = Field(
-        default_factory=list,
-        description="Public events emitted AFTER the action resolved. "
+        description="Public events emitted by this action (in producer order). "
                     "Required for hidden-info games; ignored for deterministic games.",
     )
     public_snapshot: dict = Field(
@@ -148,8 +143,7 @@ def observe(session_id: str, req: ObserveRequest):
     try:
         sess.observe(
             req.action_id,
-            pre_events=[e.model_dump() for e in req.pre_events],
-            post_events=[e.model_dump() for e in req.post_events],
+            events=[e.model_dump() for e in req.events],
             public_snapshot=req.public_snapshot,
         )
     except ValueError as e:

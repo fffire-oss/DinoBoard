@@ -117,31 +117,59 @@ GT 的工作是：**假设一切信息都已固定（hidden 全部确定下来�
 perspective snapshot。GT 不做 belief、不做搜索、不做信息集推断；它就是
 "完整可观察世界下的一台游戏机器"。
 
-每 ply 结束 GT 发 `(actor, action_id, snapshot)`：
+每 ply 结束 GT 给每个 perspective 发一条
+`(actor, action_id, events, public_snapshot)`，载体是
+`PublicEventTrace`（`engine/core/game_interfaces.h:47`）：
 
-- `snapshot.public_snapshot` = 按字段名 keyed 的 `AnyMap`；framework walker 按 schema 顺序遍历 slot，对 `viz[..., viewer]=1` 的 slot 调 `read_field_slot` 写入，viz=0 的 slot 不写。viewer 端按 schema 顺序 `apply_public` 反向写回 state（无独立的 visibility_mask 字段、无 bit-packing）
-- 按需带 `post_events`（schema 声明 mandatory / optional）
+- `events: std::vector<PublicEvent>`——这次 transition 里对该 perspective
+  公开可观察到的事实序列，**只用来喂 tracker**（不再驱动 observer state
+  mutation）。list 内顺序就是 producer 发出的顺序，tracker 把它当一段事实
+  日志吃掉。例：Splendor `deck_flip`（tableau 翻新）/ `self_reserve_deck`
+  （perspective 自己 reserve deck top 时只发给自己）/ `opp_buy_reserved_reveal`
+  （对手买暗压牌时公开那张 reserved 的真实 `card_id`）/ Azul `factory_refill`
+  / Coup `card_revealed` / `exchange_complete` / `self_influence_redraw`
+- `public_snapshot: AnyMap` = 按字段名 keyed 的整张 post-action 公开视图；
+  framework walker 按 schema 顺序遍历 slot，对 `viz[..., viewer]=1` 的 slot
+  调 `read_field_slot` 写入，viz=0 的 slot 不写。viewer 端按 schema 顺序
+  `apply_public` 反向写回 state（无独立的 visibility_mask 字段、无 bit-packing）
+- 每个 `PublicEvent = std::pair<std::string, AnyMap>`；`kind` 字符串由游戏
+  自定（`"deck_flip"` / `"opp_buy_reserved_reveal"` / ...），`payload` 里的
+  key 也由游戏决定。**没有 phase 概念**——observer 不跑 `do_action_fast`，
+  事件没有"动作前 vs 动作后"可挂的时机
 - **`actor` 必传**——多人协议下 current_player 不一定等于 actor（Coup
   challenge 由非当前玩家触发）；event audience（self-reveal = actor only）
   依赖 actor
 
+事件流的语义负载就是 tracker belief 更新——`tracker.observe_public_event(
+actor, action, events)` 把这次 transition 的事实折进观察记忆。observer 的
+session state **不再跑 `do_action_fast`**：public 字段直接被
+`public_state_applier(public_snapshot)` 整张覆盖，hidden 字段被
+`tracker.randomize_unseen` 重采。事件不应用到 state 上，只应用到 tracker 上。
+完整一次 ply 的时序见 §10.2。
+
 ### 1.2 AI session
 
 AI 端面对信息不全。收到
-`observe(actor, action_id, pre_events, public_snapshot, post_events?)`:
+`observe(actor, action_id, events, public_snapshot)`:
 
 - **整张替换** session 公开字段 ← `public_snapshot`(每个 field 走
   `write_field_slot` / SnapshotApplier;不 OR-merge、不重算 viz)
+- 若游戏有 tracker,`events` 喂给 `tracker.observe_public_event(actor,
+  action, events)` 维护观察记忆——事件**只**走 tracker 这一条路
 - viz=0 的 hidden 槽位 ← session 自己结合 tracker 维护:
-  `apply_observation` 末尾跑 `tracker.randomize_unseen(state, session_rng)`,
-  把 hidden 槽位重新采成一个 belief 一致的世界(因此 session 的 hidden
-  内容**不是 truth 的拷贝**,而是 tracker observation 历史下的 sample)
-- perspective 私人事实(自己的 hand)走 `pre_events` 私人通道
-  (`hand_override` 为代表),不在 `public_snapshot` 里。schema 上 hand 的
-  base viz = `owner_only_first_axis` → `viz[hand[me], me]=1`,该 perspective
-  的 session 看到自己的真值
-- 若游戏有 tracker,所有 `pre_events` / `post_events` 也喂给
-  `tracker.observe_public_event(...)` 维护观察记忆
+  `apply_observation` 末尾跑 `tracker.randomize_unseen(state, perspective,
+  session_rng)`,把 hidden 槽位重新采成一个 belief 一致的世界(因此 session
+  的 hidden 内容**不是 truth 的拷贝**,而是 tracker observation 历史下的 sample)
+- perspective 私人事实(自己的 hand、Priest 偷看到的对手手牌、对手公开了
+  card_id 的 reserved 槽 ...)都由 `public_snapshot` 自然带回——只要当前
+  `viz[..., perspective]=1`(不论是 base 就如此还是 rules 临时翻明的),
+  truth 端 walker 在 perspective 自己的 snapshot 里就会写入真值,observer
+  端 `apply_public` 整张覆盖时直接落回对应槽位。schema 的 base viz 只决定
+  "未发生任何 reveal 时谁能看",运行时翻面完全跟着 rules 跑(§4)
+
+**observer 不跑 `do_action_fast`**——信息不全跑没有意义,observer 只能
+sample 一个世界跑,何苦呢。决策时要"已采样的具体世界"是 sim 的事(§1.3),
+session state 只承担"接 snapshot + 走 tracker"的职责。
 
 **AI 端永远不在 observe 阶段重新算 viz**——viz 只在 GT 端算一次、协议
 传过来。运行时正确性 = 数据传输完整性。
@@ -322,7 +350,7 @@ walker，对每个 viz=0（或 `belief_filled=1`）的槽位调虚的
 
 | 消费者 | 何时调用 | 怎么读 | 出口 |
 |---|---|---|---|
-| **snapshot** | GT 每 ply | 按 schema 序遍历 MaskedState:对每个 `is_all_public` 字段调 `read_field_slot` 写 `public_snapshot` dict;owner-only 字段不进 dict(走 pre_events / post_events 私人通道) | wire 序列化 |
+| **snapshot** | GT 每 ply | 按 schema 序遍历 MaskedState:对每个 `viz[..., viewer]=1` 的 slot 调 `read_field_slot` 写 `public_snapshot` dict;viz=0 的 slot 不写。base viz 是 owner-only / all_hidden 的字段,如果 rules 临时翻成 viewer 可见(LL Priest peek、Splendor `opp_buy_reserved_reveal` 之后的对手 reserved 槽),也走这条路自然带回 | wire 序列化 |
 | **hash** | sim descent 每步 | 按 schema 序遍历，每槽位调 `hash_field_slot(name, idx)` 合 digest，placeholder 合固定 sentinel | `StateHash64` (DAG key) |
 | **encoder** | sim 新节点 | `encode_with_masked(masked, perspective, ...)` | `vector<float>` (NN input) |
 
@@ -464,20 +492,21 @@ claim 分布，GT 推进游戏不读这个，network 想拿来当特征。
 
 ```cpp
 class IBeliefTracker {
-  void init(int perspective, const AnyMap& initial_observation);
+  void init(const AnyMap& initial_observation);
   void observe_public_event(int actor, ActionId action,
-                            const std::vector<PublicEvent>& pre_events,
-                            const std::vector<PublicEvent>& post_events);
-  void randomize_unseen(IGameState& state, std::mt19937& rng) const;
+                            const std::vector<PublicEvent>& events);
+  void randomize_unseen(IGameState& state, int observer,
+                        std::mt19937_64& rng) const;
+  std::unique_ptr<IBeliefTracker> clone() const;
   AnyMap serialize() const;            // 调试 / 测试用
-  int perspective_player() const;
 };
 ```
 
-实现可以从 `pre_events + post_events` 现场算（推荐），或维护 incremental
-状态（性能考虑）。tracker 接口里**没有 `IGameState*`**——`init` 拿
-`AnyMap`、`observe_public_event` 拿事件流；只有 `randomize_unseen` 拿
-state，但那是**写**端（向 viz=0 槽填值），不是读真值的入口。
+实现可以从 `events` 现场算（推荐），或维护 incremental 状态（性能考虑）。
+tracker 接口里**没有 `IGameState*`**——`init` 拿 `AnyMap`、
+`observe_public_event` 拿事件流；只有 `randomize_unseen` 拿 state，但那是
+**写**端（向 viz=0 槽填值），不是读真值的入口。`observer` 形参由
+`randomize_unseen` 传入,tracker 自身 perspective-agnostic。
 
 寿命：session 启动时 `init` 一次,之后每收到 public event 调一次
 `observe_public_event`。MCTS sim 入口**clone 一份 sim_tracker**:先调
@@ -888,46 +917,42 @@ selfplay 也不例外:GT runner 持有的 truth state 只用来推进游戏 + �
 
 **结构性落地**:`selfplay_runner` / `arena_runner` / `heuristic_runner`
 对每个 seat 持有一份独立的 `IGameState`(`per_seat_states[p]`),每步
-truth 在 `step_rng` 上跑完 `do_action_fast` 之后,runner 把每个 seat
+truth 在 `gt_rng` 上跑完 `do_action_fast` 之后,runner 把每个 seat
 的 session state 通过公开事件协议推进:
 
 ```
 per_perspective_extractor(truth_before, action, truth_after, p)
-  → PublicEventTrace evt_p
-for (kind, payload) in evt_p.pre_events:
-  public_event_applier(seat[p], kPreAction, kind, payload)
-rules.do_action_fast(seat[p], action, view_step_rng[p])
-  // ↑ view_step_rng 由 (episode_seed, "selfplay.view_step", ply, p)
-  //   独立派生,与 GT step_rng 同根但不同支路
-for (kind, payload) in evt_p.post_events:
-  public_event_applier(seat[p], kPostAction, kind, payload)
+  → PublicEventTrace evt_p   // {events, public_snapshot}
+seat[p].begin_step()
 public_state_applier(seat[p], evt_p.public_snapshot)
   // ↑ 用 truth-side 抽出来的公开字段快照覆盖回 session 的 public 字段
-per_perspective_trackers[p]->observe_public_event(...)
-per_perspective_trackers[p]->randomize_unseen(seat[p], freshen_rng[p])
-  // ↑ session 的 hidden 字段重采样,不再是 do_action_fast 留下的值
+per_perspective_trackers[p]->observe_public_event(actor, action, evt_p.events)
+  // ↑ 事件只折进 tracker,不应用到 session state
+per_perspective_trackers[p]->randomize_unseen(seat[p], p, freshen_rng[p])
+  // ↑ session 的 hidden 字段重新从 belief 采样,与 truth hidden 无关
 ```
 
-session state 的两个字段类经此流程后:
+session state **不再调 `do_action_fast`**——信息不全跑没有意义,session
+只接 snapshot + 走 tracker。两类字段经此流程后:
 - **public 字段** 每步由 `public_state_applier` 从公开事件流的 snapshot
-  覆盖,不是 `do_action_fast` 在 sampled-hidden 世界上自己推算出来的
-  (避免任何"truth 推算结果"渗进 session)
+  覆盖,truth 端 walker 在每个 perspective 各自 snapshot 里只写
+  `viz[..., p]=1` 的 slot,observer 端整张替换
 - **hidden 字段** session 入口由 `randomize_unseen` 重采样,sim 入口由
   `sim_tracker.randomize_unseen` 再重采样一次,根本不是 truth 的拷贝
 
 调用方决定要不要走 per-seat 化:`per_seat_states` 入参为空时 runner 退
-回 truth 路径(LL/Coup §G 之前的兼容档,详见 `OVERVIEW_LANDING.md` §A
-范围约束)。In-scope 的 TTT/Quoridor/Azul/Splendor 已经走 per-seat 路径。
+回 truth 路径(未 in-scope 的游戏走这条兼容档)。In-scope 的
+TTT/Quoridor/Azul/Splendor/LoveLetter 都走 per-seat 路径。
 
 **测试守护**:
 
 - `test_api_mcts_policy_invariance` 守护:相同观察序列下 selfplay 路径
   和 web/API 路径的 root visit 分布一致——若 MCTS 任何一处偷读 truth 的
   hidden 字段,分布就会发散。
-- `test_selfplay_no_truth_in_ai_path` 守护:selfplay 在 §A.a 四款
-  in-scope 游戏上(a) 同 seed 跑两次必须完全可重现 AI 决策,(b) 同一份
-  observation trace 喂给两个不同 seed 的 API session,各自 public state
-  必须收敛——session 公开视图不允许依赖 session 自身的 hidden RNG。
+- `test_selfplay_no_truth_in_ai_path` 守护:selfplay 在五款 in-scope 游戏
+  上(a) 同 seed 跑两次必须完全可重现 AI 决策,(b) 同一份 observation
+  trace 喂给两个不同 seed 的 API session,各自 public state 必须收敛——
+  session 公开视图不允许依赖 session 自身的 hidden RNG。
 - `test_encoder_only_reads_masked_state` 守护:encoder 输出永远不出现
   `kPlaceholder*` sentinel——任何 game encoder 漏处理 hidden 槽位都会
   让 INT32_MIN / INT8_MIN 漏到 feature 里被这条测试抓住。
@@ -941,26 +966,45 @@ session state 的两个字段类经此流程后:
 
 ### 10.1 Snapshot 格式
 
-GT 每 ply 给每个 perspective 发一份消息,核心是 `public_snapshot` dict——
-**所有 perspective 都能看到** 的字段(schema 里 `is_all_public(base_viz)`
-为真的字段,经 walker 自动遍历)。perspective-private 字段(viz=1 to me、
-viz=0 to others)走专门的 `pre_events` / `post_events` 通道(`hand_override`
-为代表,LL/Coup 私人翻面用),不进 `public_snapshot`:
+GT 每 ply 给每个 perspective 发一份消息,载体是
+`PublicEventTrace`(`engine/core/game_interfaces.h:47`),两个组成部分:
 
 ```json
 {
   "actor": <int>,
   "action_id": <int>,
-  "pre_events":  [<PublicEvent>, ...],   // 私人 reveal 等
-  "public_snapshot": { "<field_name>": <value>, ... },
-  "post_events": [<PublicEvent>, ...]
+  "events":  [["<kind>", {<payload>}], ...],
+  "public_snapshot": { "<field_name>": <value>, ... }
 }
 ```
+
+- **`events`**:这次 transition 里对该 perspective 公开可观察到的事实序列,
+  **只用来喂 tracker**(observer 不再跑 `do_action_fast`,事件没有 in-rules
+  的时机可以挂)。list 内顺序就是 producer 发出的顺序。例:Splendor
+  `deck_flip`(tableau 翻新)/ `self_reserve_deck`(perspective 自己 reserve
+  时只发给自己) / `opp_buy_reserved_reveal`(对手买暗压牌时公开那张
+  reserved 的真实 card_id) / Azul `factory_refill` / Coup `card_revealed` /
+  `exchange_complete` / `self_influence_redraw` / `self_exchange_draw`
+- **`public_snapshot`**:整张 post-action 公开字段的 `AnyMap field_name ->
+  value`(全公开字段直接进 dict,无 visibility_mask 字段、无 bit-packing)
+
+`PublicEvent = std::pair<std::string kind, AnyMap payload>`,kind 字符串和
+payload key 都由游戏自定。**没有 phase 概念**——pre/post 之分只在 observer
+跑 `do_action_fast` 时有意义,observer 不跑后该区分就没意义了。一份 trace
+由 `PublicEventExtractor` 在 selfplay 跑完 truth 一步后做 (state_before,
+action, state_after, perspective) diff 生成(`engine/core/game_registry.h`)。
 
 `public_snapshot` 是 `AnyMap field_name -> value`(全公开字段直接进 dict,
 无 visibility_mask 字段、无 bit-packing)。observer 端 `apply_observation`
 按 schema 序对每个 field 调 `write_field_slot` / SnapshotApplier,**整张
 替换** session 公开字段——不 OR-merge、不重算 viz。
+
+> **为什么 state mutation 不再走 events**:observer 不跑 `do_action_fast`
+> ——信息不全跑没有意义,session 只能从自己 sample 出的 hidden 上算逻辑,
+> 算出的值随后会被 snapshot 覆盖、被 `randomize_unseen` 重采,纯属浪费。
+> 所以事件没有"动作前 vs 动作后"的时序需求,合并成单一 list 就够了。
+> public 字段每步从 `public_snapshot` 整张覆盖,hidden 字段每步由
+> `randomize_unseen` 重采,session state 的最终一致性靠这两条担保。
 
 实现可走两条路径(wire 一致):
 - **walker 化路径**:`viz::serialize_public` / `viz::apply_public`
@@ -989,7 +1033,7 @@ LL 自己的开局手牌、Coup 自己的两张 influence cid),由
 `secrets.randbits(64)` 生成。
 
 `decide()` **不改 session 状态**——只跑 search 返 action_id。GT 收到
-action_id 后在自己端 commit + 抽真随机 + 算 snapshot + 算 post_events，
+action_id 后在自己端 commit + 抽真随机 + 算 snapshot + 算 events，
 再走 `observe` 把消息回灌给 AI session。AI 自己的 action 也走 observe
 端点（对所有玩家对称）。
 

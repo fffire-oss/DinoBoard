@@ -47,28 +47,19 @@ class IBeliefTracker {
 
   // Initialize at game start from the public initial observation.
   // `initial_observation` carries observer-visible setup (seat count,
-  // public board layout, …).
-  //
-  // Transition note: callers also stash `__perspective_player` (int) in
-  // the AnyMap. Coup (pre-§G.2) is the last remaining tracker that reads
-  // this to decide which slots own_self vs. opp at randomize_unseen time.
-  // LoveLetter migrated its perspective-private knowledge to state.viz
-  // in §G.1 (rules-driven `reveal_slot_to` / `reset_to_base` /
-  // `swap_slot_owned`); its tracker no longer reads `__perspective_player`.
-  // Once §G.2 lands and Coup follows suit, this key becomes redundant
-  // and the convention is dropped.
+  // public board layout, …). Trackers that need the observer's seat
+  // index for randomize_unseen receive it via the `observer` argument
+  // there, not at init time — `init` is perspective-agnostic.
   virtual void init(const AnyMap& initial_observation) = 0;
 
   // Update after each action using ONLY the public event stream.
   //
   //   actor: the player whose action was taken
   //   action: the ActionId taken by `actor`
-  //   pre_events: events describing hidden info the action depends on
-  //       (e.g. Baron target's hand reveal in Love Letter). Conceptually
-  //       applied BEFORE the action during event replay.
-  //   post_events: events describing random outcomes or post-effects the
-  //       action produced (e.g. Splendor deck flip). Conceptually applied
-  //       AFTER the action.
+  //   events: public observations the perspective player can derive from
+  //       this transition (e.g. Splendor deck flip, Coup card_revealed).
+  //       List order is the producer's emission order; the tracker treats
+  //       it as an observation log.
   //
   // Tracker must update its belief state solely from these payloads.
   // Payload kinds and keys are defined by the game in
@@ -76,8 +67,7 @@ class IBeliefTracker {
   virtual void observe_public_event(
       int actor,
       ActionId action,
-      const std::vector<PublicEvent>& pre_events,
-      const std::vector<PublicEvent>& post_events) = 0;
+      const std::vector<PublicEvent>& events) = 0;
 
   // Randomize all unseen information in-place, producing a world
   // consistent with `observer`'s information set.

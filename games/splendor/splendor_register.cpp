@@ -18,7 +18,6 @@ namespace {
 using board_ai::AnyMap;
 using board_ai::ActionId;
 using board_ai::IGameState;
-using board_ai::EventPhase;
 using board_ai::PublicEvent;
 using board_ai::PublicEventTrace;
 
@@ -376,7 +375,7 @@ PublicEventTrace extract_events(
       payload["player"] = std::any(actor);
       payload["slot"] = std::any(idx);
       payload["card_id"] = std::any(static_cast<int>(db.reserved[actor][static_cast<size_t>(idx)]));
-      out.pre_events.emplace_back("opp_buy_reserved_reveal", std::move(payload));
+      out.events.emplace_back("opp_buy_reserved_reveal", std::move(payload));
     }
   }
 
@@ -391,7 +390,7 @@ PublicEventTrace extract_events(
         payload["tier"] = std::any(t);
         payload["slot"] = std::any(slot);
         payload["card_id"] = std::any(after_id);
-        out.post_events.emplace_back("deck_flip", std::move(payload));
+        out.events.emplace_back("deck_flip", std::move(payload));
       }
     }
   }
@@ -409,7 +408,7 @@ PublicEventTrace extract_events(
         payload["player"] = std::any(actor);
         payload["slot"] = std::any(slot);
         payload["card_id"] = std::any(after_id);
-        out.post_events.emplace_back("self_reserve_deck", std::move(payload));
+        out.events.emplace_back("self_reserve_deck", std::move(payload));
       }
     }
   }
@@ -510,90 +509,6 @@ void apply_public_state(IGameState& state, const AnyMap& snap) {
   // writes live in splendor_rules.cpp::sync_splendor_reserved_viz to keep
   // the I1 invariant (rules.cpp is the sole writer of viz_).
   board_ai::splendor::sync_splendor_reserved_viz<NPlayers>(state);
-}
-
-template <int NPlayers>
-void apply_event(IGameState& state, EventPhase phase,
-                 const std::string& kind, const AnyMap& payload) {
-  auto& s = board_ai::checked_cast<SplendorState<NPlayers>>(state);
-  if (phase == EventPhase::kPreAction) {
-    if (kind == "opp_buy_reserved_reveal") {
-      const int target_player = std::any_cast<int>(payload.at("player"));
-      const int slot = std::any_cast<int>(payload.at("slot"));
-      const int cid = std::any_cast<int>(payload.at("card_id"));
-      mutate_persistent<NPlayers>(s, [&](SplendorData<NPlayers>& d) {
-        if (target_player >= 0 && target_player < NPlayers &&
-            slot >= 0 && slot < d.reserved_size[target_player]) {
-          d.reserved[target_player][slot] = static_cast<std::int16_t>(cid);
-          d.reserved_visible[target_player][slot] = 1;
-        }
-      });
-      return;
-    }
-    throw std::runtime_error(
-        "splendor: unexpected pre-action event '" + kind + "'");
-  }
-  if (kind == "deck_flip") {
-    const int tier = std::any_cast<int>(payload.at("tier"));
-    const int slot = std::any_cast<int>(payload.at("slot"));
-    const int cid = std::any_cast<int>(payload.at("card_id"));
-    mutate_persistent<NPlayers>(s, [&](SplendorData<NPlayers>& d) {
-      if (cid >= 0) {
-        d.tableau[tier][slot] = static_cast<std::int16_t>(cid);
-        if (slot + 1 > d.tableau_size[tier]) d.tableau_size[tier] = static_cast<std::int8_t>(slot + 1);
-        // Remove cid from AI's deck if present (AI might have had this
-        // card scheduled for a different slot).
-        auto& deck = d.decks[tier];
-        deck.erase(std::remove(deck.begin(), deck.end(),
-                               static_cast<std::int16_t>(cid)), deck.end());
-      } else {
-        d.tableau[tier][slot] = -1;
-        // Slot went empty; shrink size if we popped off the end.
-        int new_size = 0;
-        for (int s2 = 0; s2 < 4; ++s2) {
-          if (d.tableau[tier][s2] >= 0) new_size = s2 + 1;
-        }
-        d.tableau_size[tier] = static_cast<std::int8_t>(new_size);
-      }
-    });
-  } else if (kind == "self_reserve_deck") {
-    const int target_player = std::any_cast<int>(payload.at("player"));
-    const int slot = std::any_cast<int>(payload.at("slot"));
-    const int cid = std::any_cast<int>(payload.at("card_id"));
-    if (target_player < 0 || target_player >= NPlayers) {
-      throw std::runtime_error("splendor self_reserve_deck: bad player");
-    }
-    mutate_persistent<NPlayers>(s, [&](SplendorData<NPlayers>& d) {
-      if (slot < 0 || slot >= 3 || slot >= d.reserved_size[target_player]) {
-        throw std::runtime_error(
-            "splendor self_reserve_deck: slot out of range for player " +
-            std::to_string(target_player));
-      }
-      auto& new_card_ref = d.reserved[target_player][slot];
-      const int old_cid = new_card_ref;
-      new_card_ref = static_cast<std::int16_t>(cid);
-
-      const auto& pool = board_ai::splendor::splendor_card_pool();
-      const int tier = (cid >= 0 && cid < static_cast<int>(pool.size()))
-          ? pool[cid].tier - 1 : -1;
-      if (tier >= 0 && tier < 3) {
-        auto& deck = d.decks[tier];
-        // Remove cid from deck (it's now in player's hand).
-        deck.erase(std::remove(deck.begin(), deck.end(),
-                               static_cast<std::int16_t>(cid)), deck.end());
-        // Push old_cid back into deck if it was distinct and valid.
-        if (old_cid >= 0 && old_cid != cid &&
-            old_cid < static_cast<int>(pool.size())) {
-          const int old_tier = pool[old_cid].tier - 1;
-          if (old_tier >= 0 && old_tier < 3) {
-            d.decks[old_tier].push_back(static_cast<std::int16_t>(old_cid));
-          }
-        }
-      }
-    });
-  } else {
-    throw std::runtime_error("splendor: unknown event kind '" + kind + "'");
-  }
 }
 
 }  // namespace splendor_events
@@ -785,7 +700,6 @@ board_ai::GameBundle make_splendor(const std::string& game_id, std::uint64_t see
   b.action_descriptor = describe_splendor<NPlayers>;
   b.heuristic_picker = splendor_heuristic::pick<NPlayers>;
   b.public_event_extractor = splendor_events::extract_events<NPlayers>;
-  b.public_event_applier = splendor_events::apply_event<NPlayers>;
   b.public_state_applier = splendor_events::apply_public_state<NPlayers>;
   b.initial_observation_extractor = splendor_events::extract_initial_observation<NPlayers>;
   b.initial_observation_applier = splendor_events::apply_initial_observation<NPlayers>;

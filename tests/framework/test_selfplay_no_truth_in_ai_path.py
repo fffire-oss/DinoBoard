@@ -208,8 +208,7 @@ def test_api_session_independent_of_truth_seed(game_id):
         for step in trace:
             sess.apply_observation(
                 step["action"],
-                pre_events=step["pre_events"],
-                post_events=step["post_events"],
+                events=step["events"],
                 public_snapshot=step.get("public_snapshot", {}),
             )
         return sess.get_state_dict()

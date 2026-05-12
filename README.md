@@ -19,7 +19,7 @@ DinoBoard walks it once and turns the result into **a reusable engine plus a cal
 - **10k+ lines of C++/Python core** — MCTS, belief tracker, training, web, analysis, all generic
 - **~2000 lines to add a new game** — rules + feature encoder + JSON config; the framework owns the rest
 - **Two-layer test architecture** — framework invariants run on a 3-game matrix carrier (quoridor + azul + loveletter) covering every structural feature minimally; **each new game gets its own self-contained acceptance checklist** under `tests/<game>/`, so "this game is done" is a single green pytest run
-- **6 games covering 4 paradigms** — perfect info, symmetric randomness, asymmetric hidden info, bluffing
+- **Games covering 4 paradigms** — perfect info, symmetric randomness, asymmetric hidden info, bluffing
 - **Observation-only REST API for third parties** — digital board game apps / platforms / companion apps call the AI directly without sharing any game-state code or embedding the C++ engine
 - **One code path from training to web to external API** — the same C++ MCTS serves self-play, live play, replay analysis, and third-party integration, with zero "training vs. production drift"
 
@@ -44,7 +44,7 @@ DELETE /ai/sessions/{id}                  → end the session
 
 **The caller does not need the game-state code, the C++ engine, or any knowledge of MCTS.** As long as they can translate their own game events into action ids + public events, they can use a superhuman AI as a black-box opponent or coach.
 
-This is not a stripped-down interface — it runs **the exact same MCTS + belief tracker + ONNX inference as self-play training**. The observation-only design is a structural constraint (the `IBeliefTracker::observe_public_event()` signature has no `IGameState*` parameter), which means:
+This is not a stripped-down interface — it runs **the exact same MCTS + belief tracker + ONNX inference as self-play training**. The observation-only design is a structural constraint (`IBeliefTracker::init`, `observe_public_event` and `randomize_unseen` have no read access to truth — `init`/`observe_public_event` carry only `AnyMap` / event streams, `randomize_unseen` only writes into the observer's own session state), which means:
 
 - AI decisions depend only on observation history and can never peek at ground truth → **cheating is structurally impossible**
 - The same AI serves self-play training, web play, and the third-party API → **one training investment, three deployment surfaces**
@@ -69,7 +69,7 @@ Self-play, evaluation, web play, replay analysis — **all run on the same C++ M
 ### Engineering discipline
 
 - Two-layer tests: framework invariants on a fixed 3-game matrix; each game has its own complete checklist (`tests/<game>/`) including game-specific rule conservation laws (token / card / piece totals, capacity bounds, reachability), so a new game's readiness is a single self-contained green run
-- `docs/KNOWN_ISSUES.md` documents 22 shipped bugs and design trade-offs — **every pothole the next integrator gets to skip**
+- `docs/KNOWN_ISSUES.md` documents 30+ shipped bugs and design trade-offs — **every pothole the next integrator gets to skip**
 - Strict no-fallback discipline (see `CLAUDE.md`): silent degradation is banned, errors must propagate to the surface
 
 ---
@@ -197,7 +197,7 @@ cd platform && python -m uvicorn app:app --host 0.0.0.0 --port 8000
 open http://localhost:8000
 ```
 
-Features: 6 games, three difficulty tiers (Heuristic / Casual / Expert), seat selection for multi-player variants, undo, smart hints, replay with per-move loss analysis.
+Features: three difficulty tiers (Heuristic / Casual / Expert), seat selection for multi-player variants, undo, smart hints, replay with per-move loss analysis.
 
 ---
 
@@ -216,7 +216,7 @@ Features: 6 games, three difficulty tiers (Heuristic / Casual / Expert), seat se
 - **[Game development guide](docs/guide/GAME_DEVELOPMENT_GUIDE.md)** — single source of truth for adding a new game
 - **[Framework contract & MCTS algorithm](ALGORITHM_OVERVIEW.md)** — the framework's data-flow contract (schema → walker → MaskedState → three consumers) and the ISMCTS DAG-search derivation, in one canonical doc
 - **[New game test guide](docs/guide/NEW_GAME_TEST_GUIDE.md)** — 11-step acceptance workflow + the two-layer test architecture
-- **[Known issues & trade-offs](docs/KNOWN_ISSUES.md)** — BUG-001 through BUG-022 postmortems plus design decisions
+- **[Known issues & trade-offs](docs/KNOWN_ISSUES.md)** — BUG-001 through BUG-036 postmortems plus design decisions (DEC-001 / DEC-002)
 
 ---
 

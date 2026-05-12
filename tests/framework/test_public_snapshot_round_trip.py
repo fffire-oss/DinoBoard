@@ -117,8 +117,7 @@ def test_snapshot_applier_round_trip_at_each_ply(game_id):
         # to verify the applier is a correct inverse of the extractor
         # independently of apply_observation's full flow.
         obs_gs.apply_observation(
-            step["action"], pre_events=step["pre_events"],
-            post_events=step["post_events"],
+            step["action"], events=step["events"],
             public_snapshot=step["public_snapshot"])
         snap = step["public_snapshot"]
         obs_gs.apply_public_snapshot(snap)

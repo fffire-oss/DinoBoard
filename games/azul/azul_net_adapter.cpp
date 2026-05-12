@@ -121,8 +121,7 @@ template <int NPlayers>
 void AzulBeliefTracker<NPlayers>::observe_public_event(
     int /*actor*/,
     ActionId /*action*/,
-    const std::vector<PublicEvent>& /*pre_events*/,
-    const std::vector<PublicEvent>& /*post_events*/) {
+    const std::vector<PublicEvent>& /*events*/) {
   // Azul has no explicit belief state (bag is shuffled from full counts in
   // randomize_unseen; tracker doesn't need to maintain progress).
 }

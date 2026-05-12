@@ -47,8 +47,7 @@ class SplendorBeliefTracker final : public IBeliefTracker {
   void observe_public_event(
       int actor,
       ActionId action,
-      const std::vector<PublicEvent>& pre_events,
-      const std::vector<PublicEvent>& post_events) override;
+      const std::vector<PublicEvent>& events) override;
   void randomize_unseen(IGameState& state, int observer,
                         std::mt19937_64& rng) const override;
   std::unique_ptr<IBeliefTracker> clone() const override {

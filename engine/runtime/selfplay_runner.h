@@ -45,8 +45,7 @@ struct SelfplayObservationTrace {
   int ply = 0;
   int actor = 0;                           // player whose action this was
   ActionId action = -1;
-  std::vector<std::pair<std::string, AnyMap>> pre_events{};
-  std::vector<std::pair<std::string, AnyMap>> post_events{};
+  std::vector<std::pair<std::string, AnyMap>> events{};
   AnyMap public_snapshot{};
   std::map<std::string, std::any> belief_snapshot_after{};
 };
@@ -135,7 +134,6 @@ class FilteredRulesWrapper final : public IGameRules {
 };
 
 using PublicEventExtractor = board_ai::PublicEventExtractor;
-using PublicEventApplier = board_ai::PublicEventApplier;
 using PublicStateApplier = board_ai::PublicStateApplier;
 using InitialObservationExtractor = board_ai::InitialObservationExtractor;
 
@@ -155,13 +153,13 @@ SelfplayEpisodeResult run_selfplay_episode(
     // Optional per-seat session state: when non-empty (size == num_players),
     // MCTS/encoder/heuristic/legal_actions read from per_seat_states[player]
     // instead of the truth state. Each seat's session state is advanced via
-    // the public-event protocol (do_action_fast on a sampled-hidden world,
-    // then public_state_applier overwrites public fields, then
-    // tracker.randomize_unseen freshens hidden) — never copied from truth.
-    // When empty: AI path reads truth state (legacy fallback for games whose
-    // tracker still holds perspective-baked knowledge, e.g. LL/Coup pre-§G).
+    // the public-event protocol (public_state_applier overwrites public
+    // fields from the GT-side snapshot, tracker.observe_public_event(events)
+    // updates belief, then tracker.randomize_unseen freshens hidden) —
+    // never copied from truth, never runs do_action_fast on the session.
+    // When empty: AI path reads truth state (legacy fallback for games
+    // whose tracker still holds perspective-baked knowledge).
     std::vector<IGameState*> per_seat_states = {},
-    PublicEventApplier public_event_applier = nullptr,
     PublicStateApplier public_state_applier = nullptr,
     const IFeatureEncoder* encoder = nullptr,
     const search::ITailSolver* tail_solver = nullptr,

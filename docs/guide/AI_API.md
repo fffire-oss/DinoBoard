@@ -9,7 +9,7 @@
 
 - **No state crosses the boundary.** API 只在 `action_id`（整数）和事件（`{kind, payload}` 字典）这两种形态上通信。第三方**从不**需要向 AI 传递游戏的完整 state——所有观察都以动作和事件的形式流入。
 - **AI 自己维护所看到的一切。** 每个 session 内部持有一份 "从 AI 视角观察到的" 游戏 state + belief tracker。接入方只负责把 ground truth 的动作和公开事件翻成 API 请求。
-- **Public state 完全由消息流重建**。每次 `observe` 之后，session 的所有公开字段（牌面、分数、棋盘等 schema 中 `viz[..., viewer]=1` 的 slot）都从 `public_snapshot` 反向覆写——不依赖 `do_action_fast` 在采样隐藏值上的输出，所以即使 AI 的采样和 truth 不同，observer 看到的公开局面也跟 truth byte-equal（`test_public_snapshot_round_trip` 守护）。
+- **Public state 完全由消息流重建**。每次 `observe` 之后，session 的所有公开字段（牌面、分数、棋盘等 schema 中 `viz[..., viewer]=1` 的 slot）都从 `public_snapshot` 反向覆写——AI 不会重放规则（observer 路径上没有 `do_action_fast`），所以即使 AI 的采样和 truth 不同，observer 看到的公开局面也跟 truth byte-equal（`test_public_snapshot_round_trip` 守护）。
 - **Hidden state 是采样、不是拷贝**。AI 的 hidden 字段由 `seed` 控制的 RNG 通过 belief tracker **每次 observe 后重新采样**，跟 truth 在数值上独立。`seed` 只影响 hidden 部分；public 部分跟 seed 无关（`test_public_hash_excludes_internal_rng` 守护）——这意味着接入方的 `seed` 选择不会让 AI 看到的公开局面和 truth 漂移。
 
 ---
@@ -22,7 +22,7 @@
 2. **调 `POST /ai/sessions`** 创建 session，拿到 `session_id`。
 3. **每次 ground truth 发生一个动作**（不管是 AI 自己的还是对手的）：
    - 调 `POST /ai/sessions/{id}/observe` 把 `action_id` 喂给 AI
-   - 对有隐藏信息的游戏，需要同时传 `pre_events` / `post_events`（见专属文档）
+   - 对有隐藏信息的游戏，需要同时传 `events` 和 `public_snapshot`（见专属文档）
 4. **轮到 AI 决策时**（ground truth 的 `current_player == my_seat`）：
    - 调 `POST /ai/sessions/{id}/decide` 获取 AI 选择的 `action_id`
    - 把这个动作应用到 ground truth 上
@@ -72,12 +72,12 @@
 ```json
 {
   "action_id": 67,
-  "pre_events": [],
-  "post_events": []
+  "events": [],
+  "public_snapshot": {}
 }
 ```
 
-`pre_events` / `post_events` 对应游戏特定的公开事件（如 Splendor 的 `deck_flip`、Love Letter 的 `hand_override`）。**完全可观察的游戏**（TicTacToe、Quoridor）这两个字段总是 `[]`。
+`events` 是这次 transition 里公开可观察到的事件序列（如 Splendor 的 `deck_flip`、Love Letter 的 `hand_override`），按 producer 发出的顺序排列；只喂给 belief tracker，不会作用到 state 上。`public_snapshot` 是 GT 端这一步之后所有公开 slot 的值——observer 用它整体覆写自己 session 的公开部分。**完全可观察的游戏**（TicTacToe、Quoridor）`events` 和 `public_snapshot` 都传 `[]` / `{}` 即可，session 通过 `do_action_fast` 重放动作推进。
 
 事件格式：
 ```json
@@ -153,12 +153,12 @@ echo "AI plays: $MOVE"
 # 4. 把 AI 的动作回喂 observe（让 AI 内部状态同步）
 curl -sX POST http://localhost:8000/ai/sessions/$SID/observe \
   -H 'Content-Type: application/json' \
-  -d "{\"action_id\":$MOVE,\"pre_events\":[],\"post_events\":[]}"
+  -d "{\"action_id\":$MOVE,\"events\":[],\"public_snapshot\":{}}"
 
 # 5. 对手出招（假设对手选了 action 13）
 curl -sX POST http://localhost:8000/ai/sessions/$SID/observe \
   -H 'Content-Type: application/json' \
-  -d '{"action_id":13,"pre_events":[],"post_events":[]}'
+  -d '{"action_id":13,"events":[],"public_snapshot":{}}'
 
 # 6. 轮到 AI 再决策，回到步骤 2 ...
 
@@ -170,13 +170,13 @@ curl -sX DELETE http://localhost:8000/ai/sessions/$SID
 
 ## 公开事件（隐藏信息游戏必读）
 
-对有隐藏信息的游戏（Splendor / Azul / Love Letter / Coup），接入方必须在 `observe` 里附上正确的公开事件流，否则 AI 的内部 state 会偏离 ground truth。事件由 ground truth 端计算（"我的状态在这一步之前和之后发生了什么 observer 能看到的变化"），AI 端接收后把它们应用到自己的 state 和 belief tracker 上。
+对有隐藏信息的游戏（Splendor / Azul / Love Letter / Coup），接入方必须在 `observe` 里附上正确的 `events` 列表和 `public_snapshot`，否则 AI 的 belief tracker 会偏离 ground truth、observer 的公开 state 也会失真。
 
-两种时序：
-- **pre_events**：动作影响依赖隐藏信息时（如 Love Letter 的 Baron 对比双方手牌），需在 AI 执行 `do_action_fast` 之前把公开的牌值 reveal 给 AI，否则 AI 用采样的占位牌去计算会得到错的结果
-- **post_events**：随机结果（如 Splendor 翻新 tableau 卡、Love Letter 下家抽牌）在动作之后 reveal
+事件流和 snapshot 各管一摊：
+- **`events`**：这次 transition 里 observer 能看到的公开事实序列（牌被翻开、tokens 被支付、谁宣称了什么角色），由 GT 端计算后 broadcast，**只喂给 belief tracker** 用来更新对隐藏信息的推断；不会作用到 observer 的 state 上。list 内顺序就是 producer 发出的顺序，tracker 只把它当事实序列消费，不区分动作前后。
+- **`public_snapshot`**：动作之后 GT 端所有公开 slot 的值（按 schema field name 索引）。observer 收到后整体覆写自己 session 的公开部分——observer 路径上**没有 `do_action_fast`**，公开局面完全靠 snapshot 反向重建。
 
-具体每个游戏发什么事件、什么时候发、payload 格式，详见每个游戏的专属 `docs/games/<game>_api.md`。
+具体每个游戏发什么事件、payload 格式、哪些 slot 在 snapshot 里，详见每个游戏的专属 `docs/games/<game>_api.md`。
 
 ---
 
@@ -207,7 +207,7 @@ curl -sX DELETE http://localhost:8000/ai/sessions/$SID
 
 1. **动作空间总览**：总动作数，高层分类
 2. **逐项编码表**：每个 action_id 范围对应什么含义（用 `offset` / `count` 和可读的公式表达）
-3. **事件列表**（若有隐藏信息）：每种 kind、payload 结构、发的时机（pre/post）、谁能看到
+3. **事件列表**（若有隐藏信息）：每种 kind、payload 结构、谁能看到
 4. **多人变体差异**：2p / 3p / 4p 的动作空间差异（如果有）
 5. **序列化的 state_dict 字段**（若第三方想读 `status`）：哪些是公开、哪些是私有
 6. **一个完整的示例对局**：curl 或 Python 代码演示

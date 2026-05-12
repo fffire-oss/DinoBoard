@@ -33,11 +33,11 @@ SelfplayEpisodeResult run_heuristic_episode(
     // (size == num_players), the heuristic / encoder / legal-action
     // queries on the AI path read from per_seat_states[player] instead of
     // truth. Each seat's session state is advanced via the public-event
-    // protocol after each truth do_action_fast. Empty vector: AI path
-    // reads truth (LL/Coup pre-§G fallback).
+    // protocol after each truth do_action_fast (public_state_applier from
+    // snapshot, tracker.observe_public_event(events), randomize_unseen).
+    // Empty vector: AI path reads truth (legacy fallback).
     std::vector<IBeliefTracker*> per_perspective_trackers = {},
     std::vector<IGameState*> per_seat_states = {},
-    PublicEventApplier public_event_applier = nullptr,
     PublicStateApplier public_state_applier = nullptr,
     PublicEventExtractor public_event_extractor = nullptr,
     InitialObservationExtractor initial_observation_extractor = nullptr);

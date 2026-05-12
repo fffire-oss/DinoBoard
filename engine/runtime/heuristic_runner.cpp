@@ -73,7 +73,6 @@ SelfplayEpisodeResult run_heuristic_episode(
     GameAdjudicator adjudicator,
     std::vector<IBeliefTracker*> per_perspective_trackers,
     std::vector<IGameState*> per_seat_states,
-    PublicEventApplier public_event_applier,
     PublicStateApplier public_state_applier,
     PublicEventExtractor public_event_extractor,
     InitialObservationExtractor initial_observation_extractor) {
@@ -151,24 +150,18 @@ SelfplayEpisodeResult run_heuristic_episode(
     const int num_players = static_cast<int>(per_seat_states.size());
     for (int p = 0; p < num_players; ++p) {
       IGameState& seat = *per_seat_states[p];
-      const std::uint64_t view_step_seed = board_ai::rng::derive_subseed(
-          episode_seed, "heuristic.view_step",
-          static_cast<std::uint64_t>(ply) * 17ULL +
-              static_cast<std::uint64_t>(p));
-      std::mt19937_64 view_step_rng(view_step_seed);
-      if (!public_event_extractor || !public_event_applier) {
+      if (!public_event_extractor) {
+        const std::uint64_t view_step_seed = board_ai::rng::derive_subseed(
+            episode_seed, "heuristic.view_step",
+            static_cast<std::uint64_t>(ply) * 17ULL +
+                static_cast<std::uint64_t>(p));
+        std::mt19937_64 view_step_rng(view_step_seed);
         rules.do_action_fast(seat, chosen, view_step_rng);
         continue;
       }
       PublicEventTrace evt_p = public_event_extractor(
           truth_before, chosen, truth_after, p);
-      for (const auto& [kind, payload] : evt_p.pre_events) {
-        public_event_applier(seat, EventPhase::kPreAction, kind, payload);
-      }
-      rules.do_action_fast(seat, chosen, view_step_rng);
-      for (const auto& [kind, payload] : evt_p.post_events) {
-        public_event_applier(seat, EventPhase::kPostAction, kind, payload);
-      }
+      seat.begin_step();
       if (public_state_applier && !evt_p.public_snapshot.empty()) {
         public_state_applier(seat, evt_p.public_snapshot);
       }
@@ -267,7 +260,7 @@ SelfplayEpisodeResult run_heuristic_episode(
           evt_p = public_event_extractor(*state_before, chosen, *state, p);
         }
         per_perspective_trackers[p]->observe_public_event(
-            player, chosen, evt_p.pre_events, evt_p.post_events);
+            player, chosen, evt_p.events);
       }
     }
     advance_per_seat_states(state_before ? *state_before : *state, *state, chosen, player);

@@ -16,7 +16,7 @@
 
 namespace board_ai {
 
-// AnyMap, PublicEvent, PublicEventTrace, EventPhase are defined in
+// AnyMap, PublicEvent, PublicEventTrace are defined in
 // game_interfaces.h so IBeliefTracker can reference them without a
 // circular include.
 
@@ -56,41 +56,29 @@ using TailSolveTrigger = std::function<bool(const IGameState& state, int ply)>;
 //
 // When the AI session is driven from observations, ground-truth's random
 // outcomes (deck flips, hidden draws, revealed cards during challenges)
-// must reach the AI's internal state as events. Each stochastic game
-// registers three functions:
+// must reach the AI's belief tracker as events. Each stochastic game
+// registers two functions:
 //
 //  1. PublicEventExtractor — during self-play, diffs state_before and
 //     state_after to produce the events an outside observer at perspective
 //     would have seen. Used to generate ground-truth traces for tests.
+//     The events go ONLY to the belief tracker (observer sessions do not
+//     run do_action_fast — public state is rebuilt from public_snapshot).
 //
-//  2. PublicEventApplier — on the AI side, applies an event to the AI's
-//     internal state. Post-action events (e.g. Splendor deck_flip, Azul
-//     factory_refill) are applied AFTER do_action_fast. Pre-action events
-//     (Love Letter Baron target reveal, Coup challenge reveal) are applied
-//     BEFORE do_action_fast so the action resolves with the correct hidden
-//     state. The `phase` argument tells the applier which is which.
-//
-//  3. InitialObservationApplier — on session creation, the partner provides
+//  2. InitialObservationApplier — on session creation, the partner provides
 //     perspective-specific initial info (e.g. "your starting hand is [5]"
 //     in Love Letter, "your face-down characters are [Duke, Captain]" in
 //     Coup). This overrides the AI session's own seed-generated hidden
 //     initial state.
 //
-// EventPhase / PublicEvent / PublicEventTrace are declared in
-// game_interfaces.h (so belief_tracker.h can reference them without a
-// circular include).
+// PublicEvent / PublicEventTrace are declared in game_interfaces.h (so
+// belief_tracker.h can reference them without a circular include).
 
 using PublicEventExtractor = std::function<PublicEventTrace(
     const IGameState& state_before,
     ActionId action,
     const IGameState& state_after,
     int perspective_player)>;
-
-using PublicEventApplier = std::function<void(
-    IGameState& state,
-    EventPhase phase,
-    const std::string& kind,
-    const AnyMap& payload)>;
 
 // Message-driven public state: inverse of the public-fields-only
 // serialization produced by public_event_extractor. Overwrites the
@@ -150,7 +138,6 @@ struct GameBundle {
   // that register a belief_tracker AND want to be driveable through the
   // AI API with independent seeds.
   PublicEventExtractor public_event_extractor;
-  PublicEventApplier public_event_applier;
   // Required for hidden-info games. See PublicStateApplier above.
   // Fully-public games (tictactoe, quoridor) leave this unset.
   PublicStateApplier public_state_applier;

@@ -113,12 +113,10 @@ def test_opp_blind_reserve_change_does_not_leak_to_my_hash():
     saw_opp_blind_reserve = False
     for step in trace:
         sess_a.apply_observation(
-            step["action"], pre_events=step["pre_events"],
-            post_events=step["post_events"],
+            step["action"], events=step["events"],
             public_snapshot=step.get("public_snapshot", {}))
         sess_b.apply_observation(
-            step["action"], pre_events=step["pre_events"],
-            post_events=step["post_events"],
+            step["action"], events=step["events"],
             public_snapshot=step.get("public_snapshot", {}))
         h_a = sess_a.state_hash_for_perspective(perspective)
         h_b = sess_b.state_hash_for_perspective(perspective)
@@ -128,8 +126,7 @@ def test_opp_blind_reserve_change_does_not_leak_to_my_hash():
             f"[seed_truth={chosen_seed} ply={step['ply']} actor={step['actor']} "
             f"action={step['action']}] state_hash_for_perspective({perspective}) "
             f"diverged: {h_a:#x} vs {h_b:#x}\n"
-            f"  pre_events={step['pre_events']}\n"
-            f"  post_events={step['post_events']}\n"
+            f"  events={step['events']}\n"
             f"This means hash_private_fields(perspective={perspective}) is "
             f"emitting a value that depends on data the schema marks as "
             f"owner-only for a different player. The most likely cause is a "

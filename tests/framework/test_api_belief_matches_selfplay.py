@@ -5,14 +5,14 @@ tracker, step by step.
 This is the strongest test of the AI/state separation invariant:
 - Ground truth (self-play) runs with one seed, maintains its own belief
   tracker dedicated to a chosen perspective, and records the per-ply
-  observation stream (pre/post events + belief snapshot after).
+  observation stream (events + belief snapshot after).
 - The API-side session starts with a DIFFERENT seed — its internal
   randomized hidden state does not match ground truth.
 - We then replay the observation stream into the API session and assert
   the API's belief tracker matches ground truth's, every step.
 
 If the API's belief diverges, either the event schema is incomplete (some
-public info never reaches the API) or apply_event is wrong. Either way,
+public info never reaches the API) or event application is wrong. Either way,
 the separation invariant is broken.
 
 For deterministic games (tictactoe, quoridor), belief is trivially empty
@@ -50,8 +50,7 @@ def _apply_trace_step(api_gs, step: dict) -> None:
     """
     api_gs.apply_observation(
         step["action"],
-        pre_events=step["pre_events"],
-        post_events=step["post_events"],
+        events=step["events"],
         public_snapshot=step.get("public_snapshot", {}),
     )
 
@@ -109,8 +108,7 @@ def test_api_belief_matches_selfplay(game_id):
             f"actor={step['actor']}, action={step['action']}):\n"
             f"  GT:  {gt_belief}\n"
             f"  API: {api_belief}\n"
-            f"  pre_events:  {step['pre_events']}\n"
-            f"  post_events: {step['post_events']}")
+            f"  events:  {step['events']}")
 
 
 @pytest.mark.parametrize("game_id", GAMES_WITH_EVENT_PROTOCOL)

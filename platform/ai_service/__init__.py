@@ -12,10 +12,9 @@ session hidden state is re-sampled every ply from the tracker's information
 set.
 
 Hidden-info games (Splendor, Love Letter, Coup, Azul) require the caller to
-supply `pre_events`, `post_events`, and `public_snapshot` on every observe
-call so the AI's belief tracker stays consistent with truth — action_id alone
-is insufficient. Deterministic games (TicTacToe, Quoridor) only need
-`action_id`. The session itself is created with an `initial_observation` for
-hidden-info games so the AI knows facts visible at game start (e.g. own
-starting hand).
+supply `events` and `public_snapshot` on every observe call so the AI's
+belief tracker stays consistent with truth — action_id alone is insufficient.
+Deterministic games (TicTacToe, Quoridor) only need `action_id`. The session
+itself is created with an `initial_observation` for hidden-info games so the
+AI knows facts visible at game start (e.g. own starting hand).
 """

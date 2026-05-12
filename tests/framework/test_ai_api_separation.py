@@ -2,7 +2,7 @@
 
 These tests drive the AI through the HTTP layer (FastAPI TestClient) and
 the only data the AI ever sees is the observation stream defined by the
-public-event protocol (action_id + pre_events + post_events + public_snapshot
+public-event protocol (action_id + events + public_snapshot
 for hidden-info games; action_id alone for deterministic games). An
 independent ground-truth `engine.GameSession` runs locally in the test and
 never shares objects with the AI session. If the AI can complete games this
@@ -92,7 +92,7 @@ def _play_full_game(
     Ground truth is a local GameSession. AI session is behind the HTTP API.
     For deterministic games the only payload that crosses is action_id; for
     hidden-info games the API additionally receives the truth-side public-event
-    trace (pre/post events + public_snapshot) — never any private state.
+    trace (events + public_snapshot) — never any private state.
 
     Both deterministic and hidden-info paths are exercised through the same
     helper: the public-event protocol is what the API contract requires.
@@ -101,7 +101,7 @@ def _play_full_game(
         seed_ai = seed_ground_truth
 
     meta = engine.game_metadata(game_id)
-    has_events = bool(meta["has_public_event_applier"])
+    has_events = bool(meta["has_public_state_applier"])
 
     # Ground truth simulator — the AI never touches this object.
     gt = engine.GameSession(game_id, seed_ground_truth, "", False)
@@ -152,8 +152,7 @@ def _play_full_game(
                 trace = gt.apply_action_with_trace(action_id, ai_seat)
                 obs_payload = {
                     "action_id": action_id,
-                    "pre_events": trace["pre_events"],
-                    "post_events": trace["post_events"],
+                    "events": trace["events"],
                     "public_snapshot": trace["public_snapshot"],
                 }
             else:

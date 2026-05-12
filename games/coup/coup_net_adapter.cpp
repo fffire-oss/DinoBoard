@@ -173,8 +173,7 @@ template <int NPlayers>
 void CoupBeliefTracker<NPlayers>::observe_public_event(
     int actor,
     ActionId action,
-    const std::vector<PublicEvent>& /*pre_events*/,
-    const std::vector<PublicEvent>& post_events) {
+    const std::vector<PublicEvent>& events) {
   // ------------------------------------------------------------------
   // Phase 1: interpret `action` itself.
   // ------------------------------------------------------------------
@@ -211,9 +210,9 @@ void CoupBeliefTracker<NPlayers>::observe_public_event(
   }
 
   // ------------------------------------------------------------------
-  // Phase 2: process post_events (revealed cards, exchange completions).
+  // Phase 2: process events (revealed cards, exchange completions).
   // ------------------------------------------------------------------
-  for (const auto& evt : post_events) {
+  for (const auto& evt : events) {
     if (evt.first == "card_revealed") {
       const auto& payload = evt.second;
       auto it_p = payload.find("player");

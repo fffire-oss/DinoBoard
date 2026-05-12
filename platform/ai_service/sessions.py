@@ -68,7 +68,7 @@ class AISession:
     my_seat: int
     simulations: int
     temperature: float
-    has_public_event_applier: bool
+    has_public_state_applier: bool
 
     _gs: engine.GameSession = field(repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
@@ -78,8 +78,7 @@ class AISession:
     def observe(
         self,
         action_id: int,
-        pre_events: Optional[list[dict]] = None,
-        post_events: Optional[list[dict]] = None,
+        events: Optional[list[dict]] = None,
         public_snapshot: Optional[dict] = None,
     ) -> None:
         """Record that a player played action_id.
@@ -92,14 +91,12 @@ class AISession:
         game server notifies the AI of every player's move and is the only
         path through which session state advances.
 
-        For hidden-info games (those with a registered public_event_applier),
-        the caller MUST pass `pre_events`, `post_events`, and `public_snapshot`
-        — without them the AI's belief tracker cannot stay consistent with
-        truth and a ValueError is raised. For deterministic games these
-        arguments must be omitted/empty.
+        For hidden-info games (those with a registered public_state_applier),
+        the caller MUST pass `events` and `public_snapshot` — without them the
+        AI's belief tracker cannot stay consistent with truth and a ValueError
+        is raised. For deterministic games these arguments must be omitted/empty.
         """
-        pre_events = pre_events or []
-        post_events = post_events or []
+        events = events or []
         public_snapshot = public_snapshot or {}
         with self._lock:
             if self._closed:
@@ -109,24 +106,23 @@ class AISession:
                     f"AISession {self.session_id}: game is already terminal, "
                     f"cannot observe more actions")
 
-            if self.has_public_event_applier:
-                if not pre_events and not post_events and not public_snapshot:
+            if self.has_public_state_applier:
+                if not events and not public_snapshot:
                     raise ValueError(
                         f"AISession {self.session_id}: game {self.game_id!r} is a "
-                        f"hidden-info game; observe() requires pre_events / "
-                        f"post_events / public_snapshot. Caller passed action_id "
-                        f"alone — the AI cannot update belief state from that.")
+                        f"hidden-info game; observe() requires events / "
+                        f"public_snapshot. Caller passed action_id alone — the "
+                        f"AI cannot update belief state from that.")
                 self._gs.apply_observation(
                     action_id,
-                    pre_events,
-                    post_events,
+                    events,
                     public_snapshot,
                 )
             else:
-                if pre_events or post_events or public_snapshot:
+                if events or public_snapshot:
                     raise ValueError(
                         f"AISession {self.session_id}: game {self.game_id!r} is a "
-                        f"deterministic game with no public_event_applier; "
+                        f"deterministic game with no public_state_applier; "
                         f"observe() must be called with action_id only "
                         f"(no events / snapshot).")
                 legal = self._gs.get_legal_actions()
@@ -220,17 +216,17 @@ class SessionStore:
 
         meta = engine.game_metadata(game_id)
         num_players = meta["num_players"]
-        has_public_event_applier = bool(meta["has_public_event_applier"])
+        has_public_state_applier = bool(meta["has_public_state_applier"])
         has_initial_observation_applier = bool(meta["has_initial_observation_applier"])
         if my_seat < 0 or my_seat >= num_players:
             raise ValueError(
                 f"my_seat={my_seat} out of range for game with {num_players} players")
 
-        if has_public_event_applier and not has_initial_observation_applier:
+        if has_public_state_applier and not has_initial_observation_applier:
             raise RuntimeError(
-                f"game {game_id!r} registered public_event_applier without "
+                f"game {game_id!r} registered public_state_applier without "
                 f"initial_observation_applier — REST AI flow needs both.")
-        if not has_public_event_applier and initial_observation:
+        if not has_public_state_applier and initial_observation:
             raise ValueError(
                 f"game {game_id!r} is deterministic; initial_observation must "
                 f"not be provided.")
@@ -253,7 +249,7 @@ class SessionStore:
             use_action_filter=False,
         ))
 
-        if has_public_event_applier and initial_observation is not None:
+        if has_public_state_applier and initial_observation is not None:
             gs.apply_initial_observation(my_seat, initial_observation)
 
         simulations, temperature = _resolve_strength(game_id)
@@ -266,7 +262,7 @@ class SessionStore:
             my_seat=my_seat,
             simulations=simulations,
             temperature=temperature,
-            has_public_event_applier=has_public_event_applier,
+            has_public_state_applier=has_public_state_applier,
             _gs=gs,
         )
         with self._lock:

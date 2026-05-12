@@ -28,7 +28,7 @@ DinoBoard 把"推游戏"和"AI 决策"彻底分离。这是整个框架的心智
 立这个再读后面所有章节。
 
 - **GT（ground truth）端推进游戏**——持真值 state，每步调
-  `do_action_fast` 推进，产出公开消息流（每步的 pre/post events +
+  `do_action_fast` 推进，产出公开消息流（每步的 `events` 列表 +
   `public_snapshot`）。GT 可以是我们的 C++ 引擎，也可以是外部 API、甚至
   物理桌游——AI 不在乎 GT 是谁
 - **AI session（每个 perspective 一份）只吃消息流**——内部持一份本地

@@ -72,8 +72,7 @@ def _drive_session(game_id: str, seed: int, perspective: int, ep: dict):
     for step in ep["observation_trace"]:
         sess.apply_observation(
             step["action"],
-            pre_events=step["pre_events"],
-            post_events=step["post_events"],
+            events=step["events"],
             public_snapshot=step.get("public_snapshot", {}),
         )
         hashes.append(sess.state_hash_for_perspective(perspective))
@@ -175,8 +174,7 @@ def test_mcts_visits_reproducible_under_same_session_seed(game_id):
                 return sess
             sess.apply_observation(
                 step["action"],
-                pre_events=step["pre_events"],
-                post_events=step["post_events"],
+                events=step["events"],
                 public_snapshot=step.get("public_snapshot", {}))
         return sess  # may be terminal — caller skips
 
