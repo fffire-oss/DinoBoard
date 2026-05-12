@@ -326,12 +326,12 @@ py::dict run_selfplay_episode_py(
   // accumulates monotonically across plies. Skipped only for fully-public
   // games (no belief_tracker registered).
   //
-  // Per-seat session state (§A.a Phase 0 + §G.1): each pp_bundle's `state`
-  // doubles as that seat's session state. The runner advances each
-  // session state via the public-event protocol every ply so the AI path
-  // never reads truth. In scope: tictactoe / quoridor / azul / splendor
-  // (Phase 0) and loveletter (§G.1 — known_hand_[] migrated to viz reveals
-  // via reveal_slot_to). Coup is still carved out pending §G.2; for it we
+  // Per-seat session state: each pp_bundle's `state` doubles as that
+  // seat's session state. The runner advances each session state via the
+  // public-event protocol every ply so the AI path never reads truth. In
+  // scope: tictactoe / quoridor / azul / splendor / loveletter. Coup is
+  // still carved out (its tracker carries perspective-baked private
+  // knowledge that hasn't been migrated into state.viz yet); for it we
   // leave per_seat_states empty and the runner falls back to truth.
   const bool per_seat_in_scope =
       (game_id == "tictactoe" || game_id == "quoridor" ||

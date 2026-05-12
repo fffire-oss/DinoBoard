@@ -65,10 +65,10 @@ import dinoboard_engine as engine
 from conftest import get_test_model
 
 
-# §A.a in-scope + §G.1-landed: LoveLetter joins after the §G.1
-# migration moved `known_hand_[]` perspective-private state into
-# `state.viz_` reveals (rules-driven via reveal_slot / reveal_slot_to /
-# reset_to_base). Coup remains carved out pending §G.2.
+# Per-seat in-scope: every game whose perspective-private knowledge is
+# carried by `state.viz_` (rules-driven via reveal_slot / reveal_slot_to
+# / reset_to_base). Coup is still carved out — its tracker carries
+# perspective-baked private knowledge that hasn't been migrated.
 IN_SCOPE_GAMES = ["tictactoe", "quoridor", "azul", "splendor", "loveletter"]
 
 

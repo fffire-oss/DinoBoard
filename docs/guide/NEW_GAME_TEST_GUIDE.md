@@ -565,7 +565,7 @@ _CHECKERS["<game>"] = _check_<game>
 
 `8f-bis` 验证的是「tracker 声称的已知信息 == 真实信息」。这一步验证下游的另一根链子：**`belief_tracker.randomize_unseen(state, rng)` 给 MCTS 仿真填充隐藏槽位时,是否尊重 tracker 已经知道的事实**。
 
-具体问题场景:Love Letter 里你用 Priest 看了对手手牌是 Princess——tracker 把 `known_hand[opp]=8` 标记下来。然后 MCTS 每个 sim 都调 `randomize_unseen` 复制一份世界开始搜索。如果这一步**忽略了** tracker 的 `known_hand`,搜索的根节点对手手牌可能是任何牌——AI 的 Guard 出牌策略就完全用不上「我知道是 Princess」这条信息,对应的策略价值估计变成噪声。
+具体问题场景:Love Letter 里你用 Priest 看了对手手牌是 Princess——rules 端 `reveal_slot_to(actor)` 把 `state.viz["hand"][opp, :, actor]=1`，session state 上 `hand[opp]` 槽位是 viz=1 + 真值。然后 MCTS 每个 sim 都调 `randomize_unseen` 复制一份世界开始搜索。如果这一步**没正确跳过 viz=1 槽位**,搜索的根节点对手手牌可能被随机覆盖——AI 的 Guard 出牌策略就完全用不上「我知道是 Princess」这条信息,对应的策略价值估计变成噪声。
 
 测试位置：`tests/framework/test_ismcts_samples_respect_tracker.py`。规则是 **`tracker_claim != UNKNOWN_SENTINEL` ⇒ 任何 sample 的对应字段 == claim**;声称未知时 sample 可以是任何随机抽样结果。
 

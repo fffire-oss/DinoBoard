@@ -6,10 +6,7 @@
 - **玩家数**：2–4
 - **动作空间**：47
 - **隐藏信息**：有（每人手牌 + 轮到的人抽牌 + 牌堆顺序）
-- **公开事件**：
-  - `hand_override`（**pre**）：动作读隐藏手牌前先揭示
-  - `drawn_override`（post）：下家抽牌后揭示他抽到的牌（仅下家能看到，对其他玩家是隐藏）
-  - `discard`（隐式，通过 action 本身）
+- **公开事件**：LL **不发任何 `events`**（`out.events` 始终为空）。所有"reveal 对手手牌"语义（Priest peek、Baron 比较、King 交换、Prince 弃手）都由 GT 端 rules 调 `viz::reveal_slot_to` / `swap_slot_owned` 写进 `state.viz_`，schema-driven walker 把这些 viz=1 槽位的真值塞进 `public_snapshot` 的 `hand[*]` / `drawn_card`，observer 用 snapshot 整体覆写后那些槽位天然 viz=1 + 真值。**接入方只发 `public_snapshot`**，`events` 传 `[]`。
 
 ---
 
@@ -45,37 +42,18 @@ Love Letter 的动作覆盖所有"打出某张牌 + 目标（若该牌需要目�
 
 ## 公开事件
 
-### `hand_override`（**pre**）
+LL 协议下 `events` 始终是 `[]`——所有 perspective-private 的 reveal 都通过 viz schema + walker 走 `public_snapshot` 通道，**不再有平行私人事件**。
 
-动作要读取**对手或自己**的某个手牌时，先把该牌的真实值 reveal 给 AI。这样 AI 侧可以**不再需要猜**这个值——直接用正确的牌计算结果。
+`public_snapshot` 由 GT 端的 schema walker（`viz::serialize_public(state, schema, perspective)`）每个 perspective 各产出一份。它包含该视角下 viz=1 槽位的所有真值：
 
-```json
-{
-  "kind": "hand_override",
-  "payload": {"player": 1, "card": 6}
-}
-```
+- **自己手牌** (`hand[my_seat]`)：始终 viz=1
+- **自己当前抽到的牌** (`drawn_card`)：在自己回合 reveal 后 viz=1
+- **被 Priest peek 的对手手牌**：peek 后 viz=1 给 actor，第三方仍 viz=0
+- **King 交换后双方的新手牌**：swap 后双方对各自手牌 viz=1，并相互对对方 viz=1
+- **Baron 比较后**：分支 1（牌不等）loser 全员 viz=1；分支 2（平手）actor 与 target 互相 viz=1
+- **Prince 让 target 弃手**：target 原手牌进 discard pile，公开
 
-**何时发**（常见场景）：
-- Guard 动作：actor 猜某玩家的手牌。如果猜对，该玩家被淘汰、手牌公开；猜错什么也不发生。但无论对错，**动作执行时需要读被猜玩家的手牌**——所以 ground truth 必须发一个 `hand_override` 告诉 AI 真牌是什么。
-- Priest：actor 偷看 target 的手牌（仅 actor 看到）。仅 `my_seat == actor` 的 session 需要这个事件。
-- Baron：actor 和 target 的手牌被比较。比较双方都会公开，两个 `hand_override` 都要发（actor 侧和 target 侧）。
-- King：actor 和 target 交换手牌。两张都暴露给双方，发 2 个 `hand_override`。
-- Prince：actor 让 target 弃手牌——该手牌公开，发一个 `hand_override` 揭示 target 的原手牌。
-
-### `drawn_override`（post）
-
-下家轮到时会抽一张牌（必须发，否则 AI 不知道下家有什么可用选择）。
-
-```json
-{
-  "kind": "drawn_override",
-  "payload": {"player": 2, "card": 5}
-}
-```
-
-**对 perspective 是自己**：是真实的抽牌值。
-**对 perspective 不是自己**：这个事件**不发**给非本人（他们看不到对手抽到什么），AI 会在 `randomize_unseen` 里采样。
+接入方只需要：rules 端按规则正确调用 `reveal_slot_to(viewer)` / `swap_slot_owned(a, b)` / `reset_to_base(slot)`，walker 自动把 viz=1 槽位序列化进 snapshot——不用单独发任何 `hand_override` / `drawn_override` 事件。
 
 ---
 
@@ -83,7 +61,7 @@ Love Letter 的动作覆盖所有"打出某张牌 + 目标（若该牌需要目�
 
 公开：`alive`（每玩家 bool）、`protected_flags`（Handmaid 状态）、`discard_piles`（每玩家的弃牌堆）、`hand_exposed`（Countess 被宣告等公开信息）、`deck_size`、`face_up_removed`（2p 开局移走的 3 张）、`ply`、`current_player`、`winner`
 
-玩家私有：`hand[my_seat]`、`drawn_card`（若 `current_player == my_seat` 且已抽牌）。AI 另外维护 `known_hand[p]`：通过 Priest / Baron / King / Prince 事件合法知道的对手手牌。
+玩家私有：`hand[my_seat]`、`drawn_card`（若 `current_player == my_seat` 且已抽牌）。被 Priest peek / Baron 比较 / King 交换合法看到的对手手牌也以 viz=1 出现在 my_seat 的 session state 里——不需要 AI 端单独维护 `known_hand` 字典，直接读 session state 上对应 `hand[opp]` 槽位即可。
 
 ---
 
@@ -103,9 +81,10 @@ sid = sess["session_id"]
 # Ground truth 端要实现：每个动作算出 events + public_snapshot
 def compute_trace(state_before, action_id, state_after, perspective):
     """对照 games/loveletter/loveletter_register.cpp::extract_events 的语义，
-    返回 {"events": [...], "public_snapshot": {...}}。
-    events 是按 producer 顺序排的公开事实序列（hand_override / drawn_override / 弃牌 / 淘汰...）；
-    public_snapshot 是动作之后所有公开 slot 的值，observer 收到后整体覆写公开字段。"""
+    返回 {"events": [], "public_snapshot": {...}}。
+    LL 不发 events（所有对手手牌 reveal 走 viz=1 + walker 进 snapshot）；
+    public_snapshot 是动作之后所有公开 slot 的值（按 perspective 分别产出），
+    observer 收到后整体覆写公开字段。"""
     ...
 
 while True:
@@ -132,7 +111,7 @@ requests.delete(f"{BASE}/ai/sessions/{sid}")
 
 ## 常见踩坑
 
-- **`hand_override` 用来给 tracker reveal 对手手牌**：Guard/Baron/King/Prince 在某些时机会让 actor 看到 target 的牌，GT 端把这些公开揭露事实塞进 `events` 列表喂给 tracker。observer 路径上不重放规则——动作的具体后果（弃牌、King 后双方的新手牌、谁淘汰）已经体现在动作之后的 `public_snapshot` 和 viz=1 hand 槽位里——`events` 只负责告诉 tracker "这次 transition 里 observer 学到了什么事实"
-- **Priest 仅对 actor 发事件**：其他玩家的 session 不应收到这个 `hand_override`——那是信息泄漏
+- **observer 路径不重放规则**：动作的具体后果（弃牌、King 后双方的新手牌、谁淘汰、Priest peek 的对手 cid）全部由 `public_snapshot` 携带；接入方只需保证 rules 端正确调 `reveal_slot_to` / `swap_slot_owned` / `reset_to_base` 维护 viz，walker 自动把每个 perspective 的 viz=1 槽位序列化进 snapshot
+- **Priest peek 是 per-perspective 的 viz reveal**：`reveal_slot_to(actor)` 只让 actor 这一个 perspective 的 viz 转 1，第三方 perspective 的 snapshot 里那个槽位仍是 placeholder——信息隔离结构上保证
 - **淘汰时手牌自然公开**：被 Guard 猜中、Baron 比输、Prince 弃的 Princess 等情况，被淘汰的玩家手牌进入 discard pile，AI 通过 discard_piles state 自然知道
 - **多人座位轮转**：`target` 是**相对座位**。3/4 人局里同一 action_id 对不同的 actor 指的 target 玩家不同

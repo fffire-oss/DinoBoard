@@ -283,23 +283,14 @@ board_ai::HeuristicResult pick(
 
 // --- Public-event protocol -------------------------------------------------
 //
-// Love Letter's do_action_fast reads hidden state for several card effects:
-//   Guard     — reads target's hand to check the guess
-//   Priest    — exposes target's hand (tracker reads it post-action)
-//   Baron     — compares actor's and target's hands
-//   Prince    — discards target's hand (revealed) and redraws
-//   King      — swaps actor's and target's hands
-//
-// For each, we emit a pre-action `hand_override` event to set AI's internal
-// state.hand[target] to GT's value before do_action_fast runs. Without this,
-// the action resolves differently in AI vs GT (wrong elimination, wrong
-// Priest reveal, etc.) and the belief tracker records garbage.
-//
-// Post-action: advance_turn draws a card for the next alive player. If the
-// new current_player is the traced perspective, we emit a `drawn_override`
-// event so AI knows what it actually drew (instead of its own random draw
-// from a different internal deck). Prince also redraws for the target; if
-// the target is perspective, we emit a `hand_override` post-event for them.
+// GT-side rules (do_action_fast) maintain `state.viz` as they reveal hidden
+// slots: Priest → reveal_slot_to(actor), Baron → cross-reveal, King →
+// swap_slot_owned, Prince → reset_to_base on the discarded slot, etc. The
+// observer side learns those reveals via `public_snapshot` (walker copies
+// every viz=1 slot) and via the `events` list below for tracker-only signals
+// (discards, eliminations, winner announcement). No private payload rides on
+// `events` — every fact the observer learns about hidden cards flows through
+// the schema-driven snapshot path.
 
 namespace loveletter_events {
 
@@ -451,15 +442,13 @@ void apply_initial_observation(IGameState& state, int perspective, const AnyMap&
   }
 }
 
-// §G.1 Step 4 — public-event extractor. The `hand_override` /
-// `drawn_override` parallel private channel has been deleted: every
-// per-perspective hand reveal now travels via `state.viz_` (rules call
-// `reveal_slot` / `reveal_slot_to`). All-public slots ride the
-// schema walker (`viz::serialize_public`); per-perspective reveals
-// (owner-visible `hand[p]`, current-player-visible `drawn_card`,
-// Priest/Baron peeks) ride the `owner_overlay` sidecar below — same
-// pattern Splendor uses for face-up reserved cards. LL emits no
-// public events; `out.events` stays empty.
+// Public-event extractor. Every per-perspective hand reveal travels via
+// `state.viz_` (rules call `reveal_slot` / `reveal_slot_to`). All-public
+// slots ride the schema walker (`viz::serialize_public`); per-perspective
+// reveals (owner-visible `hand[p]`, current-player-visible `drawn_card`,
+// Priest/Baron peeks) ride the `owner_overlay` sidecar below — same pattern
+// Splendor uses for face-up reserved cards. LL emits no public events;
+// `out.events` stays empty.
 template <int NPlayers>
 PublicEventTrace extract_events(
     const IGameState& /*before*/,

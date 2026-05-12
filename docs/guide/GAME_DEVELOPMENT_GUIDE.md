@@ -1106,9 +1106,9 @@ Stale 采样(opp hidden 字段的旧 cid 现在已经被公开看到)必须从�
 
 **开发者必须保证**：游戏的公开输出不依赖任何"只存在于 session state_ 里的隐藏字段"。做法是规范化的：`public_event_extractor` 把 post-action 的全部 public 字段 dump 进 `PublicEventTrace.public_snapshot`，`public_state_applier`（§5.1 项 8）把 snapshot 反向写回 session state_ 的 public 字段。**observer 路径上不调 `do_action_fast`** —— `apply_observation` 只走 `begin_step → public_state_applier(snapshot) → tracker.observe_public_event(events) → randomize_unseen`，公开部分完全由 message 重建，连"`do_action_fast` 内部读隐藏字段"这条泄漏路径都从结构上消失了。round-trip 测试 (`test_public_snapshot_round_trip`) + 60-seed drift 扫 (`test_public_hash_excludes_internal_rng`) 在 CI 里守这个契约。
 
-**Belief tracker 不仅追踪公开信息，也可以追踪通过游戏技能合法获得的私有知识**。例如 Love Letter 中 Priest 偷看对手手牌、King 交换后知道对方原来的牌——这些通过 `hand_override` 事件传递到 tracker。`randomize_unseen` 时优先使用 tracker 中的确定知识（直接固定），没有确定知识的才从 unseen pool 中随机采样。这使得 ISMCTS 的采样质量更高——已知的不浪费预算重新猜。
+**Belief tracker 追踪公开聚合信息**（剩余牌池的多重集、已 flipped tier 卡集合等）。游戏技能合法获得的"私有知识"（Priest 偷看的对手牌、King 交换后双方知道的牌、Baron 比较中暴露的双方牌）由 GT 端 rules 直接通过 `viz::reveal_slot_to(viewer)` / `swap_slot_owned` 写到 `state.viz_` 上——schema 走 walker 进 `public_snapshot`，observer apply 后那些槽位天然以 viz=1 出现在 session state 里。`randomize_unseen` 只填 viz=0 的槽位，对 viz=1 的已知槽位不动。
 
-**实装要点**：tracker 的接口只吃 message（`init` + `observe_public_event`），没有 `IGameState*` 能指回 truth——读 state 是物理上做不到的。需要跨 action 携带的信息（例如"上一步谁被 Priest peek"）由 tracker 自己从事件流里增量维护。Love Letter tracker 内部就维护 `own_hand_` / `own_drawn_card_` / `alive_tracked_[]` 等字段，全部通过事件更新。
+**实装要点**：tracker 的接口只吃 message（`init` + `observe_public_event`），没有 `IGameState*` 能指回 truth——读 state 是物理上做不到的。tracker 自身持的状态应该是 perspective-agnostic 的公开聚合（"剩余牌池"、"deck 顺序"等），而不是某玩家私密信息（"我看到 p1 是 Guard"——这种走 viz）。
 
 参考 `games/splendor/splendor_net_adapter.h` 中的 `SplendorBeliefTracker` 实现。
 
@@ -1146,15 +1146,15 @@ Belief tracker 有两种不同定位，由游戏的信息结构决定：
 
 **定位一：维护随机来源**（Splendor）——状态无法推导出完整的"见过什么"历史，tracker 增量追踪 seen 信息，为 `randomize_unseen` 提供准确的 unseen pool。
 
-**定位二：维护游戏中获取的精确知识**（Love Letter）——随机来源可从状态推导（弃牌堆是完整打出记录），不需要追踪；但游戏技能产生了精确信息（Priest 偷看、Baron 比较、King 交换），tracker 追踪"我确切知道对手拿什么"，`randomize_unseen` 直接固定已知手牌，encoder 向 tracker 查询后编码已知对手手牌（而非输出占位符）。
+**定位二：精确知识由 viz 承载**（Love Letter）——随机来源可从状态推导（弃牌堆是完整打出记录），不需要 tracker 维护 seen 集合；游戏技能产生的精确信息（Priest 偷看、Baron 比较、King 交换）由 rules 直接调 `reveal_slot_to` / `swap_slot_owned` 写进 `state.viz`。tracker 退化成 stateless：只为 `randomize_unseen` 提供"剩余牌池多重集"，对手已知手牌靠 session state 上 viz=1 的槽位天然存在。
 
-两种定位可以并存。Love Letter 是本框架中对"不完美信息 + 短对局 + 频繁信息交换"类游戏的探索——这类游戏的难点不在随机来源维护，而在通过 belief tracker + encoder 协作将游戏技能产生的精确知识正确传递给网络。
+两种定位可以并存。Love Letter 是本框架中对"不完美信息 + 短对局 + 频繁信息交换"类游戏的探索——这类游戏的难点不在随机来源维护，而在通过 viz schema + walker 把游戏技能产生的精确知识正确传递给 observer。
 
-**Love Letter（游戏知识追踪——seen 从状态推导，known_hand 增量维护）**：
-- `init(perspective, initial_obs)`：从 `initial_obs["my_hand"]` / `"my_drawn_card"` 读自己的起手牌，清空 `known_hand_`
-- `observe_public_event(actor, action, events)`：追踪 Priest（偷看 → 记录对手手牌，来自 `hand_override` 事件）、Baron 平局（互看 → 记录双方手牌）、King（交换 → 更新/转移知识）、Prince（重摸 → 清除知识）、淘汰（清除）、对手打出已知牌（清除）
-- `randomize_unseen()`：seen = 自己手牌 + drawn_card + 所有弃牌堆 + face_up_removed + known_hand（从 unseen pool 扣除）；已知对手手牌直接固定，未知的随机采样
-- encoder 持有 tracker 指针，编码对手手牌时查询 `tracker->known_hand(p)`：有值则编码真实牌，无值则输出全零占位符
+**Love Letter（精确知识走 viz，tracker stateless）**：
+- `init(initial_obs)`：从 `initial_obs["face_up_removed"]` 等公开开局信息推断剩余牌池多重集
+- `observe_public_event(actor, action, events)`：根据弃牌堆增量、淘汰宣告等公开事件更新剩余牌池
+- `randomize_unseen(state, observer, rng)`：扣除 state 上 viz=1 槽位（自己手牌、Priest peek 后的对手槽位等）已经占用的 cid，对剩余 viz=0 槽位（牌堆、未 reveal 的对手 hand）从池子均匀采样
+- encoder 直接读 MaskedState：viz=1 槽位拿到真值（Priest peek 后的对手 hand），viz=0 槽位拿 placeholder——不用查 tracker
 - 随机来源与 Azul 同属"状态可推导"模式：弃牌堆是完整历史，不需要 `seen_cards` 集合
 
 **Splendor（随机来源追踪——seen 需增量维护）**：
@@ -1194,7 +1194,7 @@ Encoder 的信息源有两个，地位等价：
 - **state**：公开局面信息（棋盘、弃牌堆、存活状态等）
 - **belief tracker**：通过 `observe_public_event` 积累的私有知识（Priest 偷看的手牌、Baron 比较的结果等）
 
-Encoder 可以持有 tracker 指针，编码时查询已知信息。Love Letter 的实现中，encoder 向 tracker 查询 `known_hand(p)`，已知则编码真实牌，未知则输出占位符。这让网络直接获得游戏技能产生的信息，无需从弃牌历史自行推导。
+Encoder 直接读 `MaskedState`：viz=1 槽位拿到真值（被 Priest peek 后的对手 hand cid、King 交换后双方各自的新手牌等），viz=0 槽位拿 placeholder。这让网络直接获得游戏技能产生的信息，无需从弃牌历史自行推导，也不需要 encoder 查询 tracker——viz schema + walker 已经把"该看到什么"在数据层定下来了。
 
 以 Splendor 双人局为例，假设双方各有一张暗牌：
 
@@ -1345,7 +1345,7 @@ m["box_counts"] = std::any(box_counts);
 
 ### 12.6 ISMCTS 根采样必须尊重 tracker 已知信息
 
-每个有 `belief_tracker` 的游戏要在 `tests/framework/test_ismcts_samples_respect_tracker.py` 里加一个 checker:`belief_tracker.randomize_unseen` 给 MCTS 仿真填充隐藏槽位时,必须尊重 tracker 已经知道的事实(例如 Love Letter 用 Priest 看过对手手牌后,`known_hand[opp]` 不能在 sample 里被随机覆盖)。
+每个有 `belief_tracker` 的游戏要在 `tests/framework/test_ismcts_samples_respect_tracker.py` 里加一个 checker:`belief_tracker.randomize_unseen` 给 MCTS 仿真填充隐藏槽位时,必须只填 viz=0 的槽位（viz=1 槽位是已知约束，不能随机覆盖——例如 Love Letter Priest peek 之后那个对手 hand 槽位 viz=1，已知 cid 不能再被采样改写）。
 
 测试通过 `dinoboard_engine.test_belief_tracker(...)` 拿到 `belief_snapshot` 和 `trial_states[t]`(每次 `randomize_unseen` 后的完整 GT-style state dict),逐次比对。具体模式见 [新游戏验收测试指南 § 8f-ter](NEW_GAME_TEST_GUIDE.md#8f-ter-ismcts-根采样必须尊重-tracker-的已知声明强制)。
 
@@ -1466,7 +1466,7 @@ GT 端每步产出 `PublicEventTrace { events, public_snapshot }`：
 |------|---------|---------|------|
 | Azul | `factory_refill` | stateless tracker，只同步 factories | `games/azul/azul_register.cpp` |
 | Splendor | `deck_flip`, `self_reserve_deck` | tracker 维护 seen_cards，盲预订时 AI 需要知道自己抽了什么 | `games/splendor/splendor_register.cpp` |
-| Love Letter | `hand_override`, `drawn_override` | Baron/Guard/Priest/Prince/King 都读对手手牌——揭露事件最多 | `games/loveletter/loveletter_register.cpp` |
+| Love Letter | （无 events，靠 viz） | Priest/Baron/King/Prince 通过 `reveal_slot_to` / `swap_slot_owned` 把对手手牌写进 viz；snapshot 自带这些 cid | `games/loveletter/loveletter_register.cpp` |
 
 **编写事件协议时的 checklist**：
 - [ ] GT 端 `do_action_fast` 每处读 / 写隐藏字段的地方（翻牌、抽牌、对手手牌揭露），`extract_events` 都要发对应事件

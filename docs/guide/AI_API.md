@@ -77,7 +77,7 @@
 }
 ```
 
-`events` 是这次 transition 里公开可观察到的事件序列（如 Splendor 的 `deck_flip`、Love Letter 的 `hand_override`），按 producer 发出的顺序排列；只喂给 belief tracker，不会作用到 state 上。`public_snapshot` 是 GT 端这一步之后所有公开 slot 的值——observer 用它整体覆写自己 session 的公开部分。**完全可观察的游戏**（TicTacToe、Quoridor）`events` 和 `public_snapshot` 都传 `[]` / `{}` 即可，session 通过 `do_action_fast` 重放动作推进。
+`events` 是这次 transition 里公开可观察到的事件序列（如 Splendor 的 `deck_flip`、Azul 的 `factory_refill`），按 producer 发出的顺序排列；只喂给 belief tracker，不会作用到 state 上。`public_snapshot` 是 GT 端这一步之后所有公开 slot 的值——observer 用它整体覆写自己 session 的公开部分。**完全可观察的游戏**（TicTacToe、Quoridor）`events` 和 `public_snapshot` 都传 `[]` / `{}` 即可，session 通过 `do_action_fast` 重放动作推进。
 
 事件格式：
 ```json
