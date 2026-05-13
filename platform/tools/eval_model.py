@@ -4,16 +4,23 @@ All MCTS knobs (sims / temperature / opponent_selection / tail_solve) come from
 the named profile (default `arena`). Pass --profile to use a different one
 (e.g. `web_expert` for analysis-strength games).
 
-Usage:
-  # Quick 40-game eval against arena profile, 4 workers, stats only
-  python platform/tools/eval_model.py --game quoridor \\
-    --model-a runs/quoridor_v14/models/model_best.onnx \\
-    --games 40 --workers 4 --no-save -o /tmp/eval
+Number of seats is resolved from the game_id (`game_metadata(game).num_players`).
+The model under test rotates across all seats; the same opponent fills the rest.
 
-  # Eval at web_expert strength
+Usage:
+  # 2p model-vs-heuristic
   python platform/tools/eval_model.py --game quoridor \\
-    --model-a runs/quoridor_v14/models/model_best.onnx \\
-    --profile web_expert --games 10 -o replays/v14_eval
+    --model runs/quoridor_v14/models/model_best.onnx \\
+    --opponent heuristic --games 40 --workers 4 --no-save -o /tmp/eval
+
+  # 2p model-vs-model
+  python platform/tools/eval_model.py --game quoridor \\
+    --model new.onnx --opponent old.onnx --games 40 -o replays/v14
+
+  # 4p (LL) model-vs-heuristic
+  python platform/tools/eval_model.py --game loveletter_4p \\
+    --model games/loveletter/model/loveletter_4p.onnx \\
+    --opponent heuristic --games 40 --workers 4 --no-save -o /tmp/eval
 """
 import argparse
 import json
@@ -26,6 +33,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from game_service.replay import build_replay_dict
 from training.mcts_profile import max_game_plies, resolve_profile
 
+_HEURISTIC = "heuristic"
+
 
 def _run_one_game(task: dict) -> dict:
     import dinoboard_engine
@@ -33,31 +42,31 @@ def _run_one_game(task: dict) -> dict:
     if task["is_heuristic"]:
         result = dinoboard_engine.run_constrained_eval_vs_heuristic(
             game_id=task["game"], seed=task["seed"],
-            model_path=task["model_a"],
+            model_path=task["model_path"],
             simulations=task["sims"],
-            model_is_player=task["model_player"],
+            model_is_player=task["model_seat"],
             constrained=False,
             heuristic_temperature=task["heuristic_temp"],
             opponent_selection=task["opp_sel"])
     else:
-        ma = task["model_a"] if task["model_is_first"] else task["model_b"]
-        mb = task["model_b"] if task["model_is_first"] else task["model_a"]
+        n = task["num_players"]
+        model_paths = [task["opponent_path"]] * n
+        model_paths[task["model_seat"]] = task["model_path"]
         result = dinoboard_engine.run_arena_match(
             game_id=task["game"], seed=task["seed"],
-            model_paths=[ma, mb],
-            simulations_list=[task["sims"], task["sims"]],
+            model_paths=model_paths,
+            simulations_list=[task["sims"]] * n,
             temperature=task["temp"], max_game_plies=task["max_plies"],
             tail_solve=task["tail_solve_enabled"],
             tail_solve_depth_limit=task["tail_solve_depth_limit"],
             tail_solve_node_budget=task["tail_solve_node_budget"],
             tail_solve_margin_weight=task["tail_solve_margin_weight"],
-            opponent_selection_list=[task["opp_sel"], task["opp_sel"]])
+            opponent_selection_list=[task["opp_sel"]] * n)
 
     return {
         "game_idx": task["game_idx"],
         "seed": task["seed"],
-        "model_is_first": task["model_is_first"],
-        "model_player": task["model_player"],
+        "model_seat": task["model_seat"],
         "winner": result["winner"],
         "draw": result["draw"],
         "total_plies": result["total_plies"],
@@ -67,43 +76,54 @@ def _run_one_game(task: dict) -> dict:
 
 def main():
     p = argparse.ArgumentParser(description="Run matches and save replay JSON")
-    p.add_argument("--game", default="quoridor")
-    p.add_argument("--model-a", required=True, help="Model path (the model under test)")
-    p.add_argument("--model-b", default=None, help="Opponent model path (omit for heuristic)")
-    p.add_argument("--name-a", default=None, help="Display name for model A")
-    p.add_argument("--name-b", default=None, help="Display name for opponent")
+    p.add_argument("--game", default="quoridor",
+                   help="Game id (e.g. 'quoridor', 'loveletter_4p', 'azul_3p').")
+    p.add_argument("--model", required=True,
+                   help="Path to the model under test (rotates across all seats).")
+    p.add_argument("--opponent", default=_HEURISTIC,
+                   help="Opponent for non-test seats: model path, or 'heuristic' (default).")
+    p.add_argument("--name-model", default=None, help="Display name for the test model")
+    p.add_argument("--name-opponent", default=None, help="Display name for opponent")
     p.add_argument("--profile", default="arena",
                    help="MCTS profile name (default 'arena'; e.g. 'web_expert')")
     p.add_argument("--heuristic-temp", type=float, default=0.0,
                    help="Heuristic opponent temperature (heuristic-vs-model only)")
     p.add_argument("--seed", type=int, default=1)
-    p.add_argument("--games", type=int, default=1, help="Number of games (alternates sides)")
+    p.add_argument("--games", type=int, default=1, help="Number of games (rotates seat).")
     p.add_argument("--workers", type=int, default=1, help="Parallel workers")
     p.add_argument("--output", "-o", required=True, help="Output dir or file path")
     p.add_argument("--no-save", action="store_true", help="Only print stats, skip saving replay JSON")
     args = p.parse_args()
 
+    import dinoboard_engine
+    meta = dinoboard_engine.game_metadata(args.game)
+    num_players = meta["num_players"]
+
     profile = resolve_profile(args.game, args.profile)
     game_max_plies = max_game_plies(args.game)
 
-    name_a = args.name_a or Path(args.model_a).stem
-    is_heuristic = args.model_b is None
-    name_b = args.name_b or (f"heuristic_t{args.heuristic_temp}" if is_heuristic else Path(args.model_b).stem)
+    is_heuristic = (args.opponent == _HEURISTIC)
+    if not is_heuristic and not Path(args.opponent).exists():
+        raise SystemExit(f"--opponent path does not exist: {args.opponent}")
+
+    name_model = args.name_model or Path(args.model).stem
+    name_opp = args.name_opponent or (
+        f"heuristic_t{args.heuristic_temp}" if is_heuristic else Path(args.opponent).stem)
 
     out_path = Path(args.output)
 
     tasks = []
     for game_idx in range(args.games):
         seed = args.seed + game_idx
-        model_is_first = (game_idx % 2 == 0)
+        model_seat = game_idx % num_players
         tasks.append({
             "game_idx": game_idx,
             "game": args.game,
             "seed": seed,
-            "model_is_first": model_is_first,
-            "model_player": 0 if model_is_first else 1,
-            "model_a": args.model_a,
-            "model_b": args.model_b,
+            "num_players": num_players,
+            "model_seat": model_seat,
+            "model_path": args.model,
+            "opponent_path": None if is_heuristic else args.opponent,
             "is_heuristic": is_heuristic,
             "sims": profile.simulations,
             "temp": profile.temperature,
@@ -126,52 +146,47 @@ def main():
 
     results.sort(key=lambda r: r["game_idx"])
 
-    wins_as_first = losses_as_first = draws_as_first = 0
-    wins_as_second = losses_as_second = draws_as_second = 0
+    per_seat = [{"w": 0, "l": 0, "d": 0} for _ in range(num_players)]
 
     if args.games > 1 and not args.no_save:
         out_path.mkdir(parents=True, exist_ok=True)
 
     for r in results:
         game_idx = r["game_idx"]
-        model_is_first = r["model_is_first"]
-        model_player = r["model_player"]
-        model_won = not r["draw"] and r["winner"] == model_player
-        side_tag = "先手" if model_is_first else "后手"
+        model_seat = r["model_seat"]
+        model_won = not r["draw"] and r["winner"] == model_seat
 
         if r["draw"]:
             winner_name = "draw"
+            per_seat[model_seat]["d"] += 1
+        elif model_won:
+            winner_name = name_model
+            per_seat[model_seat]["w"] += 1
         else:
-            winner_name = name_a if model_won else name_b
+            winner_name = name_opp
+            per_seat[model_seat]["l"] += 1
 
-        if model_is_first:
-            if r["draw"]: draws_as_first += 1
-            elif model_won: wins_as_first += 1
-            else: losses_as_first += 1
-        else:
-            if r["draw"]: draws_as_second += 1
-            elif model_won: wins_as_second += 1
-            else: losses_as_second += 1
-
-        print(f"[{game_idx+1}/{args.games}] {name_a}({side_tag}) vs {name_b} "
+        print(f"[{game_idx+1}/{args.games}] {name_model}(seat{model_seat}) vs {name_opp} "
               f"seed={r['seed']}: {winner_name} wins, {r['total_plies']} plies")
 
         if args.no_save:
             continue
 
-        p0_name = name_a if model_is_first else name_b
-        p1_name = name_b if model_is_first else name_a
-        p0_type = "model" if model_is_first else ("heuristic" if is_heuristic else "model")
-        p1_type = ("heuristic" if is_heuristic else "model") if model_is_first else "model"
+        players = {}
+        for k in range(num_players):
+            if k == model_seat:
+                players[f"player_{k}"] = {"name": name_model, "type": "model"}
+            else:
+                players[f"player_{k}"] = {
+                    "name": name_opp,
+                    "type": "heuristic" if is_heuristic else "model",
+                }
 
         replay = build_replay_dict(
             game_id=args.game,
             seed=r["seed"],
             action_history=r["action_history"],
-            players={
-                "player_0": {"name": p0_name, "type": p0_type},
-                "player_1": {"name": p1_name, "type": p1_type},
-            },
+            players=players,
             result={
                 "winner": r["winner"],
                 "draw": r["draw"],
@@ -185,7 +200,8 @@ def main():
                 "tail_solve_enabled": profile.tail_solve_enabled,
                 "max_game_plies": game_max_plies,
                 "heuristic_temperature": args.heuristic_temp if is_heuristic else None,
-                "model_player": model_player,
+                "model_seat": model_seat,
+                "num_players": num_players,
             },
         )
 
@@ -196,28 +212,25 @@ def main():
                 out_path.mkdir(parents=True, exist_ok=True)
                 dest = out_path / f"game_seed{r['seed']}.json"
         else:
-            side = "1st" if model_is_first else "2nd"
-            dest = out_path / f"game_{game_idx:03d}_seed{r['seed']}_{side}.json"
+            dest = out_path / f"game_{game_idx:03d}_seed{r['seed']}_seat{model_seat}.json"
 
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(json.dumps(replay, ensure_ascii=False))
         print(f"  Saved to {dest}")
 
     if args.games > 1:
-        total_w = wins_as_first + wins_as_second
-        total_l = losses_as_first + losses_as_second
-        total_d = draws_as_first + draws_as_second
-        games_first = wins_as_first + losses_as_first + draws_as_first
-        games_second = wins_as_second + losses_as_second + draws_as_second
-        print(f"\n=== {name_a} vs {name_b} ===")
+        total_w = sum(s["w"] for s in per_seat)
+        total_l = sum(s["l"] for s in per_seat)
+        total_d = sum(s["d"] for s in per_seat)
+        print(f"\n=== {name_model} vs {name_opp} ({num_players}p) ===")
         print(f"Overall: {total_w}W-{total_l}L-{total_d}D / {args.games} games "
               f"({total_w/args.games*100:.0f}%)")
-        if games_first > 0:
-            print(f"  As 1st: {wins_as_first}W-{losses_as_first}L-{draws_as_first}D / {games_first} "
-                  f"({wins_as_first/games_first*100:.0f}%)")
-        if games_second > 0:
-            print(f"  As 2nd: {wins_as_second}W-{losses_as_second}L-{draws_as_second}D / {games_second} "
-                  f"({wins_as_second/games_second*100:.0f}%)")
+        for k in range(num_players):
+            n_k = per_seat[k]["w"] + per_seat[k]["l"] + per_seat[k]["d"]
+            if n_k == 0:
+                continue
+            print(f"  As seat{k}: {per_seat[k]['w']}W-{per_seat[k]['l']}L-{per_seat[k]['d']}D / {n_k} "
+                  f"({per_seat[k]['w']/n_k*100:.0f}%)")
 
 
 if __name__ == "__main__":

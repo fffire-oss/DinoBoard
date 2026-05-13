@@ -3,8 +3,10 @@
   There are exactly three RNGs at runtime:
     - gt_rng        — held by GT runner / API truth session, drives ground-truth
                       `do_action_fast` and initial deal.
-    - session_rng   — held by each AI session, drives the `randomize_unseen`
-                      that runs at the end of every `apply_observation`.
+    - session_rng   — held by each AI session. The session never calls
+                      `randomize_unseen` or `do_action_fast`, so this RNG
+                      is consumed only for internal seed derivations
+                      (e.g. ply-indexed sub-seeds for the MCTS search).
     - sim_rng       — sim-local stack variable, derived from the MCTS root
                       `search_seed`, drives `randomize_unseen` at sim entry
                       AND every `do_action_fast` along descent.
@@ -35,9 +37,10 @@ This test pins three concrete invariants of that contract:
 
   (C) Determinism of session_rng given (seed, observation history):
       Two independently-constructed sessions with the SAME seed driven
-      through the SAME observation history produce byte-equal hidden-field
-      snapshots. (This overlaps test_session_hidden_fields_resampled but
-      keeps the assertion in the RNG-contract namespace for grep/discovery.)
+      through the SAME observation history produce byte-equal *public*
+      hash sequences. (Hidden-field bytes on the session are no longer
+      freshened — see ALGORITHM_OVERVIEW.md §1.2 — but the public
+      projection must remain seed-deterministic.)
 
 Failure of any of (A) (B) (C) means an RNG is leaking into a path it should
 not — the most common regression class is "search_seed accidentally derived
@@ -130,11 +133,14 @@ def test_same_seed_same_history_yields_identical_hidden(game_id):
         f"different public hashes across two sessions; session_rng is not "
         f"deterministic from (seed, ply_count_).")
 
-    # Hidden fields must also agree byte-equal — pulled via state dict.
+    # Full state dicts (public + viz=0 leftovers) must agree byte-equal
+    # — same seed + same observation history must produce byte-identical
+    # session state, which means the deterministic seed flow into
+    # reset_with_seed has not been polluted by an external RNG.
     assert sess_a.get_state_dict() == sess_b.get_state_dict(), (
-        f"[{game_id}] same seed + same trace produced different hidden "
-        f"snapshots. randomize_unseen at end of apply_observation is being "
-        f"driven by an RNG other than the session-derived deterministic one.")
+        f"[{game_id}] same seed + same trace produced different state "
+        f"dicts. The session is being seeded from a moving target "
+        f"(clock, address, GT draws) instead of the explicit seed.")
 
 
 @pytest.mark.parametrize("game_id", HIDDEN_INFO_GAMES)

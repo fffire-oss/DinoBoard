@@ -247,26 +247,26 @@ Quoridor：action ∈ [0, 209)
 
 #### `do_action_fast(state, action, rng) -> UndoToken`
 
-**核心热路径方法**。在状态上原地执行动作，返回 UndoToken。MCTS 每次模拟调用上千次。`rng` 由调用方持有（runner / session），用于消费物理随机（抽牌、翻牌）；不依赖随机的游戏忽略即可。**`do_action_fast` 不支持 undo**（MCTS / selfplay / web 都丢弃用完的 state，没有 undo_stack push 必要）；要接 tail solver 才需额外实现 §3.2 的 `do_action_deterministic` + `undo_action` 配对。
+**核心热路径方法**。游戏作者重写的是 protected `do_action_fast_impl`（不是 public 的 `do_action_fast`）；后者是框架的 non-virtual wrapper，负责在调用 impl 之前自动 `state.step_count_ += 1`，作者既看不到 step_count_ 也无法忘记。MCTS 每次模拟调用上千次。`rng` 由调用方持有（runner / session），用于消费物理随机（抽牌、翻牌）；不依赖随机的游戏忽略即可。**`do_action_fast` 不支持 undo**（MCTS / selfplay / web 都丢弃用完的 state，没有 undo_stack push 必要）；要接 tail solver 才需额外重写 §3.2 的 `do_action_deterministic_impl` + `undo_action_impl` 配对。
 
 **实现模板**：
 ```cpp
-UndoToken do_action_fast(IGameState& state, ActionId action,
-                         std::mt19937_64& rng) const override {
-  auto* s = &checked_cast<MyGameState>(state);
-  s->begin_step();  // 框架要求：首行调用，bump step_count_ 保证 DAG 无环
+ protected:
+  void do_action_fast_impl(IGameState& state, ActionId action,
+                           std::mt19937_64& rng) const override {
+    auto* s = &checked_cast<MyGameState>(state);
 
-  // 1. 执行动作（不要 push undo_stack —— do_action_fast 不支持 undo）
-  //    用 rng 消费物理随机：例如 std::uniform_int_distribution<>(...)(rng)
-  // ... 修改棋盘状态、调用 reveal_slot / reset_to_base 维护 viz_ ...
+    // 1. 执行动作（不要 push undo_stack —— do_action_fast 不支持 undo）
+    //    用 rng 消费物理随机：例如 std::uniform_int_distribution<>(...)(rng)
+    // ... 修改棋盘状态、调用 reveal_slot / reset_to_base 维护 viz_ ...
 
-  // 2. 更新游戏元数据
-  s->move_count += 1;
-  // ... 检查胜负 ...
-  s->current_player_ = 1 - s->current_player_;
+    // 2. 更新游戏元数据
+    s->move_count += 1;
+    // ... 检查胜负 ...
+    s->current_player_ = 1 - s->current_player_;
 
-  return {};  // UndoToken 在 fast 路径上是 vestige，返回空即可
-}
+    // step_count_ 由框架 wrapper 自动 +1，无需手动 begin_step。
+  }
 ```
 
 #### `undo_action(state, token)`
@@ -456,7 +456,7 @@ GameBundle 是一个聚合所有游戏组件的结构体。工厂函数返回一
 | 5 | `encoder` | `unique_ptr<IFeatureEncoder>` | 是 | 特征编码器 |
 | 6 | `belief_tracker` | `unique_ptr<IBeliefTracker>` | 否 | 有隐藏信息或物理随机的游戏必须注册 |
 | 7 | `public_event_extractor` | `PublicEventExtractor` | 否 | `(before, action, after, perspective) → PublicEventTrace { events, public_snapshot }`；`events` 仅供 tracker 增量更新 belief，`public_snapshot` 用来在 observer 端整体覆写公开字段 |
-| 8 | `public_state_applier` | `PublicStateApplier` | 否 | **隐藏信息游戏必装**。配合 extractor 的 `public_snapshot` 反向写回 state。observer 路径上 `apply_observation` 不调 `do_action_fast` —— `begin_step → public_state_applier(snapshot) → tracker.observe_public_event(events) → randomize_unseen` —— 公开字段完全由 message 重建，结构性杜绝 "公开输出依赖 session 采样 hidden" 这类泄漏。Round-trip 测试见 `tests/framework/test_public_snapshot_round_trip.py` |
+| 8 | `public_state_applier` | `PublicStateApplier` | 否 | **隐藏信息游戏必装**。配合 extractor 的 `public_snapshot` 反向写回 state。observer 路径上 `apply_observation` 不调 `do_action_fast` —— `begin_step → public_state_applier(snapshot) → tracker.observe_public_event(events)` —— 公开字段完全由 message 重建，viz=0 槽位不动（决策侧的 hash / encoder / sim 都不读 viz=0 真值，结构性杜绝泄漏）。Round-trip 测试见 `tests/framework/test_public_snapshot_round_trip.py`，决策侧不读 viz=0 的回归 sweep 见 `test_public_hash_excludes_internal_rng.py` |
 | 9 | `initial_observation_extractor` | `InitialObservationExtractor` | 否 | 提取 perspective 的开局可见信息 |
 | 10 | `initial_observation_applier` | `InitialObservationApplier` | 否 | 把 initial observation 填入 state（AI API 侧用） |
 | 11 | `state_serializer` | `StateSerializer` | 否 | 状态序列化为 JSON（Web 前端需要;**也用于规则不变量测试,详见 §10.6**） |
@@ -1053,14 +1053,17 @@ BUG-037 postmortem:LL 4p step-125 DAG mismatch 的根因就是 `hash_field_slot`
   观察历史里能复现吗?"** 如果答案是"不能,这是引擎实现细节",这个字
   段就不该进 schema(应该改成 viz=0 的 hidden,或彻底从 state 移除)
 
-**Step counter**:`IGameState::step_count_` 由框架管理:
-- `do_action_fast` 里调 `s->begin_step()`(`s` 在 template 类里用
-  `this->begin_step()`)
-- `undo_action` 里调 `s->end_step()`
-- `reset_with_seed` 里重置为 0
+**Step counter**:`IGameState::step_count_` 由框架管理,**游戏作者既看不到也无法
+忘记**:
+- `step_count_` 字段是 protected,只有 `IGameRules` 是 friend
+- `IGameRules::do_action_fast` / `do_action_deterministic` / `undo_action`
+  是 non-virtual wrapper,自动在 `*_impl` 前后 ±1
+- `reset_with_seed` 第一行调 `reset_step_count_base()` 把 step_count_ 归零
 
 `state_hash_for_perspective` 自动把 step_count 计入 hash,保证 DAG 结构性
 acyclic。**游戏开发者不要在 `hash_field_slot` 里重复 hash step_count**。
+回归测试:`tests/framework/test_step_count_strict_increase.py` 跑遍 manifest
+里所有启用的游戏,assert 每动作 step_count 严格 +1。
 
 **测试建议**:构造两个 state,自己 perspective 的 viz=1 槽位完全相同,
 但 opp 私有(viz=0 to me)不同;assert
@@ -1138,11 +1141,10 @@ Stale 采样(opp hidden 字段的旧 cid 现在已经被公开看到)必须从�
            cp, chosen, evt_p.events)
 
 web / API / per-seat selfplay 推 observer state（不调 do_action_fast）：
-  4. seat.begin_step()
+  4. seat.begin_step_for_session_observe()
   5. bundle.public_state_applier(seat, evt.public_snapshot)    // public 字段由
                                                                 // message 重建
-  6. per_perspective_trackers[p]->randomize_unseen(             // hidden 字段由
-         seat, p, freshen_rng)                                  // tracker 重采
+                                                                // (viz=0 不动)
 ```
 
 游戏开发者只需实现 `IBeliefTracker` 的 5 个方法 + `initial_observation_extractor` + `public_event_extractor`（+ `public_state_applier`，隐藏信息游戏必装）。extractor 调用封装见 `bindings/py_engine.cpp`。
@@ -1235,7 +1237,7 @@ ISMCTS 根采样 + encoder 信息屏障在双人游戏中完全自洽；多人�
 2. 实现 `IBeliefTracker` 的五个方法（`init` / `observe_public_event` / `randomize_unseen` / `clone` / `serialize`），遵守"接口签名根本拿不到 `IGameState*`"的结构性约束（§10.4）
 3. Encoder 接受 `MaskedState`——viz=0 槽位由 framework 替换为 `kPlaceholder`，encoder 必须分支处理 placeholder（§10.7），不要查询 viz、不要绕过 mask 读 truth
 4. **在 `<game>_state.cpp` 用 `viz::declare_field` 声明每个 state 字段的 name + data shape + base viz tensor**（`all_public` / `owner_only_first_axis` / `all_hidden`），实现 `hash_field_slot` / `read_field_slot` / `write_field_slot` / `mask_field_slot` 四个 per-slot dispatcher（§10.3b）。框架的 walker 按 schema 顺序遍历每个 slot——`viz[..., perspective]=1` 时调 `hash_field_slot` 把 truth mix 进 hash，`viz[..., perspective]=0` 时 mix `kPlaceholder` 哨兵——自动得到 `state_hash_for_perspective(p)` 作 DAG 节点键
-5. **在 `do_action_fast` 里调 `state.begin_step()`，在 `undo_action` 里调 `state.end_step()`**，`reset_with_seed` 里重置 `this->step_count_ = 0`。`step_count_` 单调递增保证 DAG 结构性 acyclic
+5. **`reset_with_seed` 第一行调 `reset_step_count_base()` 把 step_count_ 归零**。step_count_ 由框架的 `IGameRules` wrapper 在 `do_action_fast_impl` / `do_action_deterministic_impl` 前自动 +1，在 `undo_action_impl` 后自动 -1，**作者既看不到 step_count_ 也无法忘记 / 双 bump**（字段 protected + IGameRules friend）。step_count_ 单调递增保证 DAG 结构性 acyclic（回归测试见 `tests/framework/test_step_count_strict_increase.py`）
 6. **实现 message-driven snapshot 路径**：要么用 walker（`viz::serialize_public` / `viz::apply_public`，全 schema 字段自动同步），要么用 SnapshotIO（`emit_snapshot` / `apply_snapshot` 手写），把 GT 端的公开 state 序列化为 `AnyMap public_snapshot`，AI session 端 wholesale 替换。tracker 需要的私有/对手知识增量通过 `events` 列表（`PublicEventTrace.events`）增量传递——一份 list、按 producer 顺序、不区分动作前后。详见 §14 事件协议章节（或直接参考 `games/splendor/splendor_register.cpp` walker 路径，`games/loveletter/loveletter_register.cpp` SnapshotIO 路径）
 7. 在 `make_<game>` 里注册 `belief_tracker` + `public_event_extractor` + `public_state_applier`（+ `initial_observation_extractor` / `applier` 如果游戏开局有公开信息）
 8. **验证测试**：
@@ -1457,10 +1459,11 @@ GT 端每步产出 `PublicEventTrace { events, public_snapshot }`：
 **事件 shape**：`{"kind": str, "payload": dict}`，kind 和 payload 结构由每个游戏定义。
 
 **`apply_observation(action, events, public_snapshot)`**：observer 侧统一入口，顺序：
-1. `state.begin_step()` — `step_count_` 单调递增，DAG 防环
+1. `state.begin_step_for_session_observe()` — `step_count_` 单调递增，DAG 防环（这是 session 路径上唯一一处直接 bump step_count 的合法入口；rules 路径走 `IGameRules` wrapper）
 2. `public_state_applier(state, public_snapshot)` — 公开字段整体覆写
 3. `belief_tracker.observe_public_event(actor, action, events)` — tracker 从事件流增量更新
-4. `tracker.randomize_unseen(state, perspective, session_rng)` — 重采 viz=0 槽位
+
+session 上 viz=0 槽位**不动**——决策侧的 hash 用 `kHiddenHashSentinel`、encoder 用 `kPlaceholder`、MCTS sim 入口克隆 tracker 后调 `randomize_unseen`，结构性读不到 session 的 viz=0 内容。
 
 **可见性过滤**：ground truth 端实现 `public_event_extractor` 时决定给 perspective 看什么。比如对手盲抽一张卡，事件只传 `{"player": 1}`（不带牌面），AI 知道"发生过抽牌"但不知道具体卡。框架不做 firewall——ground truth 愿意多传也可以（对接友好）。
 

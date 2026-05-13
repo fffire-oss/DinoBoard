@@ -342,13 +342,12 @@ std::vector<ActionId> AzulRules<NPlayers>::legal_actions(const IGameState& state
 }
 
 template <int NPlayers>
-UndoToken AzulRules<NPlayers>::do_action_fast(IGameState& state, ActionId action,
+void AzulRules<NPlayers>::do_action_fast_impl(IGameState& state, ActionId action,
                                               std::mt19937_64& rng) const {
   auto* s = &checked_cast<AzulState<NPlayers>>(state);
   if (!validate_action(*s, action)) {
-    return UndoToken{};
+    return;
   }
-  s->begin_step();  // framework step counter; paired with end_step in undo_action
 
   UndoRecord<NPlayers> rec;
   rec.prev_current_player = s->current_player_;
@@ -385,20 +384,19 @@ UndoToken AzulRules<NPlayers>::do_action_fast(IGameState& state, ActionId action
   }
   s->undo_stack.push_back(rec);
 
-  UndoToken token{};
-  token.undo_depth = static_cast<std::uint32_t>(s->undo_stack.size());
   apply_action_no_undo(*s, action, rng);
-  return token;
 }
 
 template <int NPlayers>
-UndoToken AzulRules<NPlayers>::do_action_deterministic(IGameState& state, ActionId action) const {
+UndoToken AzulRules<NPlayers>::do_action_deterministic_impl(IGameState& state, ActionId action) const {
   auto* s = &checked_cast<AzulState<NPlayers>>(state);
   const int prev_round = s->round_index;
+  UndoToken token{};
+  token.undo_depth = static_cast<std::uint32_t>(s->undo_stack.size());
   // Deterministic path: no draws happen because we abort before refill if
   // the action would end a round. So the rng is never consumed.
   std::mt19937_64 unused_rng(0);
-  UndoToken token = do_action_fast(state, action, unused_rng);
+  do_action_fast_impl(state, action, unused_rng);
   if (!s->terminal && s->round_index != prev_round) {
     s->terminal = true;
     s->winner_ = -1;
@@ -407,7 +405,7 @@ UndoToken AzulRules<NPlayers>::do_action_deterministic(IGameState& state, Action
 }
 
 template <int NPlayers>
-void AzulRules<NPlayers>::undo_action(IGameState& state, const UndoToken& token) const {
+void AzulRules<NPlayers>::undo_action_impl(IGameState& state, const UndoToken& token) const {
   auto* s = &checked_cast<AzulState<NPlayers>>(state);
   if (s->undo_stack.empty()) return;
   UndoRecord<NPlayers> rec = s->undo_stack.back();
@@ -426,7 +424,6 @@ void AzulRules<NPlayers>::undo_action(IGameState& state, const UndoToken& token)
     s->bag_counts = rec.full_before.bag_counts;
     s->box_lid_counts = rec.full_before.box_lid_counts;
     s->players = rec.full_before.players;
-    s->end_step();
     return;
   }
   s->current_player_ = rec.prev_current_player;
@@ -442,7 +439,6 @@ void AzulRules<NPlayers>::undo_action(IGameState& state, const UndoToken& token)
   if (rec.has_factory_source && rec.source_factory_idx >= 0 && rec.source_factory_idx < Cfg::kFactories) {
     s->factories[rec.source_factory_idx] = rec.prev_factory_source;
   }
-  s->end_step();
   (void)token;
 }
 

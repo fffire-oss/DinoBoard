@@ -20,6 +20,7 @@
 
 - [DEC-001] 旧 2p 标量价值头永久兼容（显式契约，不是 BUG）
 - [DEC-002] Warmstart 并入 heuristic_guidance schedule
+- [DEC-003] Session 不再每步 randomize_unseen + IGameRules wrapper 接管 step_count
 
 ### 框架层 Issues（搜索 / 训练 / 运行时 / 平台）
 
@@ -247,6 +248,58 @@ hold 期 `heuristic_guidance_ratio = 1.0` 时，selfplay_runner 的 `use_heurist
 
 - **重复 abstraction 是配置的债**。两条几乎同样目标（启发式当老师）的路径并存几个月，每加一个游戏就要在两套语义之间选——选错只会在多周训练后才暴露。统一到一条 schedule 后，hold 期 vs 衰减期 vs 0 期的过渡是一条平滑曲线，没有"warmstart 结束-MCTS 开始"那个突变点。
 - **特殊路径多一个就多一个失败点**。`model_warm.onnx` 在 BUG-010（init / warm 同 hash）和 BUG-011（silent ONNX 退化）里都参与过排查，但它本身不解决任何问题——只是 warmstart 阶段为了"区分 init 和 warmed 的网络"留下来的中间产物。删掉之后这个角色由 `model_init.onnx`（已存在）+ `model_step_NNNNN.onnx`（存档机制已有）覆盖，不留特殊点。
+
+---
+
+## [DEC-003] Session 不再每步 randomize_unseen + IGameRules wrapper 接管 step_count
+
+**类型**：架构决策（不是 BUG）
+**日期**：2026-05-13
+
+### 决策
+
+两条互相独立但同步落地的契约收紧：
+
+1. **session 上的 viz=0 槽位永远不被框架 freshen**。`apply_observation` / `advance_per_seat_states` / `advance_ai_view_` 都不再调 `tracker.randomize_unseen` 把"belief 采样"灌回 session state。session 上的 viz=0 字节是 `reset_with_seed` 写入的初始噪声 + 后续若干步的"未读残值"，**结构性不可读**——hash 走 `kHiddenHashSentinel`，encoder 走 `kPlaceholder`，MCTS sim 在 sim_tracker 克隆上调 `randomize_unseen` 重采。
+2. **step_count_ bookkeeping 进 IGameRules wrapper**。`do_action_fast` / `do_action_deterministic` / `undo_action` 改成 non-virtual public wrapper，自动在 protected `*_impl` 之前 / 之后 ±1。`step_count_` 字段 protected + `friend class IGameRules`，作者既看不到也无法忘记 / 双 bump。Session 路径上仍需要在 snapshot 替换前 bump 一次，框架对外暴露 `begin_step_for_session_observe()`（命名故意冗长，劝退游戏代码）。
+
+### 为什么
+
+**对 (1)**：session 上的 viz=0 内容**从来就不应该被读**——四面墙（belief 接口物理拿不到 `IGameState*`、observer 不调 `do_action_fast`、决策侧三处读全替换为 placeholder/sentinel、selfplay/web/API 三条路径同栈）已经保证它不可达。每步把它"换上一份新采样"是**冗余的 hygiene**，伪装成"belief 注入 state"——任何指望它的代码都是契约违规。删掉之后：
+- 多人 hidden-info 游戏每步省一次 walker + 一次 tracker.randomize_unseen
+- 不再有"session viz=0 内容像是某种共享 belief"的语义错觉
+- `test_public_hash_excludes_internal_rng`（60-seed 扫 4 hidden-info game）继续是结构性回归保护——两个不同 session_rng 起的 session 在 viz=0 槽位上字节会差，但 perspective hash 必须 byte-equal
+
+**对 (2)**：之前 step_count 由游戏作者在 `do_action_fast` 第一行 `s->begin_step()`、`undo_action` 末尾 `s->end_step()` 手动维护。这是 BUG-037 同一档次的隐患——**只要忘一次 / 双 bump 一次，DAG 就破环**，但作者无法从签名读出这个义务。改成 wrapper 之后：
+- protected 字段 + IGameRules friend = 作者既写不进也读不出 step_count_，**结构性无法破坏 invariant**
+- public wrapper 的 wrapper 注释直接说明了 invariant 和职责
+- `tests/framework/test_step_count_strict_increase.py` 跑遍所有启用游戏，assert 每动作 step_count 严格 +1，作为结构性回归
+
+### 落地
+
+**Plan 1 §4+§6**：
+- `engine/core/game_interfaces.h`：`step_count_` protected，IGameRules friend；新增 `reset_step_count_base()` 给游戏作者用、`begin_step_for_session_observe()` 给框架内部用；IGameRules 拆 wrapper / impl，新增 protected static `invoke_*_impl` 让 sibling instance（FilteredRulesWrapper）能跨实例调 impl
+- `engine/runtime/selfplay_runner.h`：`FilteredRulesWrapper` 改成只重写 `*_impl`，wrapper 转发通过 `invoke_*_impl(inner_, ...)`
+- 6 个游戏 rules（tictactoe / quoridor / azul / splendor / loveletter / coup）：方法重命名 `_impl` 移到 protected，删除 `s->begin_step()` / `s->end_step()`，`do_action_fast_impl` 返回 void
+- `engine/runtime/{selfplay,arena,heuristic}_runner.cpp` + `bindings/py_engine.cpp`：所有 session-snapshot 路径上的 `seat.begin_step()` 改成 `seat.begin_step_for_session_observe()`
+
+**Plan 2**：
+- `engine/runtime/{selfplay,arena,heuristic}_runner.cpp`：删除 `advance_per_seat_states` 末尾的 `tracker->randomize_unseen(seat, p, freshen_rng)`
+- `bindings/py_engine.cpp`：删除 `apply_observation` / `advance_ai_view_` 末尾的同一调用
+- `engine/search/net_mcts.cpp`：sim 入口的 `sim_tracker->randomize_unseen(sim_state, sim_rng)` 保留（这是唯一一处合法调用）
+
+### 回归保护
+
+- `tests/framework/test_step_count_strict_increase.py`：5 game × 80 ply，assert step_count 严格 +1
+- `tests/framework/test_public_hash_excludes_internal_rng.py`：60-seed × 4 hidden-info game，assert 两个不同 session_rng 起的 session 在 perspective hash 上 byte-equal（守 session viz=0 不被决策侧读）
+- `tests/framework/test_public_snapshot_round_trip.py`：每个 hidden-info game、每 ply：truth → masked → wire snapshot → observer apply，observer hash byte-equal truth（守 begin_step_for_session_observe 仍然在 snapshot apply 前推进 step）
+- 全套 `tests/framework/`（702 通过）+ 5 个 per-game 套件（199 通过）
+
+### 教训
+
+- **义务藏在签名里就总会被忘**。`do_action_fast` / `undo_action` 一直在结构上要求作者手 bump step_count_，但签名上看不出，**几个月里没出过 bug 不代表它不会出 bug**——作者新增游戏时只要复制粘贴一份漏掉 begin_step 就破环。把义务从"作者必须做对"挪到"框架自动做对、作者无法搞错"，bug 就消失在结构里。
+- **冗余 hygiene 是错觉的温床**。之前 session 每步 randomize_unseen 看起来像"维持 session 的 belief 状态最新"，但 session viz=0 从来不该被读——任何依赖它的代码都是契约违规。删掉之后契约从"作者别读 session viz=0"收紧为"框架不维护 session viz=0"，差一个层级的强度但好检查得多。
+- **结构性测试比一次性测试值钱**。新加的 `test_step_count_strict_increase` 不是测某个 bug 的修复，而是测"框架 invariant 仍然成立"——加一个游戏就自动覆盖一个游戏，作者忘不了也无法绕过。
 
 ---
 # 框架层 Issues

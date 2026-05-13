@@ -145,7 +145,7 @@ Splendor / Azul 已实现，Love Letter / Coup 未实现。详见
 
 1. **结构性证明 AI 不读真值**——架构层已经讲过 AI session 拿不到
    `IGameState*` 指向 truth；API 层的额外守护测试有
-   `test_public_snapshot_round_trip` / `test_session_hidden_fields_resampled` /
+   `test_public_snapshot_round_trip` / `test_public_hash_excludes_internal_rng` /
    `test_api_belief_matches_selfplay` / `test_api_mcts_policy_invariance`
 2. **接入第三方**——GT 端可以是任意来源（外部 API、物理桌游），只要实现
    "事件 → API"翻译层即可使用 AI，无需共享 state 代码或嵌入 C++ 引擎

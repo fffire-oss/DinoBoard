@@ -151,6 +151,9 @@ std::int8_t draw_from_deck_local(LoveLetterData<NPlayers>& d, std::mt19937_64& r
     int n = d.deck_count[static_cast<size_t>(i)];
     if (pick < n) {
       d.deck_count[static_cast<size_t>(i)] = static_cast<std::int8_t>(n - 1);
+      // Sole runtime draw site: keep first-class deck_size in sync
+      // with the multiset.
+      if (d.deck_size > 0) d.deck_size = static_cast<std::int8_t>(d.deck_size - 1);
       return static_cast<std::int8_t>(i);
     }
     pick -= n;
@@ -298,13 +301,12 @@ std::vector<ActionId> LoveLetterRules<NPlayers>::legal_actions(const IGameState&
 }
 
 template <int NPlayers>
-UndoToken LoveLetterRules<NPlayers>::do_action_fast(IGameState& state, ActionId action,
+void LoveLetterRules<NPlayers>::do_action_fast_impl(IGameState& state, ActionId action,
                                                     std::mt19937_64& rng) const {
   auto& s = checked_cast<LoveLetterState<NPlayers>>(state);
   auto& d = s.data;
 
   s.undo_stack.push_back(d);
-  s.begin_step();
   d.ply++;
 
   const DecodedAction act = decode_action(action);
@@ -438,17 +440,14 @@ UndoToken LoveLetterRules<NPlayers>::do_action_fast(IGameState& state, ActionId 
   }
 
   advance_turn(state, d, rng);
-
-  return UndoToken{static_cast<std::uint32_t>(s.undo_stack.size())};
 }
 
 template <int NPlayers>
-void LoveLetterRules<NPlayers>::undo_action(IGameState& state, const UndoToken& /*token*/) const {
+void LoveLetterRules<NPlayers>::undo_action_impl(IGameState& state, const UndoToken& /*token*/) const {
   auto& s = checked_cast<LoveLetterState<NPlayers>>(state);
   if (s.undo_stack.empty()) return;
   s.data = std::move(s.undo_stack.back());
   s.undo_stack.pop_back();
-  s.end_step();
 }
 
 template <int NPlayers>

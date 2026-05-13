@@ -110,16 +110,35 @@ class IGameState {
   //
   // Monotonically increasing across do_action_fast calls. Guarantees DAG
   // acyclicity in MCTS: any two states along a sim path have distinct
-  // step_count → distinct hash (assuming hash_public_fields includes it,
-  // which state_hash_for_perspective does automatically).
+  // step_count → distinct hash (state_hash_for_perspective folds it in
+  // automatically).
   //
-  // Games MUST NOT touch step_count directly. The framework bumps it at the
-  // start of do_action_fast via `begin_step()` and rolls it back in
-  // undo_action via `end_step()`. Games call those helpers from inside
-  // their overrides.
+  // **Game rules code never calls these directly.** The framework wrappers
+  // around IGameRules::do_action_fast / do_action_deterministic /
+  // undo_action are the only callers from the rules path. The session /
+  // runner code that applies a public snapshot to per-seat state (without
+  // running rules) calls begin_step_for_session_observe() to keep the seat
+  // state's step_count_ in sync with truth. Game `reset_with_seed`
+  // overrides call reset_step_count_base() to zero the counter on reset.
   std::uint32_t step_count() const { return step_count_; }
-  void begin_step() { ++step_count_; }
-  void end_step() { --step_count_; }
+
+  // Framework-internal: bump step_count when applying a public snapshot to
+  // a per-seat session state (rules are not run on the session). Named
+  // verbosely to discourage accidental use from game code; the only legit
+  // callers are py_engine.cpp's apply_observation, the AI-view advance
+  // helper, and the runners' advance_per_seat_states. This stays public on
+  // the IGameState surface so framework callers (which don't share a
+  // friend relationship with IGameState) can reach it.
+  void begin_step_for_session_observe() { ++step_count_; }
+
+  // Single canonical base setup for reset_with_seed overrides. Resets the
+  // framework-managed step counter; games call this as the first line of
+  // their reset_with_seed override. RNG is NOT framework state — each
+  // game's reset_with_seed constructs a one-shot std::mt19937_64 from the
+  // seed for its initial deal/shuffle and drops it on return.
+  void reset_step_count_base() {
+    step_count_ = 0;
+  }
 
   virtual int current_player() const = 0;
   virtual int first_player() const { return 0; }
@@ -129,20 +148,17 @@ class IGameState {
   virtual bool is_turn_start() const { return true; }
   virtual void reset_with_seed(std::uint64_t seed) = 0;
 
-  // Single canonical base setup for reset_with_seed overrides. Resets the
-  // framework-managed step counter; games must call this as the first line
-  // of their reset_with_seed override. RNG is NOT framework state — each
-  // game's reset_with_seed constructs a one-shot std::mt19937_64 from the
-  // seed for its initial deal/shuffle and drops it on return.
-  void reset_step_count_base() {
-    step_count_ = 0;
-  }
-
  protected:
   // Counter for DAG acyclicity. Framework-managed. Reset to 0 in
-  // reset_with_seed implementations; bumped by begin_step; rolled back by
-  // end_step.
+  // reset_with_seed implementations; bumped by IGameRules wrappers around
+  // do_action_fast / do_action_deterministic; rolled back by undo_action
+  // wrapper. Also bumped by begin_step_for_session_observe() on the
+  // session-side public-snapshot path.
   std::uint32_t step_count_ = 0;
+
+  // IGameRules wrappers are the rules-path callers that bump / roll back
+  // step_count_. Friended so the helpers stay invisible to game code.
+  friend class IGameRules;
 
  public:
   // Per-state visibility tensor, keyed by FieldDecl::name. Initialized
@@ -200,26 +216,83 @@ class IGameRules {
   virtual bool validate_action(const IGameState& state, ActionId action) const = 0;
   virtual std::vector<ActionId> legal_actions(const IGameState& state) const = 0;
 
-  // Caller-owned RNG threads through hidden draws (deck pulls, bag draws).
-  // The state itself holds no rng; the runner / session owns one and
-  // refreshes it between sims. Deterministic-path callers should use
-  // `do_action_deterministic` instead — that path is rng-free by
-  // construction (games freeze hidden draws via their own mechanic, e.g.
-  // Splendor's forced_draw_override = -2 sentinel).
-  virtual UndoToken do_action_fast(IGameState& state, ActionId action,
-                                   std::mt19937_64& rng) const = 0;
-  virtual void undo_action(IGameState& state, const UndoToken& token) const = 0;
+  // ===== Framework wrappers =====
+  //
+  // These are the public entry points callers (MCTS, runner, session, tail
+  // solver) use. They are NOT virtual: the framework forces step_count
+  // bookkeeping around the game-defined impl, so step_count_ stays an
+  // invariant the game author cannot break by forgetting to call begin_step
+  // / end_step (and cannot accidentally double-bump).
+  //
+  // do_action_fast: caller-owned RNG threads through hidden draws (deck
+  // pulls, bag draws). The state itself holds no rng; the runner / session
+  // owns one and refreshes it between sims. Returns void — the fast path
+  // does NOT support undo (MCTS / selfplay / web all discard their state).
+  //
+  // do_action_deterministic: tail-solver path; same as fast but never draws
+  // from hidden sources. Games with physical randomness in fast should
+  // override the impl — e.g. Splendor uses `forced_draw_override = -2`
+  // sentinel to mean "freeze the random source". Returns an UndoToken
+  // pairable with undo_action.
+  //
+  // undo_action: paired with do_action_deterministic only. Must restore
+  // the state byte-equally so alpha-beta on a single state object works.
+  void do_action_fast(IGameState& state, ActionId action,
+                      std::mt19937_64& rng) const {
+    state.step_count_ += 1;
+    do_action_fast_impl(state, action, rng);
+  }
+  UndoToken do_action_deterministic(IGameState& state, ActionId action) const {
+    state.step_count_ += 1;
+    return do_action_deterministic_impl(state, action);
+  }
+  void undo_action(IGameState& state, const UndoToken& token) const {
+    undo_action_impl(state, token);
+    state.step_count_ -= 1;
+  }
 
-  // `do_action_deterministic` is used by the tail solver path: same as
-  // `do_action_fast` but must NEVER draw from hidden sources (deck, bag,
-  // opp hand). Games with physical randomness in do_action_fast should
-  // override — e.g. Splendor uses `forced_draw_override = -2` sentinel
-  // to mean "freeze the random source". See docs/GAME_DEVELOPMENT_GUIDE §9.2.
-  virtual UndoToken do_action_deterministic(IGameState& state, ActionId action) const {
-    // Default: forward to do_action_fast with a throwaway rng. Subclasses
-    // that have hidden draws MUST override this to suppress them.
+ protected:
+  // ===== Game-defined impls =====
+  //
+  // Game authors override these. step_count is already bumped before the
+  // fast / deterministic impls run, and rolled back after undo runs — the
+  // game cannot see step_count and cannot break the DAG-acyclicity
+  // invariant by forgetting / double-calling.
+  virtual void do_action_fast_impl(IGameState& state, ActionId action,
+                                   std::mt19937_64& rng) const = 0;
+  virtual void undo_action_impl(IGameState& state,
+                                const UndoToken& token) const = 0;
+
+  // Default impl forwards to do_action_fast_impl with a throwaway rng,
+  // returning a bare token. Subclasses that have hidden draws MUST override
+  // this to suppress them.
+  virtual UndoToken do_action_deterministic_impl(IGameState& state,
+                                                 ActionId action) const {
     std::mt19937_64 unused_rng(0);
-    return do_action_fast(state, action, unused_rng);
+    do_action_fast_impl(state, action, unused_rng);
+    return UndoToken{};
+  }
+
+  // Static dispatch helpers for derived classes that need to forward into
+  // another IGameRules instance's impl (e.g. FilteredRulesWrapper, which
+  // wraps a delegate while replacing legal_actions). Without these, a
+  // derived class' access to *_impl is limited to its own object — C++
+  // protected access does not extend across sibling instances. Marking
+  // these `protected static` lets any IGameRules subclass call into any
+  // other IGameRules' impl, while keeping the impl invisible to non-
+  // IGameRules code (game authors, runners, etc.).
+  static void invoke_do_action_fast_impl(const IGameRules& r, IGameState& s,
+                                         ActionId a, std::mt19937_64& rng) {
+    r.do_action_fast_impl(s, a, rng);
+  }
+  static void invoke_undo_action_impl(const IGameRules& r, IGameState& s,
+                                      const UndoToken& t) {
+    r.undo_action_impl(s, t);
+  }
+  static UndoToken invoke_do_action_deterministic_impl(const IGameRules& r,
+                                                       IGameState& s,
+                                                       ActionId a) {
+    return r.do_action_deterministic_impl(s, a);
   }
 };
 

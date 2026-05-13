@@ -57,21 +57,21 @@ ArenaMatchResult run_arena_match(
     // through the tracker interface.
     PublicEventExtractor public_event_extractor = nullptr,
     InitialObservationExtractor initial_observation_extractor = nullptr,
-    // Per-seat trackers for in-scope hidden-info games. When non-empty
-    // (size == num_players), each seat's tracker is init'd once at match
-    // start and accumulates the full observation history, exactly like
-    // selfplay. MCTS root for the acting player reads from
-    // per_perspective_trackers[player]. Empty vector falls back to the
-    // legacy `belief_tracker` path for games not yet on per-seat.
+    // Per-seat trackers for hidden-info games. Size == num_players for
+    // games with belief_tracker registered; empty for fully-public games.
+    // When non-empty, each seat's tracker is init'd once at match start
+    // and accumulates the full observation history exactly like selfplay.
+    // MCTS root for the acting player reads from
+    // per_perspective_trackers[player].
     std::vector<IBeliefTracker*> per_perspective_trackers = {},
-    // Optional per-seat session state. When non-empty (size ==
-    // num_players), MCTS / encoder / legal_actions read from
-    // per_seat_states[player] instead of truth. Each seat's state is
-    // advanced via the public-event protocol (public_state_applier
-    // overwrites public from snapshot, tracker.observe_public_event
-    // updates belief, tracker.randomize_unseen freshens hidden) — never
-    // copied from truth, never runs do_action_fast on the session.
-    // Empty vector: AI path reads truth (legacy fallback).
+    // Required per-seat session state (size == num_players, no nullptrs).
+    // MCTS / encoder / legal_actions read from per_seat_states[player] —
+    // never from truth. Advanced after every truth do_action_fast via the
+    // public-event protocol: hidden-info games run public_state_applier(
+    // seat, snapshot) + tracker.observe_public_event(events); fully-public
+    // games re-run do_action_fast on each seat. viz=0 slots are never
+    // freshened — see selfplay_runner.h for the structural-unreachability
+    // argument.
     std::vector<IGameState*> per_seat_states = {},
     PublicStateApplier public_state_applier = nullptr);
 

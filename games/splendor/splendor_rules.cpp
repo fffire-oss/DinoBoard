@@ -43,6 +43,12 @@ std::int16_t draw_random_from_deck(SplendorData<NPlayers>& d, int tier_index,
       if (deck[i] == target) {
         if (i + 1 < deck.size()) deck[i] = deck.back();
         deck.pop_back();
+        // Maintain first-class public deck_sizes alongside the hidden
+        // multiset. Sole runtime draw site for tier `tier_index`.
+        if (d.deck_sizes[static_cast<size_t>(tier_index)] > 0) {
+          d.deck_sizes[static_cast<size_t>(tier_index)] = static_cast<std::int16_t>(
+              d.deck_sizes[static_cast<size_t>(tier_index)] - 1);
+        }
         return target;
       }
     }
@@ -56,6 +62,10 @@ std::int16_t draw_random_from_deck(SplendorData<NPlayers>& d, int tier_index,
     deck[idx] = deck.back();
   }
   deck.pop_back();
+  if (d.deck_sizes[static_cast<size_t>(tier_index)] > 0) {
+    d.deck_sizes[static_cast<size_t>(tier_index)] = static_cast<std::int16_t>(
+        d.deck_sizes[static_cast<size_t>(tier_index)] - 1);
+  }
   return picked;
 }
 
@@ -261,8 +271,8 @@ void finalize_turn(SplendorData<NPlayers>& d, int actor) {
   update_terminal(d, actor);
   d.current_player = (actor + 1) % Cfg::kPlayers;
   // Turn discrimination in the MCTS DAG is provided by the framework's
-  // step_count (incremented by begin_step in do_action_fast /
-  // _deterministic), which is part of state_hash.
+  // step_count (incremented by the IGameRules wrapper around
+  // do_action_fast / do_action_deterministic), which is part of state_hash.
 }
 
 }  // namespace
@@ -569,17 +579,14 @@ static void apply_splendor_viz_transition(IGameState& state,
 }
 
 template <int NPlayers>
-UndoToken SplendorRules<NPlayers>::do_action_fast(IGameState& state, ActionId action,
+void SplendorRules<NPlayers>::do_action_fast_impl(IGameState& state, ActionId action,
                                                   std::mt19937_64& rng) const {
-  // do_action_fast does NOT support undo — only do_action_deterministic
+  // The fast path does NOT support undo — only do_action_deterministic
   // does (used by the tail solver). MCTS uses do_action_fast and discards
   // the state at the end of each simulation, so an undo path is dead
   // weight. Skipping the undo_stack push keeps the hot path tight and
   // avoids the cost of cloning state.viz_ every sim step.
   auto* s = &checked_cast<SplendorState<NPlayers>>(state);
-  UndoToken t{};
-  t.undo_depth = static_cast<std::uint32_t>(s->undo_stack.size());
-  s->begin_step();
   if (validate_action(*s, action)) {
     const auto& d_before = s->persistent.data();
     const int player = d_before.current_player;
@@ -589,11 +596,10 @@ UndoToken SplendorRules<NPlayers>::do_action_fast(IGameState& state, ActionId ac
                                             reserved_size_before,
                                             s->persistent.data());
   }
-  return t;
 }
 
 template <int NPlayers>
-UndoToken SplendorRules<NPlayers>::do_action_deterministic(IGameState& state, ActionId action) const {
+UndoToken SplendorRules<NPlayers>::do_action_deterministic_impl(IGameState& state, ActionId action) const {
   auto* s = &checked_cast<SplendorState<NPlayers>>(state);
   UndoToken t{};
   t.undo_depth = static_cast<std::uint32_t>(s->undo_stack.size());
@@ -601,7 +607,6 @@ UndoToken SplendorRules<NPlayers>::do_action_deterministic(IGameState& state, Ac
   frame.persistent = s->persistent;
   frame.viz_snapshot = s->viz_;
   s->undo_stack.push_back(std::move(frame));
-  s->begin_step();
   if (validate_action(*s, action)) {
     auto data_copy = s->persistent.data();
     const int player = data_copy.current_player;
@@ -624,14 +629,13 @@ UndoToken SplendorRules<NPlayers>::do_action_deterministic(IGameState& state, Ac
 }
 
 template <int NPlayers>
-void SplendorRules<NPlayers>::undo_action(IGameState& state, const UndoToken& token) const {
+void SplendorRules<NPlayers>::undo_action_impl(IGameState& state, const UndoToken& token) const {
   auto* s = &checked_cast<SplendorState<NPlayers>>(state);
   if (s->undo_stack.empty()) return;
   auto frame = std::move(s->undo_stack.back());
   s->undo_stack.pop_back();
   s->persistent = std::move(frame.persistent);
   s->viz_ = std::move(frame.viz_snapshot);
-  s->end_step();
   (void)token;
 }
 

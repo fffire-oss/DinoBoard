@@ -45,12 +45,9 @@ std::vector<ActionId> TicTacToeRules::legal_actions(const IGameState& state) con
   return out;
 }
 
-UndoToken TicTacToeRules::do_action_fast(IGameState& state, ActionId action,
+void TicTacToeRules::do_action_fast_impl(IGameState& state, ActionId action,
                                          std::mt19937_64& /*rng*/) const {
   TicTacToeState* s = &checked_cast<TicTacToeState>(state);
-  s->begin_step();  // framework step counter for DAG acyclicity
-  UndoToken token{};
-  token.undo_depth = static_cast<std::uint32_t>(s->undo_stack.size());
 
   UndoRecord rec{};
   rec.action = action;
@@ -61,7 +58,7 @@ UndoToken TicTacToeRules::do_action_fast(IGameState& state, ActionId action,
   rec.prev_scores = s->scores;
   s->undo_stack.push_back(rec);
 
-  if (!validate_action(*s, action)) return token;
+  if (!validate_action(*s, action)) return;
 
   s->board[static_cast<size_t>(action)] = static_cast<std::int8_t>(s->current_player_);
   s->move_count += 1;
@@ -79,10 +76,9 @@ UndoToken TicTacToeRules::do_action_fast(IGameState& state, ActionId action,
   } else {
     s->current_player_ = 1 - s->current_player_;
   }
-  return token;
 }
 
-void TicTacToeRules::undo_action(IGameState& state, const UndoToken& token) const {
+void TicTacToeRules::undo_action_impl(IGameState& state, const UndoToken& token) const {
   TicTacToeState* s = &checked_cast<TicTacToeState>(state);
   if (s->undo_stack.empty()) return;
   UndoRecord rec = s->undo_stack.back();
@@ -95,7 +91,6 @@ void TicTacToeRules::undo_action(IGameState& state, const UndoToken& token) cons
   s->terminal = rec.prev_terminal;
   s->move_count = rec.prev_move_count;
   s->scores = rec.prev_scores;
-  s->end_step();  // framework step counter rollback
   (void)token;
 }
 

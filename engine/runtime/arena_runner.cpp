@@ -34,32 +34,27 @@ ArenaMatchResult run_arena_match(
   // sharing the same episode seed produce identical truth draws.
   std::mt19937_64 step_rng(match_seed);
 
-  // Per-seat session-state mode (mirrors selfplay_runner).
-  const bool use_per_seat_states = !per_seat_states.empty();
-  if (use_per_seat_states) {
-    const int num_players = state->num_players();
-    if (static_cast<int>(per_seat_states.size()) != num_players) {
+  // Per-seat session state is mandatory (mirrors selfplay_runner).
+  const int num_players = state->num_players();
+  if (static_cast<int>(per_seat_states.size()) != num_players) {
+    throw std::runtime_error(
+        "run_arena_match: per_seat_states size != num_players");
+  }
+  for (int p = 0; p < num_players; ++p) {
+    if (per_seat_states[p] == nullptr) {
       throw std::runtime_error(
-          "run_arena_match: per_seat_states size != num_players");
-    }
-    for (int p = 0; p < num_players; ++p) {
-      if (per_seat_states[p] == nullptr) {
-        throw std::runtime_error(
-            "run_arena_match: per_seat_states[p] must not be null");
-      }
+          "run_arena_match: per_seat_states[p] must not be null");
     }
   }
 
   auto ai_view_for = [&](int seat) -> IGameState& {
-    if (use_per_seat_states) return *per_seat_states[seat];
-    return *state;
+    return *per_seat_states[seat];
   };
 
   // Init each seat's tracker once at match start. Every public event is
   // fed to every tracker in the main loop below.
   const bool use_per_perspective = !per_perspective_trackers.empty();
   if (use_per_perspective) {
-    const int num_players = state->num_players();
     if (static_cast<int>(per_perspective_trackers.size()) != num_players) {
       throw std::runtime_error(
           "run_arena_match: per_perspective_trackers size != num_players");
@@ -73,28 +68,13 @@ ArenaMatchResult run_arena_match(
     }
   }
 
-  // Per-seat session-state freshening at match start.
-  if (use_per_seat_states) {
-    const int num_players = static_cast<int>(per_seat_states.size());
-    for (int p = 0; p < num_players; ++p) {
-      if (use_per_perspective && p < static_cast<int>(per_perspective_trackers.size()) &&
-          per_perspective_trackers[p]) {
-        const std::uint64_t seed_init = board_ai::rng::derive_subseed(
-            match_seed, "arena.view_freshen_init",
-            static_cast<std::uint64_t>(p));
-        std::mt19937_64 freshen_rng(seed_init);
-        per_perspective_trackers[p]->randomize_unseen(*per_seat_states[p], p, freshen_rng);
-      }
-    }
-  }
+  // No episode-start freshen — see selfplay_runner.cpp for rationale.
 
   // Per-seat session-state advance: mirrors selfplay_runner's
   // advance_per_seat_states.
   auto advance_per_seat_states =
       [&](const IGameState& truth_before, const IGameState& truth_after,
           ActionId chosen, int /*actor*/) {
-    if (!use_per_seat_states) return;
-    const int num_players = static_cast<int>(per_seat_states.size());
     for (int p = 0; p < num_players; ++p) {
       IGameState& seat = *per_seat_states[p];
       if (!public_event_extractor) {
@@ -108,25 +88,10 @@ ArenaMatchResult run_arena_match(
       }
       PublicEventTrace evt_p = public_event_extractor(
           truth_before, chosen, truth_after, p);
-      seat.begin_step();
+      seat.begin_step_for_session_observe();
       if (public_state_applier && !evt_p.public_snapshot.empty()) {
         public_state_applier(seat, evt_p.public_snapshot);
       }
-    }
-  };
-
-  auto freshen_per_seat_states = [&]() {
-    if (!use_per_seat_states || !use_per_perspective) return;
-    const int num_players = static_cast<int>(per_seat_states.size());
-    for (int p = 0; p < num_players; ++p) {
-      if (p >= static_cast<int>(per_perspective_trackers.size())) break;
-      if (!per_perspective_trackers[p]) continue;
-      const std::uint64_t freshen_seed = board_ai::rng::derive_subseed(
-          match_seed, "arena.view_freshen",
-          static_cast<std::uint64_t>(ply) * 17ULL +
-              static_cast<std::uint64_t>(p));
-      std::mt19937_64 freshen_rng(freshen_seed);
-      per_perspective_trackers[p]->randomize_unseen(*per_seat_states[p], p, freshen_rng);
     }
   };
 
@@ -195,10 +160,7 @@ ArenaMatchResult run_arena_match(
 
     result.action_history.push_back(chosen);
     result.ply_stats.push_back({stats.tail_solved, stats.tail_solve_value});
-    std::unique_ptr<IGameState> state_before;
-    const bool need_state_before =
-        belief_tracker || use_per_perspective || use_per_seat_states;
-    if (need_state_before) state_before = state->clone_state();
+    std::unique_ptr<IGameState> state_before = state->clone_state();
     rules.do_action_fast(*state, chosen, step_rng);
     if (use_per_perspective) {
       const int num_players = static_cast<int>(per_perspective_trackers.size());
@@ -220,7 +182,6 @@ ArenaMatchResult run_arena_match(
           player, chosen, evt.events);
     }
     advance_per_seat_states(*state_before, *state, chosen, player);
-    freshen_per_seat_states();
     ply += 1;
   }
 

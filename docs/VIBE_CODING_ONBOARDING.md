@@ -114,7 +114,7 @@ Full schema and per-field semantics: `docs/guide/CONFIG_REFERENCE.md` and `docs/
 
 To add a game's checklist: copy `tests/<closest-existing-game>/test_checklist.py`, change `GAME = "..."`, iterate against test failures.
 
-Hidden-info games additionally need green: `test_tracker_consistent_with_truth`, `test_ismcts_samples_respect_tracker`, `test_public_snapshot_round_trip`, `test_session_hidden_fields_resampled`, `test_api_belief_matches_selfplay`, `test_api_mcts_policy_invariance`, `test_encoder_respects_hash_scope`, `test_public_hash_excludes_internal_rng`. These are framework-level and run automatically once the game is in `FRAMEWORK_GAMES`-equivalent matrices via game-specific carriers.
+Hidden-info games additionally need green: `test_tracker_consistent_with_truth`, `test_ismcts_samples_respect_tracker`, `test_public_snapshot_round_trip`, `test_api_belief_matches_selfplay`, `test_api_mcts_policy_invariance`, `test_encoder_respects_hash_scope`, `test_public_hash_excludes_internal_rng`. These are framework-level and run automatically once the game is in `FRAMEWORK_GAMES`-equivalent matrices via game-specific carriers.
 
 ---
 

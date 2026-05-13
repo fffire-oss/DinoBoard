@@ -102,6 +102,17 @@ using HeuristicPicker = board_ai::HeuristicPicker;
 using TrainingActionFilter = board_ai::TrainingActionFilter;
 using TailSolveTrigger = board_ai::TailSolveTrigger;
 
+// Wraps another IGameRules, filtering legal_actions through a training
+// filter. Forwards every other entry point to the inner rules. Because the
+// framework wrappers around do_action_fast / do_action_deterministic /
+// undo_action are non-virtual and bump state.step_count_ themselves, this
+// class must NOT override them; instead it forwards through the *_impl
+// hooks so the inner rules' impl runs exactly once and step_count_ stays
+// in sync (we delegate to inner_'s public wrappers, which would double-bump
+// if we then also bumped here — so we just call the impl side directly via
+// inner_ as friend? No — IGameRules' public wrappers do the bookkeeping;
+// our impls run after our own bump. Net: we forward by calling
+// inner_.do_action_fast_impl etc. directly via the friend access).
 class FilteredRulesWrapper final : public IGameRules {
  public:
   FilteredRulesWrapper(const IGameRules& inner, TrainingActionFilter filter)
@@ -120,17 +131,22 @@ class FilteredRulesWrapper final : public IGameRules {
     return legal;
   }
 
-  UndoToken do_action_fast(IGameState& state, ActionId action,
+ protected:
+  // Our wrapper bumps step_count_ once (in IGameRules::do_action_fast),
+  // then we delegate to the inner rules' impl directly so it runs without
+  // a second bump. Same for deterministic / undo. Sibling-instance access
+  // to protected impls goes through the static invoke_* helpers on
+  // IGameRules.
+  void do_action_fast_impl(IGameState& state, ActionId action,
                            std::mt19937_64& rng) const override {
-    return inner_.do_action_fast(state, action, rng);
+    invoke_do_action_fast_impl(inner_, state, action, rng);
   }
-
-  void undo_action(IGameState& state, const UndoToken& token) const override {
-    inner_.undo_action(state, token);
+  void undo_action_impl(IGameState& state, const UndoToken& token) const override {
+    invoke_undo_action_impl(inner_, state, token);
   }
-
-  UndoToken do_action_deterministic(IGameState& state, ActionId action) const override {
-    return inner_.do_action_deterministic(state, action);
+  UndoToken do_action_deterministic_impl(IGameState& state,
+                                         ActionId action) const override {
+    return invoke_do_action_deterministic_impl(inner_, state, action);
   }
 
  private:
@@ -155,15 +171,17 @@ SelfplayEpisodeResult run_selfplay_episode(
     // per_perspective_trackers[current_player]. For games without hidden info:
     // empty vector; the runner skips tracker wiring entirely.
     std::vector<IBeliefTracker*> per_perspective_trackers = {},
-    // Optional per-seat session state: when non-empty (size == num_players),
+    // Required per-seat session state (size == num_players, no nullptrs).
     // MCTS/encoder/heuristic/legal_actions read from per_seat_states[player]
-    // instead of the truth state. Each seat's session state is advanced via
-    // the public-event protocol (public_state_applier overwrites public
-    // fields from the GT-side snapshot, tracker.observe_public_event(events)
-    // updates belief, then tracker.randomize_unseen freshens hidden) —
-    // never copied from truth, never runs do_action_fast on the session.
-    // When empty: AI path reads truth state (legacy fallback for games
-    // whose tracker still holds perspective-baked knowledge).
+    // — never from truth. Each seat's session state is advanced via the
+    // public-event protocol after every truth do_action_fast: hidden-info
+    // games run public_state_applier(seat, snapshot) +
+    // tracker.observe_public_event(events); fully-public games (no
+    // public_event_extractor registered) re-run do_action_fast(seat) on
+    // each seat with its own step rng. The session's viz=0 slots are
+    // never freshened — decision-side reads (hash kHiddenHashSentinel,
+    // encoder MaskedState placeholder, sim_tracker->randomize_unseen at
+    // sim entry) make them structurally unreachable.
     std::vector<IGameState*> per_seat_states = {},
     PublicStateApplier public_state_applier = nullptr,
     const IFeatureEncoder* encoder = nullptr,

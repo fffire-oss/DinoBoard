@@ -484,6 +484,15 @@ void apply_initial_observation(IGameState& state, int perspective, const AnyMap&
     d.drawn_card = take_one();
   }
 
+  // First-class deck_size: count the remaining-pool the observer just
+  // built. Subsequent plies overwrite via apply_public from snapshots
+  // (write_field_slot("deck_size") wholesale-replaces).
+  int deck_size_init = 0;
+  for (int c = 1; c <= kCardTypes; ++c) {
+    deck_size_init += d.deck_count[static_cast<size_t>(c)];
+  }
+  d.deck_size = static_cast<std::int8_t>(deck_size_init);
+
   // Re-seed viz from schema base — wipes any stale reveals carried
   // over from a prior reset. Then apply the same starting reveal truth
   // applies (`drawn_card` → starting current_player) ONLY when

@@ -54,35 +54,23 @@ SelfplayEpisodeResult run_selfplay_episode(
   auto state = initial_state.clone_state();
   int ply = 0;
 
-  // Per-seat session-state mode: when caller supplies one IGameState per
-  // seat, MCTS / encoder / heuristic / legal-action queries on the AI path
-  // read from that seat's session state instead of truth. The session state
-  // is advanced via the public-event protocol (mirrors
-  // py_engine::advance_ai_view_): pre-events apply → do_action_fast on the
-  // sampled-hidden world (its own step rng, NOT the GT step rng) →
-  // post-events apply → public_state_applier overwrites public fields →
-  // tracker.observe_public_event → tracker.randomize_unseen freshens
-  // hidden. Truth never leaks into the AI path.
-  const bool use_per_seat_states = !per_seat_states.empty();
-  if (use_per_seat_states) {
-    const int num_players = state->num_players();
-    if (static_cast<int>(per_seat_states.size()) != num_players) {
+  // Per-seat session state is mandatory: MCTS / encoder / heuristic /
+  // legal-action queries on the AI path read from that seat's session
+  // state, never from truth. The session state is advanced via the
+  // public-event protocol every ply (mirrors py_engine::advance_ai_view_).
+  const int num_players = state->num_players();
+  if (static_cast<int>(per_seat_states.size()) != num_players) {
+    throw std::runtime_error(
+        "run_selfplay_episode: per_seat_states size != num_players");
+  }
+  for (int p = 0; p < num_players; ++p) {
+    if (per_seat_states[p] == nullptr) {
       throw std::runtime_error(
-          "run_selfplay_episode: per_seat_states size != num_players");
-    }
-    for (int p = 0; p < num_players; ++p) {
-      if (per_seat_states[p] == nullptr) {
-        throw std::runtime_error(
-            "run_selfplay_episode: per_seat_states[p] must not be null");
-      }
+          "run_selfplay_episode: per_seat_states[p] must not be null");
     }
   }
-  // Picks the state the AI path should read from for the given seat: the
-  // seat's session state when per-seat mode is on, otherwise truth (legacy
-  // fallback for games whose tracker is still perspective-baked).
   auto ai_view_for = [&](int seat) -> IGameState& {
-    if (use_per_seat_states) return *per_seat_states[seat];
-    return *state;
+    return *per_seat_states[seat];
   };
 
   // Init each seat's tracker once at episode start. Every public event is
@@ -107,23 +95,13 @@ SelfplayEpisodeResult run_selfplay_episode(
     }
   }
 
-  // Per-seat session-state freshening at episode start: once trackers are
-  // init'd, sample each seat's hidden fields from the tracker's current
-  // information set so the AI path never reads truth-derived hidden values
-  // even on the first ply.
-  if (use_per_seat_states) {
-    const int num_players = static_cast<int>(per_seat_states.size());
-    for (int p = 0; p < num_players; ++p) {
-      if (use_per_perspective && p < static_cast<int>(per_perspective_trackers.size()) &&
-          per_perspective_trackers[p]) {
-        const std::uint64_t seed_init = board_ai::rng::derive_subseed(
-            episode_seed, "selfplay.view_freshen_init",
-            static_cast<std::uint64_t>(p));
-        std::mt19937_64 freshen_rng(seed_init);
-        per_perspective_trackers[p]->randomize_unseen(*per_seat_states[p], p, freshen_rng);
-      }
-    }
-  }
+  // No episode-start freshen of per-seat states. Decision-side reads
+  // (encoder via MaskedState placeholder, hash via kHiddenHashSentinel,
+  // MCTS sims via sim_tracker->randomize_unseen at sim entry) are
+  // perspective-aware by construction; truth values that linger in
+  // per_seat_states' viz=0 slots are structurally unreachable. A future
+  // direct-field read of opp-private would be a bug to catch in tests,
+  // not silently paper over with a session-side resample.
 
   // Tracing uses its own separate tracker instance so trace output stays
   // reproducible across refactors of MCTS tracker routing.
@@ -162,12 +140,10 @@ SelfplayEpisodeResult run_selfplay_episode(
   //     world; the public projection arrives whole via the snapshot, and
   //     the eventual decision will be made off whatever world MCTS samples.
   //   - fully-public game (no extractor): the seat just replays do_action_fast
-  //     deterministically. Returns immediately when use_per_seat_states is false.
+  //     deterministically.
   auto advance_per_seat_states =
       [&](const IGameState& truth_before, const IGameState& truth_after,
           ActionId chosen, int /*actor*/) {
-    if (!use_per_seat_states) return;
-    const int num_players = static_cast<int>(per_seat_states.size());
     for (int p = 0; p < num_players; ++p) {
       IGameState& seat = *per_seat_states[p];
       if (!public_event_extractor) {
@@ -182,27 +158,12 @@ SelfplayEpisodeResult run_selfplay_episode(
       }
       PublicEventTrace evt_p = public_event_extractor(
           truth_before, chosen, truth_after, p);
-      seat.begin_step();
+      seat.begin_step_for_session_observe();
       if (public_state_applier && !evt_p.public_snapshot.empty()) {
         public_state_applier(seat, evt_p.public_snapshot);
       }
       // tracker.observe_public_event is called in the per_perspective loop
       // immediately below; freshening of hidden happens after observe.
-    }
-  };
-
-  auto freshen_per_seat_states = [&]() {
-    if (!use_per_seat_states || !use_per_perspective) return;
-    const int num_players = static_cast<int>(per_seat_states.size());
-    for (int p = 0; p < num_players; ++p) {
-      if (p >= static_cast<int>(per_perspective_trackers.size())) break;
-      if (!per_perspective_trackers[p]) continue;
-      const std::uint64_t freshen_seed = board_ai::rng::derive_subseed(
-          episode_seed, "selfplay.view_freshen",
-          static_cast<std::uint64_t>(ply) * 17ULL +
-              static_cast<std::uint64_t>(p));
-      std::mt19937_64 freshen_rng(freshen_seed);
-      per_perspective_trackers[p]->randomize_unseen(*per_seat_states[p], p, freshen_rng);
     }
   };
 
@@ -295,9 +256,7 @@ SelfplayEpisodeResult run_selfplay_episode(
       }
       result.samples.push_back(std::move(sample));
 
-      std::unique_ptr<IGameState> state_before;
-      const bool need_sb_heur = use_per_perspective || tracing || use_per_seat_states;
-      if (need_sb_heur) state_before = state->clone_state();
+      std::unique_ptr<IGameState> state_before = state->clone_state();
       effective_rules.do_action_fast(*state, chosen, step_rng);
       if (use_per_perspective) {
         const int num_players = static_cast<int>(per_perspective_trackers.size());
@@ -315,7 +274,6 @@ SelfplayEpisodeResult run_selfplay_episode(
       // the AI path's view of public state stays in sync with truth's
       // public projection while hidden remains a tracker-consistent sample.
       advance_per_seat_states(*state_before, *state, chosen, player);
-      freshen_per_seat_states();
       if (tracing) {
         SelfplayObservationTrace t{};
         t.ply = ply;
@@ -421,9 +379,7 @@ SelfplayEpisodeResult run_selfplay_episode(
     sample.action_id = chosen;
     result.samples.push_back(std::move(sample));
 
-    std::unique_ptr<IGameState> state_before;
-    const bool need_state_before = use_per_perspective || tracing || use_per_seat_states;
-    if (need_state_before) state_before = state->clone_state();
+    std::unique_ptr<IGameState> state_before = state->clone_state();
     effective_rules.do_action_fast(*state, chosen, step_rng);
     if (use_per_perspective) {
       // Every seat's tracker sees every action. Each perspective extracts
@@ -440,7 +396,6 @@ SelfplayEpisodeResult run_selfplay_episode(
       }
     }
     advance_per_seat_states(*state_before, *state, chosen, player);
-    freshen_per_seat_states();
     if (tracing) {
       SelfplayObservationTrace t{};
       t.ply = ply;

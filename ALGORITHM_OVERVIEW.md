@@ -156,10 +156,10 @@ AI 端面对信息不全。收到
   `write_field_slot` / SnapshotApplier;不 OR-merge、不重算 viz)
 - 若游戏有 tracker,`events` 喂给 `tracker.observe_public_event(actor,
   action, events)` 维护观察记忆——事件**只**走 tracker 这一条路
-- viz=0 的 hidden 槽位 ← session 自己结合 tracker 维护:
-  `apply_observation` 末尾跑 `tracker.randomize_unseen(state, perspective,
-  session_rng)`,把 hidden 槽位重新采成一个 belief 一致的世界(因此 session
-  的 hidden 内容**不是 truth 的拷贝**,而是 tracker observation 历史下的 sample)
+- viz=0 的 hidden 槽位 ← session **不维护**。决策侧没人读 viz=0:MCTS 在
+  sim 入口自己 determinize(§1.3),hash 对 viz=0 混 `kHiddenHashSentinel`
+  (§5),encoder 只读 `MaskedState` 里的 placeholder(§6)。session state 的
+  viz=0 槽位留着上一次 observe 的旧值即可,无需 freshen
 - perspective 私人事实(自己的 hand、Priest 偷看到的对手手牌、对手公开了
   card_id 的 reserved 槽 ...)都由 `public_snapshot` 自然带回——只要当前
   `viz[..., perspective]=1`(不论是 base 就如此还是 rules 临时翻明的),
@@ -167,9 +167,9 @@ AI 端面对信息不全。收到
   端 `apply_public` 整张覆盖时直接落回对应槽位。schema 的 base viz 只决定
   "未发生任何 reveal 时谁能看",运行时翻面完全跟着 rules 跑(§4)
 
-**observer 不跑 `do_action_fast`**——信息不全跑没有意义,observer 只能
-sample 一个世界跑,何苦呢。决策时要"已采样的具体世界"是 sim 的事(§1.3),
-session state 只承担"接 snapshot + 走 tracker"的职责。
+**session 不跑 `do_action_fast`、不跑 `randomize_unseen`**——session 只
+负责"接 snapshot + 喂 tracker",viz=1 整张覆盖、viz=0 留着上次的旧值,等下
+一个 observe 就行。"采一个具体世界"是 sim 入口的事(§1.3),session 不重复做。
 
 **AI 端永远不在 observe 阶段重新算 viz**——viz 只在 GT 端算一次、协议
 传过来。运行时正确性 = 数据传输完整性。
@@ -235,7 +235,7 @@ state 里框架级字段只有 `step_count_`(DAG 防环,§9.5)和 `viz_`,
 | RNG | 持有者 | 生命周期 | 用途 |
 |-----|-------|---------|------|
 | **gt_rng** | GT runner | 整局 | GT 端所有 `do_action_fast` |
-| **session_rng** | 每个 AI session 一份 | session 整寿命 | `apply_observation` 末尾的 `randomize_unseen`(session 不调 `do_action_fast`,public state 从 snapshot 重建) |
+| **session_rng** | 每个 AI session 一份 | session 整寿命 | session 不调 `do_action_fast`、不调 `randomize_unseen`;public state 从 snapshot 整体重建,viz=0 槽位不动。session_rng 只在内部 step_rng_/seed 推导上使用 |
 | **sim_rng** | sim 局部栈变量 | 一次 sim | sim 入口的 `sim_tracker.randomize_unseen` + descent 中所有 `do_action_fast` |
 
 每个 rng 在自己的作用域内被反复消费(每次 `rng()` 推进内部状态),这是
@@ -250,10 +250,12 @@ GT 端、AI session 端、sim 端的随机决策因此完全解耦,这条是 ISM
 
 ## 4. Rules：唯一的 viz writer
 
-### 4.1 `do_action_fast` 同时维护 state 和 viz
+### 4.1 `do_action_fast_impl` 同时维护 state 和 viz
+
+游戏作者重写的是 protected `do_action_fast_impl`（不是 public 的 `do_action_fast`）。后者是框架的 non-virtual wrapper，在调用 impl 之前自动 `state.step_count_ += 1`，作者既看不到也无法忘记。
 
 ```cpp
-UndoToken do_action_fast(State& s, Action a, std::mt19937_64& rng) {
+void do_action_fast_impl(State& s, Action a, std::mt19937_64& rng) const {
     if (a.type == kRevealInfluence) {
         // 业务字段
         s.influence[a.player][a.slot].revealed = true;
@@ -265,8 +267,9 @@ UndoToken do_action_fast(State& s, Action a, std::mt19937_64& rng) {
         // 槽位空了，viz 重置回 base
         viz::reset_to_base(s, "hand", State::schema(), {a.player});
     }
-    s.begin_step();   // step counter ++（§9.5 DAG 防环唯一原因）
-    return {};        // UndoToken 在 do_action_fast 路径下是 vestige
+    // step_count_ 由框架的 `IGameRules::do_action_fast` wrapper 在调用
+    // `do_action_fast_impl` 之前自动 +1（§9.5 DAG 防环唯一原因），
+    // 游戏作者既看不到也无法忘记。
 }
 ```
 
@@ -288,21 +291,21 @@ register-time 校验存在性。写错字段名编译过、register-time 抛错�
 ### 4.2 `do_action_fast` 不支持 undo
 
 `do_action_fast` 是 MCTS / selfplay / arena / web 的热路径，sim 用完直接
-丢弃 state，不会 undo。**不要 push undo_stack、不要拍 viz 快照**——
-sims 跑成百万次，多余的 clone 是纯浪费。`UndoToken` 返回值是和
-`do_action_deterministic` 共享签名的 vestige，在 fast 路径不承担义务。
+丢弃 state，不会 undo。**`do_action_fast_impl` 里不要 push undo_stack、
+不要拍 viz 快照**——sims 跑成百万次，多余的 clone 是纯浪费。
 
-如果游戏要接 tail solver，**额外**实现一对配对入口：
+如果游戏要接 tail solver，**额外**重写一对配对的 protected impl：
 
-- `do_action_deterministic(state, action)`——和 `do_action_fast` 同样的
-  状态推进，但**禁止从 hidden 源抽**（deck / bag / opp hand）。一般用
+- `do_action_deterministic_impl(state, action)`——和 `do_action_fast_impl`
+  同样的状态推进，但**禁止从 hidden 源抽**（deck / bag / opp hand）。一般用
   game-side sentinel（如 Splendor 的 `forced_draw_override = -2`）freeze
   随机。这一路径**支持 undo**：push undo_stack、snapshot 任何被改的字段
-- `undo_action(state, token)`——配对的恢复入口，调 `s.end_step()` 回滚
-  step counter，按 token 还原 state / viz_
+- `undo_action_impl(state, token)`——配对的恢复入口，按 token 还原
+  state / viz_。框架的 `IGameRules::undo_action` wrapper 在 impl 返回后
+  自动 `state.step_count_ -= 1`，作者不需要、也不能直接碰 step_count_
 
 `undo_action` 的两个调用点都在 `engine/search/tail_solver.cpp`，永远跟
-`do_action_deterministic` 配对。**绝不要在 `do_action_fast` 里 push
+`do_action_deterministic` 配对。**绝不要在 `do_action_fast_impl` 里 push
 undo_stack** 然后指望 `undo_action` 能恢复——那条路径的 state 不会被
 restore。
 
@@ -358,12 +361,9 @@ override 它写 placeholder。
 GT 端 snapshot 是另一条独立 mask 调用（perspective 是 GT 视角下当前
 回合的 viewer）。
 
-变长公开列表(LL `discard_piles`、Coup `court_deck` 顶部公开切片等)目前
-**不进 schema**——FieldDecl 只表达定长 shape。这类字段由 game-side 自定
-义 emitter / applier 处理(LL `loveletter_register.cpp` 直接写
-`snap["discard_piles"]`),绕开 walker。Walker 化的方案(给 FieldDecl
-加变长档 + walker 按 runtime 长度物化)是合理 follow-up,但当前不在
-框架接口里。
+**state 里所有变量都被 schema 收编,不留后门**——hash / snapshot / encoder
+读到的每个字段都必须挂在 FieldDecl 上,没有"绕开 walker 的游戏侧手写
+emitter"这条逃生通道。
 
 ### 5.3 防呆是结构性的
 
@@ -820,16 +820,19 @@ hash(node) = digest(step_count, MaskedState(acting player))
 
 DAG 的担心：若有 cycle（action 序列走回出发点），MCTS 陷入死循环。
 
-`IGameState::step_count_` 由框架管理，每次 `do_action_fast` 里
-`begin_step()` 递增，纳入 public hash。任何两个 state 只要 step_count
-不同，hash 必不同。do_action 永远是 step++ → DAG 里 parent → child 永远
-step 增加 → 不可能回到同 hash → **结构性 acyclic**。
+`IGameState::step_count_` 由框架管理：`IGameRules::do_action_fast` /
+`do_action_deterministic` 是 non-virtual wrapper，自动 `step_count_ += 1`
+后再调用 `*_impl`；`undo_action` 是同样的 wrapper，先调 `undo_action_impl`
+再 `step_count_ -= 1`。step_count 纳入 public hash，任何两个 state 只要
+step_count 不同，hash 必不同。do_action 永远是 step++ → DAG 里 parent →
+child 永远 step 增加 → 不可能回到同 hash → **结构性 acyclic**。
 
-游戏开发者唯一要求：
+游戏作者唯一要求：
 
-- `do_action_fast` 里调 `s->begin_step()`
-- `undo_action` 里调 `s->end_step()`（仅 tail-solver 路径用，§4.2）
-- `reset_with_seed` 里 `step_count_ = 0`
+- `reset_with_seed` 第一行调 `reset_step_count_base()` 把 step_count_ 归零
+- `step_count_` 字段 protected + IGameRules friend，作者既看不到也无法
+  忘记 / 双 bump（`tests/framework/test_step_count_strict_increase.py`
+  作为结构性回归守这条）
 
 #### 多父节点与 backup 正确性
 
@@ -925,7 +928,7 @@ truth 在 `gt_rng` 上跑完 `do_action_fast` 之后,runner 把每个 seat
 ```
 per_perspective_extractor(truth_before, action, truth_after, p)
   → PublicEventTrace evt_p   // {events, public_snapshot}
-seat[p].begin_step()
+seat[p].begin_step_for_session_observe()
 public_state_applier(seat[p], evt_p.public_snapshot)
   // ↑ 用 truth-side 抽出来的公开字段快照覆盖回 session 的 public 字段
 per_perspective_trackers[p]->observe_public_event(actor, action, evt_p.events)
@@ -958,9 +961,13 @@ TTT/Quoridor/Azul/Splendor/LoveLetter 都走 per-seat 路径。
 - `test_encoder_only_reads_masked_state` 守护:encoder 输出永远不出现
   `kPlaceholder*` sentinel——任何 game encoder 漏处理 hidden 槽位都会
   让 INT32_MIN / INT8_MIN 漏到 feature 里被这条测试抓住。
-- `test_session_hidden_fields_resampled` 守护:`randomize_unseen` 在
-  session 推进末尾确实跑了——session hidden 是 belief sample 而非 truth
-  拷贝。
+- session viz=0 槽位不再每 ply 重采:`apply_observation` / 各 runner
+  `advance_per_seat_states` 末尾都不再调 `randomize_unseen`,session
+  hidden 是上一次 observe 留下的 raw bytes。任何决策路径(hash / encoder
+  / sim)都用结构性手段把它从读侧屏蔽掉,具体见 `kHiddenHashSentinel`
+  (hash)、`MaskedState` placeholder(encoder)、`sim_tracker->
+  randomize_unseen`(sim 入口);三者之外没有 consumer。`test_public_hash_excludes_internal_rng`(60-seed × 4 hidden-info 游
+  戏)是这条结构性保证的回归 sweep。
 
 ---
 
@@ -1067,7 +1074,7 @@ viz=1 还是 0,见 `docs/FRAMEWORK_DESIGN_RATIONALE.md` §3.3。
 | I16 | actor 必传 | 协议 schema required field |
 | I17 | decide 不 commit | session.state / tracker 在 decide 中只读 |
 | I18 | MCTS root state = AI session state(不是 truth) | selfplay / web / API 三路对称;`test_api_mcts_policy_invariance` 守护 |
-| I19 | session hidden 字段每 ply 由 `randomize_unseen` 重置 | session 不是 truth 拷贝;`test_session_hidden_fields_resampled` 守护 |
+| I19 | session viz=0 槽位是 unread bytes,任何决策路径不读它 | 结构性:hash 用 `kHiddenHashSentinel`、encoder 用 `MaskedState` placeholder、sim 入口走 `sim_tracker->randomize_unseen` 在 clone 上采样;`test_public_hash_excludes_internal_rng`(60-seed × 4 game)守护 |
 | I20 | belief 产出 MaskedState 公开部分 byte-equal | 只取决于 tracker 观察历史,与输入 state hidden 内容、调用者 RNG 无关;`test_api_belief_matches_selfplay` + `test_public_snapshot_round_trip` 守护 |
 | I21 | tracker 接口物理上拿不到 `IGameState*` | `init` 收 `AnyMap`,`observe_public_event` 收事件流;结构上挡掉"tracker 偷看 truth" |
 
@@ -1085,12 +1092,13 @@ viz=1 还是 0,见 `docs/FRAMEWORK_DESIGN_RATIONALE.md` §3.3。
 - `read_field_slot` / `write_field_slot`：schema 驱动 snapshot 序列化时
   实现
 - `schema_ref()`：返回 game-static schema
-- `reset_with_seed` 里 `step_count_ = 0`
-- `IGameRules::do_action_fast` 里调 `state.begin_step()`（**不支持
-  undo**——MCTS / selfplay / arena / web 都丢弃用完的 state，不要 push
-  undo_stack / 拍快照）
-- 想接 tail solver 才额外实现 `do_action_deterministic` + `undo_action`
-  配对（前者 freeze 隐藏抽牌，后者调 `state.end_step()` 回滚）
+- `reset_with_seed` 第一行调 `reset_step_count_base()` 把 step_count_ 归零
+- `IGameRules::do_action_fast_impl`（**不支持 undo**——MCTS / selfplay /
+  arena / web 都丢弃用完的 state，不要 push undo_stack / 拍快照）。
+  step_count_ 由框架 wrapper 自动 +1，作者既看不到也无法忘记
+- 想接 tail solver 才额外重写 `do_action_deterministic_impl` +
+  `undo_action_impl`（前者 freeze 隐藏抽牌，后者按 token 还原；step_count_
+  由框架 wrapper 自动配对增减）
 
 可选(按需):`belief_tracker`——没有 viz=0 槽位不需要 `randomize_unseen`,
 但作者想缓存 GT 不 care 的公开衍生特征喂 NN 也可以注册(§7)。

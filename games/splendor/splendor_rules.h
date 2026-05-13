@@ -16,10 +16,6 @@ class SplendorRules final : public IGameRules {
 
   bool validate_action(const IGameState& state, ActionId action) const override;
   std::vector<ActionId> legal_actions(const IGameState& state) const override;
-  UndoToken do_action_fast(IGameState& state, ActionId action,
-                           std::mt19937_64& rng) const override;
-  UndoToken do_action_deterministic(IGameState& state, ActionId action) const override;
-  void undo_action(IGameState& state, const UndoToken& token) const override;
 
   static bool is_terminal_data(const SplendorData<NPlayers>& data);
   static std::vector<ActionId> legal_actions_data(const SplendorData<NPlayers>& d);
@@ -28,6 +24,12 @@ class SplendorRules final : public IGameRules {
   static SplendorData<NPlayers> apply_action_copy(
       const SplendorData<NPlayers>& src, ActionId action,
       std::mt19937_64& rng);
+
+ protected:
+  void do_action_fast_impl(IGameState& state, ActionId action,
+                           std::mt19937_64& rng) const override;
+  UndoToken do_action_deterministic_impl(IGameState& state, ActionId action) const override;
+  void undo_action_impl(IGameState& state, const UndoToken& token) const override;
 };
 
 // Re-derive state.viz_["reserved"] from data.reserved_visible. Called by

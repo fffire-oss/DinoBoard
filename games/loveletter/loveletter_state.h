@@ -83,6 +83,12 @@ struct LoveLetterData {
   // deck is "draw-from-multiset" (handled by rules with rng), face-up
   // is initial-draw-only and read by encoder/heuristic as a count.
   std::array<std::int8_t, kCardTypes + 1> deck_count{};
+  // First-class public total. Maintained by rules at every draw/refill
+  // site so observers never depend on summing the (hidden) deck_count
+  // multiset to reconstruct the deck size. Treated as an independent
+  // schema slot (declared all_public); hash/read/write_field_slot all
+  // address d.deck_size directly.
+  std::int8_t deck_size = 0;
   std::int8_t set_aside_card = 0;
   std::array<std::array<std::int8_t, kCardTypes + 1>, Cfg::kPlayers> discard_count{};
   std::array<std::int8_t, kCardTypes + 1> face_up_count{};

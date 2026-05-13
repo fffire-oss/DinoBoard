@@ -154,6 +154,11 @@ SplendorPersistentState<NPlayers> SplendorPersistentState<NPlayers>::root_from_s
           take_random_from_vector(deck, rng);
       data->tableau_size[static_cast<size_t>(t)] += 1;
     }
+    // First-class public per-tier size — sync to decks[t] once at root.
+    // Subsequent updates flow through draw_random_from_deck on the truth
+    // side; observers receive deck_sizes via apply_public from the wire.
+    data->deck_sizes[static_cast<size_t>(t)] =
+        static_cast<std::int16_t>(deck.size());
   }
 
   std::vector<int> noble_ids(12);
@@ -395,7 +400,13 @@ void SplendorState<NPlayers>::hash_field_slot(
     h.add(d.tableau_size[static_cast<size_t>(idx[0])] + 47); return;
   }
   if (name == "deck_sizes") {
-    h.add(static_cast<std::int64_t>(d.decks[static_cast<size_t>(idx[0])].size()) + 59);
+    // First-class field — read d.deck_sizes[t] directly. Rules
+    // maintain it at draw_random_from_deck; observers receive it via
+    // apply_public. Do NOT read d.decks[t].size() here: decks are
+    // hidden contents, and tying the hash to a hidden container's
+    // size forces observers to re-randomize every ply just to
+    // recover this value (the bug Plan A surfaced).
+    h.add(static_cast<std::int64_t>(d.deck_sizes[static_cast<size_t>(idx[0])]) + 59);
     return;
   }
   if (name == "nobles") {
@@ -474,7 +485,7 @@ std::any SplendorState<NPlayers>::read_field_slot(
     return std::any(static_cast<int>(d.tableau_size[static_cast<size_t>(idx[0])]));
   }
   if (name == "deck_sizes") {
-    return std::any(static_cast<int>(d.decks[static_cast<size_t>(idx[0])].size()));
+    return std::any(static_cast<int>(d.deck_sizes[static_cast<size_t>(idx[0])]));
   }
   if (name == "nobles") return std::any(static_cast<int>(d.nobles[static_cast<size_t>(idx[0])]));
   // 2-D fields.
@@ -563,12 +574,16 @@ void SplendorState<NPlayers>::write_field_slot(
     d.tableau_size[static_cast<size_t>(idx[0])] = static_cast<std::int8_t>(as_int());
   }
   else if (name == "deck_sizes") {
-    // Resize tier deck to the snapshot's public size. Truncate if the
-    // observer's deck is longer; pad with -1 placeholders that
-    // randomize_unseen later fills from belief. Mirrors the
-    // pre-schema snapshot-only `deck_sizes` apply path.
+    // First-class public field. Write `deck_sizes[t]` directly; the
+    // hidden `decks[t]` multiset is tracker territory (sim-entry
+    // randomize_unseen fills it from belief). We still resize the
+    // observer's `decks[t]` to match so any session-side caller that
+    // reads `decks[t].size()` (legacy code) stays consistent — but the
+    // canonical hash source is `deck_sizes[t]`.
     const int target = as_int();
     if (target >= 0) {
+      d.deck_sizes[static_cast<size_t>(idx[0])] =
+          static_cast<std::int16_t>(target);
       auto& deck = d.decks[static_cast<size_t>(idx[0])];
       if (static_cast<int>(deck.size()) > target) {
         deck.resize(static_cast<size_t>(target));

@@ -337,40 +337,26 @@ py::dict run_selfplay_episode_py(
     cfg.temperature_schedule.decay_plies = temperature_decay_plies;
   }
 
-  // Allocate one fresh tracker per seat so each perspective's belief
-  // accumulates monotonically across plies. Skipped only for fully-public
-  // games (no belief_tracker registered).
-  //
-  // Per-seat session state: each pp_bundle's `state` doubles as that
-  // seat's session state. The runner advances each session state via the
-  // public-event protocol every ply so the AI path never reads truth. In
-  // scope: tictactoe / quoridor / azul / splendor / loveletter. Coup is
-  // still carved out (its tracker carries perspective-baked private
-  // knowledge that hasn't been migrated into state.viz yet); for it we
-  // leave per_seat_states empty and the runner falls back to truth.
-  const bool per_seat_in_scope =
-      (game_id == "tictactoe" || game_id == "quoridor" ||
-       game_id == "azul" || game_id == "splendor" ||
-       game_id == "loveletter");
+  // Allocate one fresh tracker + session state per seat. Each perspective's
+  // tracker accumulates belief monotonically; each pp_bundle's `state`
+  // doubles as that seat's session state. The runner advances each session
+  // state via the public-event protocol every ply so the AI path never
+  // reads truth. For fully-public games (no belief_tracker registered) the
+  // tracker entries are nullptr but the per-seat session state still drives
+  // the AI view.
   std::vector<std::unique_ptr<GameBundle>> pp_bundles;
   std::vector<IBeliefTracker*> pp_trackers;
   std::vector<IGameState*> per_seat_states;
   const int num_players = bundle.state->num_players();
-  if (bundle.belief_tracker || per_seat_in_scope) {
-    pp_bundles.reserve(static_cast<size_t>(num_players));
-    pp_trackers.reserve(static_cast<size_t>(num_players));
-    for (int p = 0; p < num_players; ++p) {
-      auto pb = std::make_unique<GameBundle>(
-          GameRegistry::instance().create_game(game_id, seed));
-      pp_trackers.push_back(pb->belief_tracker.get());
-      pp_bundles.push_back(std::move(pb));
-    }
-  }
-  if (per_seat_in_scope && !pp_bundles.empty()) {
-    per_seat_states.reserve(static_cast<size_t>(num_players));
-    for (int p = 0; p < num_players; ++p) {
-      per_seat_states.push_back(pp_bundles[p]->state.get());
-    }
+  pp_bundles.reserve(static_cast<size_t>(num_players));
+  pp_trackers.reserve(static_cast<size_t>(num_players));
+  per_seat_states.reserve(static_cast<size_t>(num_players));
+  for (int p = 0; p < num_players; ++p) {
+    auto pb = std::make_unique<GameBundle>(
+        GameRegistry::instance().create_game(game_id, seed));
+    pp_trackers.push_back(pb->belief_tracker.get());
+    per_seat_states.push_back(pb->state.get());
+    pp_bundles.push_back(std::move(pb));
   }
 
   auto result = runtime::run_selfplay_episode(
@@ -482,32 +468,20 @@ py::dict run_arena_match_py(
   IBeliefTracker* arena_bt = bundle.belief_tracker.get();
   const size_t n_eval = eval_ptrs.size();
 
-  // Per-seat session state (§A.a Phase 0 + §G.1): in scope for tictactoe /
-  // quoridor / azul / splendor (Phase 0) and loveletter (§G.1). Coup still
-  // falls back to the legacy single-tracker truth-state path pending §G.2.
-  const bool per_seat_in_scope =
-      (game_id == "tictactoe" || game_id == "quoridor" ||
-       game_id == "azul" || game_id == "splendor" ||
-       game_id == "loveletter");
+  // Per-seat session state + tracker for every game.
   std::vector<std::unique_ptr<GameBundle>> pp_bundles;
   std::vector<IBeliefTracker*> pp_trackers;
   std::vector<IGameState*> per_seat_states;
   const int num_players_arena = bundle.state->num_players();
-  if (bundle.belief_tracker || per_seat_in_scope) {
-    pp_bundles.reserve(static_cast<size_t>(num_players_arena));
-    pp_trackers.reserve(static_cast<size_t>(num_players_arena));
-    for (int p = 0; p < num_players_arena; ++p) {
-      auto pb = std::make_unique<GameBundle>(
-          GameRegistry::instance().create_game(game_id, seed));
-      pp_trackers.push_back(pb->belief_tracker.get());
-      pp_bundles.push_back(std::move(pb));
-    }
-  }
-  if (per_seat_in_scope && !pp_bundles.empty()) {
-    per_seat_states.reserve(static_cast<size_t>(num_players_arena));
-    for (int p = 0; p < num_players_arena; ++p) {
-      per_seat_states.push_back(pp_bundles[p]->state.get());
-    }
+  pp_bundles.reserve(static_cast<size_t>(num_players_arena));
+  pp_trackers.reserve(static_cast<size_t>(num_players_arena));
+  per_seat_states.reserve(static_cast<size_t>(num_players_arena));
+  for (int p = 0; p < num_players_arena; ++p) {
+    auto pb = std::make_unique<GameBundle>(
+        GameRegistry::instance().create_game(game_id, seed));
+    pp_trackers.push_back(pb->belief_tracker.get());
+    per_seat_states.push_back(pb->state.get());
+    pp_bundles.push_back(std::move(pb));
   }
 
   auto result = runtime::run_arena_match(
@@ -688,32 +662,20 @@ py::dict run_heuristic_episode_py(
 
   auto bundle = GameRegistry::instance().create_game(game_id, seed);
 
-  // Per-seat session state (§A.a Phase 0 + §G.1): in scope for tictactoe /
-  // quoridor / azul / splendor / loveletter. Coup falls back to truth path
-  // until §G.2.
-  const bool per_seat_in_scope =
-      (game_id == "tictactoe" || game_id == "quoridor" ||
-       game_id == "azul" || game_id == "splendor" ||
-       game_id == "loveletter");
+  // Per-seat session state + tracker for every game.
   std::vector<std::unique_ptr<GameBundle>> pp_bundles;
   std::vector<IBeliefTracker*> pp_trackers;
   std::vector<IGameState*> per_seat_states;
   const int num_players_heur = bundle.state->num_players();
-  if (bundle.belief_tracker || per_seat_in_scope) {
-    pp_bundles.reserve(static_cast<size_t>(num_players_heur));
-    pp_trackers.reserve(static_cast<size_t>(num_players_heur));
-    for (int p = 0; p < num_players_heur; ++p) {
-      auto pb = std::make_unique<GameBundle>(
-          GameRegistry::instance().create_game(game_id, seed));
-      pp_trackers.push_back(pb->belief_tracker.get());
-      pp_bundles.push_back(std::move(pb));
-    }
-  }
-  if (per_seat_in_scope && !pp_bundles.empty()) {
-    per_seat_states.reserve(static_cast<size_t>(num_players_heur));
-    for (int p = 0; p < num_players_heur; ++p) {
-      per_seat_states.push_back(pp_bundles[p]->state.get());
-    }
+  pp_bundles.reserve(static_cast<size_t>(num_players_heur));
+  pp_trackers.reserve(static_cast<size_t>(num_players_heur));
+  per_seat_states.reserve(static_cast<size_t>(num_players_heur));
+  for (int p = 0; p < num_players_heur; ++p) {
+    auto pb = std::make_unique<GameBundle>(
+        GameRegistry::instance().create_game(game_id, seed));
+    pp_trackers.push_back(pb->belief_tracker.get());
+    per_seat_states.push_back(pb->state.get());
+    pp_bundles.push_back(std::move(pb));
   }
 
   auto result = runtime::run_heuristic_episode(
@@ -940,11 +902,12 @@ class GameSessionWrapper {
   }
 
   // Advance ai_view for a single perspective. Hidden-info games: snapshot
-  // overwrites the public part, tracker observes the events, randomize_unseen
-  // re-samples viz=0 slots. Fully-public games (no extractor registered):
-  // the action itself is enough to advance, so we just run do_action_fast
-  // on the seat — there is no snapshot to apply and the tracker (if any)
-  // has nothing to observe.
+  // overwrites the public part and the tracker observes the events. Fully-
+  // public games (no extractor registered) just run do_action_fast on the
+  // seat — there is no snapshot to apply. The session's viz=0 slots are
+  // intentionally NOT freshened: nothing on the decision side reads them
+  // (MCTS sims sample at sim entry, hash uses kHiddenHashSentinel for viz=0,
+  // encoder reads MaskedState placeholders).
   void advance_ai_view_(int perspective, const IGameState& truth_before,
                         ActionId action) {
     if (perspective < 0 || perspective >= static_cast<int>(ai_views_.size())) return;
@@ -964,19 +927,13 @@ class GameSessionWrapper {
     }
     PublicEventTrace trace = bundle_->public_event_extractor(
         truth_before, action, *bundle_->state, perspective);
-    ai_views_[perspective]->begin_step();
+    ai_views_[perspective]->begin_step_for_session_observe();
     if (bundle_->public_state_applier && !trace.public_snapshot.empty()) {
       bundle_->public_state_applier(*ai_views_[perspective], trace.public_snapshot);
     }
     if (ai_trackers_[perspective]) {
       ai_trackers_[perspective]->observe_public_event(
           actor, action, trace.events);
-      const std::uint64_t freshen_seed = board_ai::rng::derive_subseed(
-          seed_, "session.view_freshen",
-          static_cast<std::uint64_t>(ply_count_) * 17ULL +
-              static_cast<std::uint64_t>(perspective));
-      std::mt19937_64 freshen_rng(freshen_seed);
-      ai_trackers_[perspective]->randomize_unseen(*ai_views_[perspective], perspective, freshen_rng);
     }
   }
 
@@ -995,6 +952,11 @@ class GameSessionWrapper {
   std::uint64_t state_hash_for_perspective(int player) const {
     return bundle_->state->state_hash_for_perspective(player);
   }
+
+  // Expose step_count so tests can assert framework wrappers around
+  // do_action_fast / do_action_deterministic / undo_action keep the
+  // counter strictly monotonic across rules-path transitions.
+  std::uint32_t step_count() const { return bundle_->state->step_count(); }
 
   py::dict get_state_dict() {
     if (!bundle_->state_serializer) {
@@ -1065,20 +1027,21 @@ class GameSessionWrapper {
   }
 
   // Combined action + events step for the AI API. Sequence:
-  //   1. begin_step() bumps step_count for DAG acyclicity (do_action_fast
-  //      is intentionally skipped — the AI session never runs rules).
+  //   1. begin_step_for_session_observe() bumps step_count for DAG
+  //      acyclicity (do_action_fast is intentionally skipped — the AI
+  //      session never runs rules).
   //   2. public_state_applier(snapshot) overwrites session state_'s public
   //      fields from the truth snapshot.
   //   3. belief_tracker.observe_public_event(actor, action, events) — the
   //      events list is fed only to the tracker; it does not mutate state.
-  //   4. belief_tracker.randomize_unseen(state_, freshen_rng) — session
-  //      hidden fields re-sampled from tracker's current information set.
   //
   // After apply_observation returns:
   //   - session state_'s public fields equal the truth snapshot exactly
   //     (test_public_snapshot_round_trip);
-  //   - session state_'s hidden fields are a fresh tracker-consistent
-  //     sample, not a copy of truth (test_session_hidden_fields_resampled);
+  //   - session state_'s viz=0 slots retain whatever was last written there;
+  //     nothing on the decision side reads them. MCTS sims sample at sim
+  //     entry on a cloned sim_tracker; the hash mixes kHiddenHashSentinel
+  //     for viz=0; the encoder reads MaskedState placeholders.
   //   - `state_hash_for_perspective(own)` on the session is byte-equal to
   //     running the same observation stream on any other seed
   //     (test_public_hash_excludes_internal_rng / test_api_belief_matches_selfplay).
@@ -1114,7 +1077,7 @@ class GameSessionWrapper {
     py::gil_scoped_release release;
     external_obs_mode_ = true;
     const int actor = bundle_->state->current_player();
-    bundle_->state->begin_step();
+    bundle_->state->begin_step_for_session_observe();
     if (have_snapshot) {
       bundle_->public_state_applier(*bundle_->state, snap_map);
     }
@@ -1122,11 +1085,6 @@ class GameSessionWrapper {
     if (bt_) {
       std::vector<PublicEvent> events_v(event_list.begin(), event_list.end());
       bt_->observe_public_event(actor, action, events_v);
-      const std::uint64_t freshen_seed = board_ai::rng::derive_subseed(
-          seed_, "session.truth_freshen",
-          static_cast<std::uint64_t>(ply_count_));
-      std::mt19937_64 freshen_rng(freshen_seed);
-      bt_->randomize_unseen(*bundle_->state, api_perspective_, freshen_rng);
     }
     ++ply_count_;
   }
@@ -1678,6 +1636,7 @@ PYBIND11_MODULE(dinoboard_engine, m) {
       .def("state_hash_for_perspective",
            &GameSessionWrapper::state_hash_for_perspective,
            py::arg("player"))
+      .def_property_readonly("step_count", &GameSessionWrapper::step_count)
       .def("get_state_dict", &GameSessionWrapper::get_state_dict)
       .def("get_action_info", &GameSessionWrapper::get_action_info)
       .def("apply_public_snapshot", &GameSessionWrapper::apply_public_snapshot,

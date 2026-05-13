@@ -361,12 +361,11 @@ std::vector<ActionId> CoupRules<NPlayers>::legal_actions(const IGameState& state
 }
 
 template <int NPlayers>
-UndoToken CoupRules<NPlayers>::do_action_fast(IGameState& state, ActionId action,
+void CoupRules<NPlayers>::do_action_fast_impl(IGameState& state, ActionId action,
                                               std::mt19937_64& rng) const {
   auto& s = checked_cast<CoupState<NPlayers>>(state);
   auto& d = s.data;
   s.undo_stack.push_back(d);
-  s.begin_step();
   d.ply++;
 
   switch (d.stage) {
@@ -618,16 +617,14 @@ UndoToken CoupRules<NPlayers>::do_action_fast(IGameState& state, ActionId action
     }
   }
 
-  return UndoToken{static_cast<std::uint32_t>(s.undo_stack.size())};
 }
 
 template <int NPlayers>
-void CoupRules<NPlayers>::undo_action(IGameState& state, const UndoToken& /*token*/) const {
+void CoupRules<NPlayers>::undo_action_impl(IGameState& state, const UndoToken& /*token*/) const {
   auto& s = checked_cast<CoupState<NPlayers>>(state);
   if (s.undo_stack.empty()) return;
   s.data = std::move(s.undo_stack.back());
   s.undo_stack.pop_back();
-  s.end_step();
 }
 
 template class CoupRules<2>;

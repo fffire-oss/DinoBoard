@@ -458,16 +458,12 @@ std::vector<ActionId> QuoridorRules::legal_actions(const IGameState& state) cons
   return out;
 }
 
-UndoToken QuoridorRules::do_action_fast(IGameState& state, ActionId action,
+void QuoridorRules::do_action_fast_impl(IGameState& state, ActionId action,
                                         std::mt19937_64& /*rng*/) const {
   QuoridorState* s = &checked_cast<QuoridorState>(state);
-  UndoToken token{};
-  token.undo_depth = static_cast<std::uint32_t>(s->undo_stack.size());
-
   if (!validate_action(*s, action)) {
-    return token;
+    return;
   }
-  s->begin_step();  // framework step counter; paired with end_step in undo_action
 
   UndoRecord rec{};
   rec.prev_player = s->current_player_;
@@ -510,10 +506,9 @@ UndoToken QuoridorRules::do_action_fast(IGameState& state, ActionId action,
   } else {
     s->current_player_ = 1 - s->current_player_;
   }
-  return token;
 }
 
-void QuoridorRules::undo_action(IGameState& state, const UndoToken& token) const {
+void QuoridorRules::undo_action_impl(IGameState& state, const UndoToken& token) const {
   QuoridorState* s = &checked_cast<QuoridorState>(state);
   if (s->undo_stack.empty()) return;
   const UndoRecord rec = s->undo_stack.back();
@@ -532,7 +527,6 @@ void QuoridorRules::undo_action(IGameState& state, const UndoToken& token) const
   s->pawn_row = rec.prev_pawn_row;
   s->pawn_col = rec.prev_pawn_col;
   s->walls_remaining = rec.prev_walls_remaining;
-  s->end_step();
   (void)token;
 }
 

@@ -98,6 +98,12 @@ struct SplendorData {
   std::array<std::int8_t, Cfg::kPlayers> reserved_size{};
 
   std::array<std::vector<std::int16_t>, 3> decks{};
+  // First-class public per-tier deck size. Maintained by rules at every
+  // draw / refill / reserve site so observers never depend on the
+  // size of `decks[t]` (whose contents are hidden) to reconstruct this
+  // hash value. read/write_field_slot for `deck_sizes` address
+  // d.deck_sizes[t] directly.
+  std::array<std::int16_t, 3> deck_sizes{};
   std::array<std::array<std::int16_t, 4>, 3> tableau{};
   std::array<std::int8_t, 3> tableau_size{};
 

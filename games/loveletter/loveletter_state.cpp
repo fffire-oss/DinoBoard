@@ -178,6 +178,15 @@ void LoveLetterState<NPlayers>::reset_with_seed(std::uint64_t seed) {
 
   d.drawn_card = draw_from_count(d.deck_count, rng);
 
+  // Initial deck_size: sum after all start-of-game draws (set_aside,
+  // 2p face-up trio, opening hands, current_player's drawn_card).
+  // Rules update d.deck_size on subsequent draws.
+  int total = 0;
+  for (int c = 1; c <= kCardTypes; ++c) {
+    total += d.deck_count[static_cast<size_t>(c)];
+  }
+  d.deck_size = static_cast<std::int8_t>(total);
+
   viz::init_viz(*this, schema());
   // Start-of-game viz reveals (drawn_card → current_player) live in
   // rules.cpp per I1 (rules are sole viz writer); they're invoked
@@ -292,11 +301,13 @@ void LoveLetterState<NPlayers>::hash_field_slot(
   // never reaches here.
   if (name == "deck_count") { return; }
   if (name == "deck_size") {
-    int total = 0;
-    for (int c = 1; c <= kCardTypes; ++c) {
-      total += d.deck_count[static_cast<size_t>(c)];
-    }
-    h.add(total + 37);
+    // First-class field — read d.deck_size directly. Rules maintain
+    // it at every draw/refill site; observers receive it via
+    // apply_public from the snapshot. Do NOT sum d.deck_count here:
+    // deck_count is hidden, summing it forces observers to
+    // re-randomize the multiset every ply just to recover this hash
+    // value (the bug Plan A surfaced).
+    h.add(d.deck_size + 37);
     return;
   }
 }
@@ -348,11 +359,7 @@ std::any LoveLetterState<NPlayers>::read_field_slot(
         d.deck_count[static_cast<size_t>(idx[0])]));
   }
   if (name == "deck_size") {
-    int total = 0;
-    for (int c = 1; c <= kCardTypes; ++c) {
-      total += d.deck_count[static_cast<size_t>(c)];
-    }
-    return std::any(total);
+    return std::any(static_cast<int>(d.deck_size));
   }
   return {};
 }
@@ -409,9 +416,7 @@ void LoveLetterState<NPlayers>::write_field_slot(
         static_cast<std::int8_t>(as_int());
   }
   else if (name == "deck_size") {
-    // Read-only derived; observer-side reconstruction is owned by
-    // randomize_unseen via deck_count. Accepting the write would let
-    // truth and observer drift; ignore.
+    d.deck_size = static_cast<std::int8_t>(as_int());
   }
 }
 
