@@ -286,6 +286,8 @@ threshold = 1/N + z · sqrt((1/N)·(1 - 1/N) / eval_games)
 
 `analysis.cover_root_edges = true` 是这条规则在 profile 里的体现；`web_expert` / `web_casual` 都设 false，行为分开。
 
+> **`analysis` profile 当前实际消费的字段**：只有 `simulations`。`platform/game_service/pipeline.py` 的 precompute / drop-score fallback 调用形如 `gs.get_ai_action(analysis_sims, 0.0, cover_root_edges=True)`——`temperature=0.0` / `cover_root_edges=true` / `opponent_selection="puct"` 这三项是分析路径的**架构性硬约束**（见上文四条），不通过 profile 字段下发，profile 里写什么都不生效；其余字段（`c_puct` / `dirichlet_*` / `tail_solve_*` / `ai_use_action_filter`）也均未在分析路径上消费。所以模板里的 `analysis` profile 通常只需 `inherits` + override `simulations`（必要时加 `cover_root_edges: true` 表达意图，但即便不写，pipeline 仍强制开）；其它字段配了不会生效，不要误以为可以用 `analysis.temperature` 做"软分析"。
+
 ---
 
 ## REST AI API 与 web profile

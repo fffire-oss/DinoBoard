@@ -5,9 +5,21 @@ Six named profiles per game:
   - web_expert / web_casual / analysis (in games/<g>/config/web.json mcts_profiles)
 
 Cross-file `inherits` is allowed; same name appearing in both files is a hard
-error. All callsites (selfplay worker, arena worker, gating, web sessions,
-AI REST sessions, analysis pipeline, eval_model.py) read MCTS knobs only via
-`resolve_profile(game_id, profile_name)`.
+error. The selfplay worker, arena worker, gating, web sessions, AI REST
+sessions, and eval_model.py all read MCTS knobs only via
+`resolve_profile(game_id, profile_name)` — every dataclass field of the
+returned MctsProfile is consumed.
+
+The `analysis` profile is a deliberate exception: only its `simulations`
+field is consumed by `platform/game_service/pipeline.py`. The drop-score /
+smart-hint path hard-codes `temperature=0.0`, `cover_root_edges=True`, and
+`opponent_selection="puct"` regardless of profile contents — those are
+architectural constraints (see CLAUDE.md "Opponent-node selection" and
+docs/guide/CONFIG_REFERENCE.md "分析 pipeline 的特殊行为"), not knobs.
+The other profile fields (`c_puct` / `dirichlet_*` / `tail_solve_*` /
+`ai_use_action_filter`) are validated and resolved for shape consistency
+but never read from the analysis profile in code. Do not configure them
+expecting an effect.
 
 Per CLAUDE.md "no silent fallbacks": every resolver branch raises on missing
 keys, unknown profile names, unknown fields, inheritance cycles, illegal

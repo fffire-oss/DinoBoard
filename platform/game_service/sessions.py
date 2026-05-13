@@ -119,6 +119,10 @@ def create_session(
         tail_solve_enabled = live_profile.tail_solve_enabled
         tail_solve_depth = live_profile.tail_solve_depth_limit
         tail_solve_budget = live_profile.tail_solve_node_budget
+        # Only `simulations` is consumed from the analysis profile. The
+        # analysis pipeline (pipeline.py) hard-codes temperature=0.0,
+        # cover_root_edges=True, opponent_selection="puct" — see the
+        # docstring on training/mcts_profile.py.
         analysis_sims = analysis_profile.simulations
     else:
         # Heuristic difficulty: no profile, no model, no MCTS knobs in play.
