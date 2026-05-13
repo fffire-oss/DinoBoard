@@ -83,7 +83,7 @@ You do not need to read `../ALGORITHM_OVERVIEW.md` unless you are modifying the 
 |------|---------|----------------------|
 | Public + deterministic | TicTacToe, Quoridor | state / rules / encoder only |
 | Public + symmetric random | Azul | state / rules / encoder; no tracker (physical randomness lives on public counts, sim_rng samples on the fly inside `do_action_fast`) |
-| Asymmetric hidden info | Splendor, Love Letter, Coup | + `belief_tracker` + visibility schema with owner-only fields + per-slot `hash_field_slot` / `mask_field_slot` / `read_field_slot` / `write_field_slot` dispatchers (Splendor: snapshot via walker; LL/Coup: still on `public_event_extractor` / `public_state_applier` / `initial_observation_extractor`/`applier` until next migration round) |
+| Asymmetric hidden info | Splendor, Love Letter, Coup | + `belief_tracker` + visibility schema with owner-only fields + per-slot `hash_field_slot` / `mask_field_slot` / `read_field_slot` / `write_field_slot` dispatchers (initial observation handshake is walker-driven via `viz::serialize_public_for_perspective` / `apply_public_for_perspective`; per-ply public snapshot via `public_event_extractor` / `public_state_applier`) |
 
 ---
 
@@ -95,7 +95,6 @@ Registered fields on `GameBundle`. None are required by the framework; opt in on
 |-----------|----------|
 | `belief_tracker` | Game has **asymmetric hidden info** (Love Letter / Splendor / Coup) and therefore viz=0 slots that MCTS sim entry must determinize. Public physical randomness alone (Azul) does **not** need a tracker — sim_rng samples directly inside `do_action_fast`. |
 | `public_event_extractor` / `applier` / `public_state_applier` | Snapshot-path game (hidden-info **or** Azul) — diff truth into events for the message stream and rebuild observer-side public state from them |
-| `initial_observation_extractor` / `applier` | Snapshot-path game with perspective-private information visible at game start (e.g. own starting hand) |
 | `tail_solver` / `tail_solve_trigger` | Want exact endgame solving and a smart trigger for when to fire it |
 | `heuristic_picker` | Hand-written scorer to bootstrap selfplay (three-stage schedule: hold → linear decay → 0) |
 | `auxiliary_scorer` | Extra learning signal beyond win/loss (e.g. score margin) |

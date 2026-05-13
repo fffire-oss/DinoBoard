@@ -376,8 +376,7 @@ py::dict run_selfplay_episode_py(
       bundle.episode_stats_extractor,
       trace_perspective,
       trace_bt,
-      trace_extractor,
-      bundle.initial_observation_extractor);
+      trace_extractor);
 
   py::gil_scoped_acquire acquire;
   return result_to_py(result);
@@ -1144,37 +1143,39 @@ class GameSessionWrapper {
 
   // Test/integration helper: extract the initial observation for a given
   // perspective from the truth state, the way the partner-side server would
-  // before sending it to the AI. Returns empty dict for games without an
-  // initial_observation_extractor (fully-public games).
+  // before sending it to the AI. Walker-driven: serializes every viz=1 slot
+  // for `perspective` keyed by schema field name (same wire shape as
+  // `public_snapshot`). For fully-public games the result carries every
+  // field; for hidden-info games it carries the perspective's own visible
+  // slots (e.g. Love Letter `hand[perspective]`, Splendor `tableau`).
   py::dict extract_initial_observation(int perspective) {
+    AnyMap snap;
+    {
+      py::gil_scoped_release release;
+      viz::serialize_public_for_perspective(
+          *bundle_->state, bundle_->state->schema_ref(), perspective, snap);
+    }
     py::dict out;
-    if (!bundle_->initial_observation_extractor) return out;
-    AnyMap obs = bundle_->initial_observation_extractor(*bundle_->state, perspective);
-    for (const auto& [k, v] : obs) out[py::cast(k)] = any_to_py(v);
+    for (const auto& [k, v] : snap) out[py::cast(k)] = any_to_py(v);
     return out;
   }
 
   // Partner-provided initial observation: perspective-specific info the AI
-  // would know at game start (e.g. own starting hand). Overrides the
-  // session's seed-generated hidden initial state for the perspective
-  // player. Throws if the game registered no applier.
-  //
-  // Tracker init is independent of this AnyMap — it bootstraps from a
-  // walker-produced MaskedState, structurally placeholder-only on viz=0
-  // slots. Even a malicious wire payload that smuggled extra fields
-  // could not reach the tracker; at worst it sets viz=0 state slots
-  // which decision-side reads cannot reach.
+  // would know at game start (e.g. own starting hand). Walker-driven —
+  // every viz=1 slot in the wire payload is written via write_field_slot;
+  // viz=0 slots stay at whatever the session's `reset_with_seed` produced
+  // (semantically-undefined leftovers; sim-entry randomize_unseen on a
+  // clone is the only path that reads them). Tracker init bootstraps from
+  // a fresh walker MaskedState, structurally placeholder-only on viz=0
+  // slots — wire payload cannot reach it.
   void apply_initial_observation(int perspective_player, py::dict initial_obs) {
-    if (!bundle_->initial_observation_applier) {
-      throw std::runtime_error(
-          "apply_initial_observation: game '" + game_id_ +
-          "' has no initial_observation_applier registered");
-    }
     AnyMap obs_map = py_dict_to_any_map(initial_obs);
     py::gil_scoped_release release;
     external_obs_mode_ = true;
     api_perspective_ = perspective_player;
-    bundle_->initial_observation_applier(*bundle_->state, perspective_player, obs_map);
+    viz::apply_public_for_perspective(
+        *bundle_->state, bundle_->state->schema_ref(), perspective_player,
+        obs_map);
     if (bt_) {
       tracker_init(*bt_, *bundle_, *bundle_->state, perspective_player);
     }
@@ -1598,7 +1599,6 @@ PYBIND11_MODULE(dinoboard_engine, m) {
     const int action_space = bundle.encoder->action_space();
     const int feature_dim = bundle.encoder->feature_dim();
     const bool has_public_state_applier = static_cast<bool>(bundle.public_state_applier);
-    const bool has_initial_observation_applier = static_cast<bool>(bundle.initial_observation_applier);
     const bool has_tail_solver = static_cast<bool>(bundle.tail_solver);
     const bool has_tail_solve_trigger = static_cast<bool>(bundle.tail_solve_trigger);
     py::gil_scoped_acquire acquire;
@@ -1606,12 +1606,13 @@ PYBIND11_MODULE(dinoboard_engine, m) {
     out["num_players"] = num_players;
     out["action_space"] = action_space;
     out["feature_dim"] = feature_dim;
-    // Capability flags: hidden-info games register a public_state_applier
-    // (and usually an initial_observation_applier); fully-public games
-    // (tictactoe, quoridor) don't. The REST AI API uses these to dispatch
-    // between the action_id-only path and the full apply_observation path.
+    // Capability flag: snapshot-path games register a public_state_applier;
+    // fully-public games (tictactoe, quoridor) don't. The REST AI API uses
+    // this to dispatch between the action_id-only path and the full
+    // apply_observation path. extract_initial_observation /
+    // apply_initial_observation are walker-driven and available for every
+    // game, so no separate has_initial_observation_applier flag is needed.
     out["has_public_state_applier"] = has_public_state_applier;
-    out["has_initial_observation_applier"] = has_initial_observation_applier;
     out["has_tail_solver"] = has_tail_solver;
     out["has_tail_solve_trigger"] = has_tail_solve_trigger;
     return out;

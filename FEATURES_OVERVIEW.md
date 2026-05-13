@@ -241,7 +241,6 @@ vs best，胜率 ≥ 阈值更新 best）。N 人游戏 candidate 轮坐每个�
 | `episode_stats_extractor` | 自定义指标追踪 |
 | `belief_tracker` | 有非对称隐藏信息(Love Letter / Splendor / Coup),需要在 ISMCTS sim 入口对 viz=0 槽位采样;纯公开物理随机的 Azul 不需要——其物理随机由 sim_rng 在 `do_action_fast` 里直接消费 |
 | `public_event_extractor` / `applier` / `public_state_applier` | snapshot-path 游戏(隐藏信息 + Azul)在 message-driven 路径下维护 session 公开字段(每 ply truth 端 extract → observer 端 apply 覆写) |
-| `initial_observation_extractor` / `applier` | snapshot-path 游戏的开局视角私有信息(自己的初始手牌) |
 
 完整字段说明见 [CONFIG_REFERENCE.md](docs/guide/CONFIG_REFERENCE.md)。
 

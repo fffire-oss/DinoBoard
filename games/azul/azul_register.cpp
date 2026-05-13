@@ -526,30 +526,6 @@ const board_ai::viz::SnapshotIO& azul_snapshot_io() {
 }
 
 template <int NPlayers>
-AnyMap extract_initial_observation(const IGameState& state, int /*perspective*/) {
-  const auto& s = board_ai::checked_cast<AzulState<NPlayers>>(state);
-  AnyMap out;
-  out["factories"] = std::any(factories_to_any(s));
-  return out;
-}
-
-template <int NPlayers>
-void apply_initial_observation(IGameState& state, int /*perspective*/, const AnyMap& obs) {
-  auto& s = board_ai::checked_cast<AzulState<NPlayers>>(state);
-  auto it = obs.find("factories");
-  if (it == obs.end()) {
-    throw std::runtime_error("azul initial_observation missing 'factories'");
-  }
-  overwrite_factories_from_any(s, it->second);
-  // At game start, center is always empty and box_lid is empty.
-  for (int c = 0; c < kColors; ++c) {
-    s.center[c] = 0;
-    s.box_lid_counts[c] = 0;
-  }
-  recompute_bag_from_visible(s);
-}
-
-template <int NPlayers>
 PublicEventTrace extract_events(
     const IGameState& before,
     ActionId /*action*/,
@@ -768,8 +744,6 @@ board_ai::GameBundle make_azul(const std::string& game_id, std::uint64_t seed) {
   b.heuristic_picker = azul_heuristic::pick<NPlayers>;
   b.public_event_extractor = azul_events::extract_events<NPlayers>;
   b.public_state_applier = azul_events::apply_public_state<NPlayers>;
-  b.initial_observation_extractor = azul_events::extract_initial_observation<NPlayers>;
-  b.initial_observation_applier = azul_events::apply_initial_observation<NPlayers>;
 
   b.tail_solver = std::make_unique<board_ai::search::AlphaBetaTailSolver>();
   // AzulRules::do_action_deterministic forces a draw-terminal (winner=-1)

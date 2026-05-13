@@ -290,6 +290,108 @@ void AzulState<NPlayers>::hash_field_slot(
   }
 }
 
+template <int NPlayers>
+std::any AzulState<NPlayers>::read_field_slot(
+    const std::string& name, const std::vector<int>& idx) const {
+  // 0-D scalars.
+  if (name == "current_player") return std::any(current_player_);
+  if (name == "game_first_player") return std::any(game_first_player_);
+  if (name == "first_player_next_round") return std::any(first_player_next_round);
+  if (name == "winner") return std::any(winner_);
+  if (name == "round_index") return std::any(round_index);
+  if (name == "terminal") return std::any(terminal);
+  if (name == "first_player_token_in_center") return std::any(first_player_token_in_center);
+  if (name == "shared_victory") return std::any(shared_victory);
+  // 1-D fields.
+  if (name == "scores") return std::any(scores[static_cast<size_t>(idx[0])]);
+  if (name == "center") return std::any(static_cast<int>(center[static_cast<size_t>(idx[0])]));
+  if (name == "bag_counts") return std::any(bag_counts[static_cast<size_t>(idx[0])]);
+  if (name == "box_lid_counts") return std::any(box_lid_counts[static_cast<size_t>(idx[0])]);
+  if (name == "player_floor_count") {
+    return std::any(static_cast<int>(players[static_cast<size_t>(idx[0])].floor_count));
+  }
+  if (name == "player_score") return std::any(players[static_cast<size_t>(idx[0])].score);
+  // 2-D fields.
+  if (name == "factories") {
+    return std::any(static_cast<int>(
+        factories[static_cast<size_t>(idx[0])][static_cast<size_t>(idx[1])]));
+  }
+  if (name == "player_line_len") {
+    return std::any(static_cast<int>(
+        players[static_cast<size_t>(idx[0])].line_len[static_cast<size_t>(idx[1])]));
+  }
+  if (name == "player_line_color") {
+    return std::any(static_cast<int>(
+        players[static_cast<size_t>(idx[0])].line_color[static_cast<size_t>(idx[1])]));
+  }
+  if (name == "player_wall_mask") {
+    return std::any(static_cast<int>(
+        players[static_cast<size_t>(idx[0])].wall_mask[static_cast<size_t>(idx[1])]));
+  }
+  if (name == "player_floor") {
+    return std::any(static_cast<int>(
+        players[static_cast<size_t>(idx[0])].floor[static_cast<size_t>(idx[1])]));
+  }
+  return {};
+}
+
+template <int NPlayers>
+void AzulState<NPlayers>::write_field_slot(
+    const std::string& name, const std::vector<int>& idx,
+    const std::any& value) {
+  auto as_int = [&]() -> int {
+    if (value.type() == typeid(int)) return std::any_cast<int>(value);
+    if (value.type() == typeid(bool)) return std::any_cast<bool>(value) ? 1 : 0;
+    return 0;
+  };
+  auto as_bool = [&]() -> bool {
+    if (value.type() == typeid(bool)) return std::any_cast<bool>(value);
+    if (value.type() == typeid(int)) return std::any_cast<int>(value) != 0;
+    return false;
+  };
+
+  if (name == "current_player") current_player_ = as_int();
+  else if (name == "game_first_player") game_first_player_ = as_int();
+  else if (name == "first_player_next_round") first_player_next_round = as_int();
+  else if (name == "winner") winner_ = as_int();
+  else if (name == "round_index") round_index = as_int();
+  else if (name == "terminal") terminal = as_bool();
+  else if (name == "first_player_token_in_center") first_player_token_in_center = as_bool();
+  else if (name == "shared_victory") shared_victory = as_bool();
+  else if (name == "scores") scores[static_cast<size_t>(idx[0])] = as_int();
+  else if (name == "center") {
+    center[static_cast<size_t>(idx[0])] = static_cast<std::uint8_t>(as_int());
+  }
+  else if (name == "bag_counts") bag_counts[static_cast<size_t>(idx[0])] = as_int();
+  else if (name == "box_lid_counts") box_lid_counts[static_cast<size_t>(idx[0])] = as_int();
+  else if (name == "player_floor_count") {
+    players[static_cast<size_t>(idx[0])].floor_count = static_cast<std::uint8_t>(as_int());
+  }
+  else if (name == "player_score") {
+    players[static_cast<size_t>(idx[0])].score = as_int();
+  }
+  else if (name == "factories") {
+    factories[static_cast<size_t>(idx[0])][static_cast<size_t>(idx[1])] =
+        static_cast<std::uint8_t>(as_int());
+  }
+  else if (name == "player_line_len") {
+    players[static_cast<size_t>(idx[0])].line_len[static_cast<size_t>(idx[1])] =
+        static_cast<std::uint8_t>(as_int());
+  }
+  else if (name == "player_line_color") {
+    players[static_cast<size_t>(idx[0])].line_color[static_cast<size_t>(idx[1])] =
+        static_cast<std::int8_t>(as_int());
+  }
+  else if (name == "player_wall_mask") {
+    players[static_cast<size_t>(idx[0])].wall_mask[static_cast<size_t>(idx[1])] =
+        static_cast<std::uint8_t>(as_int());
+  }
+  else if (name == "player_floor") {
+    players[static_cast<size_t>(idx[0])].floor[static_cast<size_t>(idx[1])] =
+        static_cast<std::int8_t>(as_int());
+  }
+}
+
 template class AzulState<2>;
 template class AzulState<3>;
 template class AzulState<4>;

@@ -31,8 +31,7 @@ SelfplayEpisodeResult run_selfplay_episode(
     EpisodeStatsExtractor episode_stats_extractor,
     int trace_perspective,
     IBeliefTracker* trace_belief_tracker,
-    PublicEventExtractor public_event_extractor,
-    board_ai::InitialObservationExtractor initial_observation_extractor) {
+    PublicEventExtractor public_event_extractor) {
   SelfplayEpisodeResult result{};
 
   if (config.tail_solve_enabled && (!tail_solver || !tail_solve_trigger)) {
@@ -123,16 +122,13 @@ SelfplayEpisodeResult run_selfplay_episode(
       trace_belief_tracker->init(*trace_bootstrap, trace_perspective);
       result.initial_belief_snapshot = trace_belief_tracker->serialize();
     }
-    // Wire-shape bootstrap snapshot for trace consumers. Produced by
-    // the per-game initial_observation_extractor (the same AnyMap shape
-    // GameSession::apply_initial_observation expects). The tracker
-    // bootstrap above does NOT use this — tracker.init reads only the
-    // walker MaskedState, so even if the wire AnyMap carried extra
-    // fields the tracker physically cannot peek at them.
-    if (initial_observation_extractor) {
-      result.initial_observation =
-          initial_observation_extractor(*state, trace_perspective);
-    }
+    // Wire-shape bootstrap snapshot for trace consumers — walker-driven,
+    // same AnyMap shape as per-ply public_snapshot. The tracker bootstrap
+    // above does NOT use this AnyMap; tracker.init reads the walker
+    // MaskedState directly.
+    viz::serialize_public_for_perspective(
+        *state, state->schema_ref(), trace_perspective,
+        result.initial_observation);
   }
 
   std::mt19937_64 heuristic_rng(

@@ -263,89 +263,6 @@ void mutate_persistent(SplendorState<NPlayers>& s,
 }
 
 template <int NPlayers>
-AnyMap extract_initial_observation(const IGameState& state, int /*perspective*/) {
-  using Cfg = SplendorConfig<NPlayers>;
-  const auto& s = board_ai::checked_cast<SplendorState<NPlayers>>(state);
-  const auto& d = s.persistent.data();
-  AnyMap out;
-  std::vector<std::vector<int>> tableau(3);
-  for (int t = 0; t < 3; ++t) {
-    tableau[t].resize(4, -1);
-    for (int slot = 0; slot < d.tableau_size[t]; ++slot) {
-      tableau[t][slot] = static_cast<int>(d.tableau[t][slot]);
-    }
-  }
-  std::vector<std::any> tableau_any;
-  for (auto& t : tableau) tableau_any.push_back(std::any(std::move(t)));
-  out["tableau"] = std::any(tableau_any);
-
-  std::vector<int> nobles;
-  for (int i = 0; i < d.nobles_size; ++i) nobles.push_back(static_cast<int>(d.nobles[i]));
-  out["nobles"] = std::any(nobles);
-  return out;
-}
-
-template <int NPlayers>
-void apply_initial_observation(IGameState& state, int /*perspective*/, const AnyMap& obs) {
-  using Cfg = SplendorConfig<NPlayers>;
-  auto& s = board_ai::checked_cast<SplendorState<NPlayers>>(state);
-  auto it_t = obs.find("tableau");
-  auto it_n = obs.find("nobles");
-  if (it_t == obs.end() || it_n == obs.end()) {
-    throw std::runtime_error("splendor initial_observation needs 'tableau' and 'nobles'");
-  }
-  auto tableau_any = std::any_cast<std::vector<std::any>>(it_t->second);
-  if (tableau_any.size() != 3) {
-    throw std::runtime_error("splendor initial_observation: tableau must have 3 tiers");
-  }
-  std::array<std::vector<int>, 3> gt_tableau;
-  for (int t = 0; t < 3; ++t) {
-    gt_tableau[t] = std::any_cast<std::vector<int>>(tableau_any[t]);
-  }
-  std::vector<int> gt_nobles = std::any_cast<std::vector<int>>(it_n->second);
-
-  mutate_persistent<NPlayers>(s, [&](SplendorData<NPlayers>& d) {
-    // Set tableau cards and recompute tableau_size.
-    for (int t = 0; t < 3; ++t) {
-      int size = 0;
-      for (int slot = 0; slot < 4; ++slot) {
-        const int cid = (slot < static_cast<int>(gt_tableau[t].size())) ? gt_tableau[t][slot] : -1;
-        d.tableau[t][slot] = static_cast<std::int16_t>(cid);
-        if (cid >= 0) size = slot + 1;
-      }
-      d.tableau_size[t] = static_cast<std::int8_t>(size);
-    }
-    // Set nobles.
-    for (int i = 0; i < Cfg::kNobleCount; ++i) {
-      d.nobles[i] = (i < static_cast<int>(gt_nobles.size()))
-          ? static_cast<std::int16_t>(gt_nobles[i]) : static_cast<std::int16_t>(-1);
-    }
-    d.nobles_size = static_cast<std::int8_t>(std::min<int>(gt_nobles.size(), Cfg::kNobleCount));
-
-    // Rebuild decks: all cards that aren't on the tableau or in nobles and
-    // aren't already dealt/reserved/discarded. At game start, only the
-    // tableau has been dealt from decks. The persistent tree cache is now
-    // stale — mutate_persistent resets that via reseating.
-    std::unordered_set<int> on_tableau;
-    for (int t = 0; t < 3; ++t) {
-      for (int slot = 0; slot < d.tableau_size[t]; ++slot) {
-        if (d.tableau[t][slot] >= 0) on_tableau.insert(d.tableau[t][slot]);
-      }
-    }
-    const auto& pool = board_ai::splendor::splendor_card_pool();
-    for (int t = 0; t < 3; ++t) d.decks[t].clear();
-    for (int cid = 0; cid < static_cast<int>(pool.size()); ++cid) {
-      if (on_tableau.count(cid)) continue;
-      const int tier = pool[cid].tier - 1;
-      if (tier >= 0 && tier < 3) {
-        d.decks[tier].push_back(static_cast<std::int16_t>(cid));
-      }
-    }
-  });
-}
-
-
-template <int NPlayers>
 PublicEventTrace extract_events(
     const IGameState& before,
     ActionId action,
@@ -702,8 +619,6 @@ board_ai::GameBundle make_splendor(const std::string& game_id, std::uint64_t see
   b.heuristic_picker = splendor_heuristic::pick<NPlayers>;
   b.public_event_extractor = splendor_events::extract_events<NPlayers>;
   b.public_state_applier = splendor_events::apply_public_state<NPlayers>;
-  b.initial_observation_extractor = splendor_events::extract_initial_observation<NPlayers>;
-  b.initial_observation_applier = splendor_events::apply_initial_observation<NPlayers>;
 
   b.tail_solver = std::make_unique<board_ai::search::AlphaBetaTailSolver>();
   // SplendorRules::do_action_deterministic sets forced_draw_override = -2

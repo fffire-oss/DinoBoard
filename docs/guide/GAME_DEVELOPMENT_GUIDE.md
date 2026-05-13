@@ -457,17 +457,23 @@ GameBundle 是一个聚合所有游戏组件的结构体。工厂函数返回一
 | 6 | `belief_tracker` | `unique_ptr<IBeliefTracker>` | 否 | 有隐藏信息或物理随机的游戏必须注册 |
 | 7 | `public_event_extractor` | `PublicEventExtractor` | 否 | `(before, action, after, perspective) → PublicEventTrace { events, public_snapshot }`；`events` 仅供 tracker 增量更新 belief，`public_snapshot` 用来在 observer 端整体覆写公开字段 |
 | 8 | `public_state_applier` | `PublicStateApplier` | 否 | **隐藏信息游戏必装**。配合 extractor 的 `public_snapshot` 反向写回 state。observer 路径上 `apply_observation` 不调 `do_action_fast` —— `begin_step → public_state_applier(snapshot) → tracker.observe_public_event(events)` —— 公开字段完全由 message 重建，viz=0 槽位不动（决策侧的 hash / encoder / sim 都不读 viz=0 真值，结构性杜绝泄漏）。Round-trip 测试见 `tests/framework/test_public_snapshot_round_trip.py`，决策侧不读 viz=0 的回归 sweep 见 `test_public_hash_excludes_internal_rng.py` |
-| 9 | `initial_observation_extractor` | `InitialObservationExtractor` | 否 | 提取 perspective 的开局可见信息 |
-| 10 | `initial_observation_applier` | `InitialObservationApplier` | 否 | 把 initial observation 填入 state（AI API 侧用） |
-| 11 | `state_serializer` | `StateSerializer` | 否 | 状态序列化为 JSON（Web 前端需要;**也用于规则不变量测试,详见 §10.6**） |
-| 12 | `action_descriptor` | `ActionDescriptor` | 否 | 动作语义描述（Web 前端需要） |
-| 13 | `heuristic_picker` | `HeuristicPicker` | 否 | 启发式策略（heuristic guidance + eval benchmark） |
-| 14 | `tail_solver` | `unique_ptr<ITailSolver>` | 否 | 残局求解器（通常用 `AlphaBetaTailSolver`） |
-| 15 | `tail_solve_trigger` | `TailSolveTrigger` | 否 | 残局求解触发条件（未注册则 fallback 到 ply 阈值） |
-| 16 | `episode_stats_extractor` | `EpisodeStatsExtractor` | 否 | 每局自定义统计 |
-| 17 | `adjudicator` | `GameAdjudicator` | 否 | 超时判定胜负 |
-| 18 | `auxiliary_scorer` | `AuxiliaryScorer` | 否 | 辅助训练信号 |
-| 19 | `training_action_filter` | `TrainingActionFilter` | 否 | 训练时约束动作空间 |
+| 9 | `state_serializer` | `StateSerializer` | 否 | 状态序列化为 JSON（Web 前端需要;**也用于规则不变量测试,详见 §10.6**） |
+| 10 | `action_descriptor` | `ActionDescriptor` | 否 | 动作语义描述（Web 前端需要） |
+| 11 | `heuristic_picker` | `HeuristicPicker` | 否 | 启发式策略（heuristic guidance + eval benchmark） |
+| 12 | `tail_solver` | `unique_ptr<ITailSolver>` | 否 | 残局求解器（通常用 `AlphaBetaTailSolver`） |
+| 13 | `tail_solve_trigger` | `TailSolveTrigger` | 否 | 残局求解触发条件（未注册则 fallback 到 ply 阈值） |
+| 14 | `episode_stats_extractor` | `EpisodeStatsExtractor` | 否 | 每局自定义统计 |
+| 15 | `adjudicator` | `GameAdjudicator` | 否 | 超时判定胜负 |
+| 16 | `auxiliary_scorer` | `AuxiliaryScorer` | 否 | 辅助训练信号 |
+| 17 | `training_action_filter` | `TrainingActionFilter` | 否 | 训练时约束动作空间 |
+
+> **注**：开局观察(`initial_observation`)是**框架级 walker 驱动**,不再通过
+> per-game extractor/applier。GT 端走 `viz::serialize_public_for_perspective`
+> (walker 遍历 viz=1 给该 perspective 的每个 slot,经 `read_field_slot`
+> emit),session 端 `apply_initial_observation` 走
+> `viz::apply_public_for_perspective`(同 walker,`write_field_slot` 整张
+> 覆写)。游戏只要把 schema visibility + per-slot dispatcher 写对,框架自
+> 动正确处理 perspective-private 字段(LL 起手牌、Splendor 起手 tableau 等)。
 
 ### 5.2 各类型签名
 
@@ -972,8 +978,9 @@ b.episode_stats_extractor = [](const IGameState&,
 - 实现 `IBeliefTracker`(§10.4)——`init` / `observe_public_event` /
   `randomize_unseen`(仅 asymmetric hidden info 需要;Azul 这种完全公开
   +物理随机不需要)
-- 实现 public-event protocol(`public_event_extractor` / `applier` /
-  `initial_observation_extractor` / `applier`)
+- 实现 public-event protocol(`public_event_extractor` /
+  `public_state_applier`)。开局观察由框架 walker 自动处理,无需 per-game
+  extractor/applier
 - 框架自动接管 root 采样时机、DAG 节点复用、UCT2 UCB。**不需要**在 rules
   里做任何防御性 nonce bump 或 hidden-info guard
 
@@ -1092,12 +1099,12 @@ virtual AnyMap serialize() const = 0;
 - `clone()` 每次 sim determinization 都会被调用——把当前 belief 复制一份给 sim 用，主 session 的 tracker 不被 sim 写脏。
 - `serialize()` 输出 canonical 字典，给 `test_api_belief_matches_selfplay` 之类的回归测试做对比。
 
-**结构性约束（编译器层强制）**：`init` 和 `observe_public_event` 方法签名里没有 `IGameState*` —— tracker 在这两个方法里物理上拿不到 state 指针，**无法**偷看真实游戏状态。所有输入都来自游戏注册的两个 extractor：
+**结构性约束（编译器层强制）**：`init` 和 `observe_public_event` 方法签名里都不接 `IGameState*` 真相——tracker 物理上拿不到 truth state,**无法**偷看：
 
-- `init` 收 `initial_observation` → 来自 `bundle.initial_observation_extractor(state, perspective)`
-- `observe_public_event` 收 `events` → 来自 `bundle.public_event_extractor(before, action, after, perspective).events`。list 内顺序就是 producer 发出的顺序；tracker 把它当事实序列消费，不需要区分动作前后
+- `init(MaskedState, perspective)` 收 walker 物化的 MaskedState——viz=1 槽位含真值,viz=0 槽位被框架置为 `kPlaceholder`。tracker 想偷 hidden 字段也读不到,只能从可见的开局事实(自己的起手牌、公开 tableau 等)推断
+- `observe_public_event` 收 `events` → 来自 `bundle.public_event_extractor(before, action, after, perspective).events`。list 内顺序就是 producer 发出的顺序;tracker 把它当事实序列消费,不需要区分动作前后
 
-两个 extractor 是小函数（~20-40 行），只读观察者可见字段，易于审计。
+`public_event_extractor` 是小函数(~20-40 行),只读观察者可见字段,易于审计。开局观察的 walker 路径完全在框架层,不需要 game-side 代码。
 
 `randomize_unseen(state, observer, rng)` 是采样的**写入口**——可以读 state 的公开字段 + observer 视角下 viz=1 的字段（discard_piles、自己的 hand 等），但禁止读 opp 视角下的 hidden 字段（对手手牌、deck 内容）。tracker 从自己累积的 belief 构建 unseen pool 和 known-hand 分配。
 
@@ -1124,8 +1131,8 @@ Stale 采样(opp hidden 字段的旧 cid 现在已经被公开看到)必须从�
 
 ```
 游戏开始（每个座位 p = 0..num_players-1）：
-  initial_obs_p = bundle.initial_observation_extractor(state, p)
-  per_perspective_trackers[p]->init(initial_obs_p)  // perspective-agnostic
+  bootstrap_p = make_masked_state(state, schema, p)  // 框架 walker
+  per_perspective_trackers[p]->init(bootstrap_p, p)
 
 每一步 ply（acting player = cp）：
   1. MCTS 搜索                                                 // 见 §MCTS
@@ -1147,7 +1154,7 @@ web / API / per-seat selfplay 推 observer state（不调 do_action_fast）：
                                                                 // (viz=0 不动)
 ```
 
-游戏开发者只需实现 `IBeliefTracker` 的 5 个方法 + `initial_observation_extractor` + `public_event_extractor`（+ `public_state_applier`，隐藏信息游戏必装）。extractor 调用封装见 `bindings/py_engine.cpp`。
+游戏开发者只需实现 `IBeliefTracker` 的 5 个方法 + `public_event_extractor`(+ `public_state_applier`,隐藏信息游戏必装)。开局观察由框架 walker (`viz::serialize_public_for_perspective` / `apply_public_for_perspective`) 自动处理,无需 per-game extractor/applier。extractor 调用封装见 `bindings/py_engine.cpp`。
 
 ### 10.6 实现示例
 Belief tracker 有两种不同定位，由游戏的信息结构决定：
@@ -1239,7 +1246,7 @@ ISMCTS 根采样 + encoder 信息屏障在双人游戏中完全自洽；多人�
 4. **在 `<game>_state.cpp` 用 `viz::declare_field` 声明每个 state 字段的 name + data shape + base viz tensor**（`all_public` / `owner_only_first_axis` / `all_hidden`），实现 `hash_field_slot` / `read_field_slot` / `write_field_slot` / `mask_field_slot` 四个 per-slot dispatcher（§10.3b）。框架的 walker 按 schema 顺序遍历每个 slot——`viz[..., perspective]=1` 时调 `hash_field_slot` 把 truth mix 进 hash，`viz[..., perspective]=0` 时 mix `kPlaceholder` 哨兵——自动得到 `state_hash_for_perspective(p)` 作 DAG 节点键
 5. **`reset_with_seed` 第一行调 `reset_step_count_base()` 把 step_count_ 归零**。step_count_ 由框架的 `IGameRules` wrapper 在 `do_action_fast_impl` / `do_action_deterministic_impl` 前自动 +1，在 `undo_action_impl` 后自动 -1，**作者既看不到 step_count_ 也无法忘记 / 双 bump**（字段 protected + IGameRules friend）。step_count_ 单调递增保证 DAG 结构性 acyclic（回归测试见 `tests/framework/test_step_count_strict_increase.py`）
 6. **实现 message-driven snapshot 路径**：要么用 walker（`viz::serialize_public` / `viz::apply_public`，全 schema 字段自动同步），要么用 SnapshotIO（`emit_snapshot` / `apply_snapshot` 手写），把 GT 端的公开 state 序列化为 `AnyMap public_snapshot`，AI session 端 wholesale 替换。tracker 需要的私有/对手知识增量通过 `events` 列表（`PublicEventTrace.events`）增量传递——一份 list、按 producer 顺序、不区分动作前后。详见 §14 事件协议章节（或直接参考 `games/splendor/splendor_register.cpp` walker 路径，`games/loveletter/loveletter_register.cpp` SnapshotIO 路径）
-7. 在 `make_<game>` 里注册 `belief_tracker` + `public_event_extractor` + `public_state_applier`（+ `initial_observation_extractor` / `applier` 如果游戏开局有公开信息）
+7. 在 `make_<game>` 里注册 `belief_tracker` + `public_event_extractor` + `public_state_applier`(开局观察由框架 walker 自动处理,不再需要 per-game extractor/applier)
 8. **验证测试**：
    - `tests/framework/test_ai_api_separation.py::test_full_game_via_api[<game>]` 必须过（API 契约）
    - `tests/framework/test_api_belief_matches_selfplay.py::*[<game>]` 必须过（belief 等价）
@@ -1447,7 +1454,8 @@ m["box_counts"] = std::any(box_counts);
 3. 实现 public-event 协议（§14.3），在 GameBundle 注册：
    - `public_event_extractor` — GT 侧：`(state_before, action, state_after, perspective) → PublicEventTrace { events, public_snapshot }`
    - `public_state_applier` — observer 侧：把 `public_snapshot` 整体写回 session state 的公开字段
-   - `initial_observation_extractor` / `initial_observation_applier` — 初始设置同步
+   - 开局观察由框架 walker (`viz::serialize_public_for_perspective` /
+     `apply_public_for_perspective`) 自动处理,不需要 per-game 函数
 4. 在 `tests/<your_game>/test_checklist.py` 里加一个 `TestApiBeliefEquivalence` 类(参考 `tests/loveletter/` / `tests/splendor/` / `tests/coup/test_checklist.py`),调用 `assert_api_belief_matches_selfplay(GAME, PUBLIC_KEYS)` —— 这个 helper 一次完成三层等价断言(belief snapshot 每步一致 / 公开 state 字段终局相等 / perspective 回合 legal actions 相等),不需要重新实现
 
 ### 14.3 Public-Event 协议设计
@@ -1467,7 +1475,13 @@ session 上 viz=0 槽位**不动**——决策侧的 hash 用 `kHiddenHashSentin
 
 **可见性过滤**：ground truth 端实现 `public_event_extractor` 时决定给 perspective 看什么。比如对手盲抽一张卡，事件只传 `{"player": 1}`（不带牌面），AI 知道"发生过抽牌"但不知道具体卡。框架不做 firewall——ground truth 愿意多传也可以（对接友好）。
 
-**初始观察**：`initial_observation_extractor` 输出 perspective 视角能看到的开局信息（比如 Love Letter 的 `my_hand`、Splendor 的 `tableau` + `nobles`）。`initial_observation_applier` 在 API session 启动时 apply。
+**初始观察**:框架 walker 驱动,无 per-game 代码。GT 端调
+`viz::serialize_public_for_perspective(state, schema, p, snap)` 把每个
+viz=1 给 perspective p 的 slot 经 `read_field_slot` emit 到 AnyMap;session
+端 `apply_initial_observation(p, snap)` 调 `viz::apply_public_for_perspective`
+经 `write_field_slot` 整张写回。Love Letter 的 `my_hand`(owner_only_first_axis)、
+Splendor 的 `tableau` + `nobles`(all_public)等都通过同一条 walker 路径,
+不再需要 game-side extractor/applier。
 
 ### 14.4 参考实现
 

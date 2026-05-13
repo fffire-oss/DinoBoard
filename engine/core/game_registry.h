@@ -57,19 +57,19 @@ using TailSolveTrigger = std::function<bool(const IGameState& state, int ply)>;
 // When the AI session is driven from observations, ground-truth's random
 // outcomes (deck flips, hidden draws, revealed cards during challenges)
 // must reach the AI's belief tracker as events. Each stochastic game
-// registers two functions:
+// registers a PublicEventExtractor — during self-play, it diffs
+// state_before and state_after to produce the events an outside observer
+// at perspective would have seen. Used to generate ground-truth traces
+// for tests. The events go ONLY to the belief tracker (observer
+// sessions do not run do_action_fast — public state is rebuilt from
+// public_snapshot).
 //
-//  1. PublicEventExtractor — during self-play, diffs state_before and
-//     state_after to produce the events an outside observer at perspective
-//     would have seen. Used to generate ground-truth traces for tests.
-//     The events go ONLY to the belief tracker (observer sessions do not
-//     run do_action_fast — public state is rebuilt from public_snapshot).
-//
-//  2. InitialObservationApplier — on session creation, the partner provides
-//     perspective-specific initial info (e.g. "your starting hand is [5]"
-//     in Love Letter, "your face-down characters are [Duke, Captain]" in
-//     Coup). This overrides the AI session's own seed-generated hidden
-//     initial state.
+// Initial observation handshake (the perspective-specific facts the AI
+// knows at game start, e.g. own starting hand) is NOT a per-game hook —
+// it is walker-driven via viz::serialize_public / viz::apply_public, the
+// same path the per-ply public_snapshot uses. Games only have to declare
+// schema visibility correctly for game-start; the framework walker
+// handles serialization in both directions.
 //
 // PublicEvent / PublicEventTrace are declared in game_interfaces.h (so
 // belief_tracker.h can reference them without a circular include).
@@ -102,18 +102,6 @@ using PublicStateApplier = std::function<void(
     IGameState& state,
     const AnyMap& snapshot)>;
 
-using InitialObservationApplier = std::function<void(
-    IGameState& state,
-    int perspective_player,
-    const AnyMap& initial_observation)>;
-
-// Inverse of InitialObservationApplier: produces the observation a partner
-// would send to initialize an AI session at perspective. Used by self-play
-// tracing to generate ground-truth reference traces for API tests.
-using InitialObservationExtractor = std::function<AnyMap(
-    const IGameState& state,
-    int perspective_player)>;
-
 struct GameBundle {
   std::unique_ptr<IGameState> state;
   std::unique_ptr<IGameRules> rules;
@@ -141,8 +129,6 @@ struct GameBundle {
   // Required for hidden-info games. See PublicStateApplier above.
   // Fully-public games (tictactoe, quoridor) leave this unset.
   PublicStateApplier public_state_applier;
-  InitialObservationApplier initial_observation_applier;
-  InitialObservationExtractor initial_observation_extractor;
   std::string game_id;
 };
 

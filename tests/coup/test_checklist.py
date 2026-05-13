@@ -4,7 +4,8 @@ Coup is asymmetric-hidden-info with bluffing. It exercises:
   - belief_tracker with per-player private hand AND a heuristic-weighted
     sampler (claim/challenge history biases opp role priors)
   - public_event_extractor / applier
-  - initial_observation_extractor / applier
+  - initial observation via framework walker (viz=1 slots only,
+    no per-game extractor/applier hooks)
   - elimination + multiplayer (2p / 3p / 4p)
   - encoder must zero out opponent known_hand block
   - uniform-random heuristic_picker (web 'heuristic' fallback)

@@ -1,9 +1,11 @@
 #pragma once
 
+#include <any>
 #include <array>
 #include <cstdint>
 #include <memory>
 #include <random>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -101,6 +103,14 @@ class AzulState final : public CloneableState<AzulState<NPlayers>> {
   StateHash64 state_hash() const override;
   void hash_field_slot(Hasher& h, const std::string& name,
                        const std::vector<int>& idx) const override;
+  // Walker-driven snapshot wire I/O — typed read/write of one schema
+  // slot. All Azul fields are all_public, so every slot reaches these
+  // on the visible path; mask_field_slot is unused.
+  std::any read_field_slot(const std::string& name,
+                           const std::vector<int>& idx) const override;
+  void write_field_slot(const std::string& name,
+                        const std::vector<int>& idx,
+                        const std::any& value) override;
   const viz::VisibilitySchema& schema_ref() const override { return schema(); }
   int current_player() const override { return current_player_; }
   int first_player() const override { return game_first_player_; }

@@ -163,5 +163,76 @@ inline void apply_public(
       });
 }
 
+// Perspective-aware variant. Walks every (name, idx) slot whose
+// `viz[..., perspective] == 1` — schema declaration order × row-major,
+// all fields, no all_public filter. Used for the initial observation
+// handshake where the receiver knows the AnyMap shape but the producer
+// must include perspective-private slots (e.g. Love Letter starting
+// `hand[perspective]`, owner_only_first_axis-base) that the broadcast
+// `serialize_public` filters out. Round-trips with
+// `apply_public_for_perspective` below.
+inline void serialize_public_for_perspective(
+    const IGameState& state, const VisibilitySchema& schema, int perspective,
+    AnyMap& snap, const std::unordered_set<std::string>& skip = {}) {
+  for_each_visible_slot(
+      state, schema, perspective,
+      [&](const std::string& name, const std::vector<int>& idx,
+          const VizTensor& /*v*/) {
+        if (skip.count(name)) return;
+        auto it = snap.find(name);
+        if (it == snap.end()) {
+          it = snap.emplace(name, std::any(std::vector<std::any>{})).first;
+        }
+        auto& vec = std::any_cast<std::vector<std::any>&>(it->second);
+        vec.push_back(state.read_field_slot(name, idx));
+      });
+}
+
+inline void apply_public_for_perspective(
+    IGameState& state, const VisibilitySchema& schema, int perspective,
+    const AnyMap& snap,
+    const std::unordered_set<std::string>& skip = {}) {
+  std::unordered_map<std::string, std::size_t> cursor;
+  for_each_visible_slot(
+      state, schema, perspective,
+      [&](const std::string& name, const std::vector<int>& idx,
+          const VizTensor& /*v*/) {
+        if (skip.count(name)) return;
+        auto it = snap.find(name);
+        if (it == snap.end()) {
+          throw std::invalid_argument(
+              "viz::apply_public_for_perspective: snap is missing field '" +
+              name + "'");
+        }
+        const std::size_t k = cursor[name]++;
+        if (it->second.type() == typeid(std::vector<std::any>)) {
+          const auto& vec =
+              std::any_cast<const std::vector<std::any>&>(it->second);
+          if (k >= vec.size()) {
+            throw std::invalid_argument(
+                "viz::apply_public_for_perspective: not enough values for "
+                "field '" +
+                name + "'");
+          }
+          state.write_field_slot(name, idx, vec[k]);
+        } else if (it->second.type() == typeid(std::vector<int>)) {
+          const auto& vec =
+              std::any_cast<const std::vector<int>&>(it->second);
+          if (k >= vec.size()) {
+            throw std::invalid_argument(
+                "viz::apply_public_for_perspective: not enough values for "
+                "field '" +
+                name + "'");
+          }
+          state.write_field_slot(name, idx, std::any(vec[k]));
+        } else {
+          throw std::invalid_argument(
+              std::string("viz::apply_public_for_perspective: field '") +
+              name + "' has unsupported any type '" + it->second.type().name() +
+              "' for vector payload");
+        }
+      });
+}
+
 }  // namespace viz
 }  // namespace board_ai

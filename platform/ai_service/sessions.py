@@ -213,15 +213,10 @@ class SessionStore:
         meta = engine.game_metadata(game_id)
         num_players = meta["num_players"]
         has_public_state_applier = bool(meta["has_public_state_applier"])
-        has_initial_observation_applier = bool(meta["has_initial_observation_applier"])
         if my_seat < 0 or my_seat >= num_players:
             raise ValueError(
                 f"my_seat={my_seat} out of range for game with {num_players} players")
 
-        if has_public_state_applier and not has_initial_observation_applier:
-            raise RuntimeError(
-                f"game {game_id!r} registered public_state_applier without "
-                f"initial_observation_applier — REST AI flow needs both.")
         if has_public_state_applier and initial_observation is None:
             # Snapshot-path games (Azul, Splendor, Love Letter, Coup) carry
             # perspective-private starting facts that the AI session cannot

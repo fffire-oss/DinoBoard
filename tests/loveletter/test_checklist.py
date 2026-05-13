@@ -4,7 +4,8 @@ Love Letter is an asymmetric-hidden-info elimination game with:
   - belief_tracker with per-player private hand (`hash_private_fields(p)`)
   - public_event_extractor / applier (so the AI API can advance from
     observations alone, no state-passing)
-  - initial_observation_extractor / applier
+  - initial observation via framework walker (viz=1 slots only,
+    no per-game extractor/applier hooks)
   - multiplayer variants: 2p / 3p / 4p
   - elimination: alive count drops monotonically; check_end_game must
     handle alive<=1 without deadlocking

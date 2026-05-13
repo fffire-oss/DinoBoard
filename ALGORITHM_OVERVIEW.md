@@ -1059,10 +1059,14 @@ action, state_after, perspective) diff 生成(`engine/core/game_registry.h`)。
 
 `initial_observation` 是另一种 opening-fact dict(每个 perspective 在
 session 启动时收到一次,内容是该 perspective 看得见的开局事实——例如
-LL 自己的开局手牌、Coup 自己的两张 influence cid),由
-`initial_observation_extractor` / `apply_initial_observation` 负责
-读写。**它和每步 `public_snapshot` 不是同一个 type**——前者只在 create
-时存在、可含 perspective-private 信息;后者每 ply 都发、纯公开。
+LL 自己的开局手牌、Coup 自己的两张 influence cid)。它**框架级 walker 驱动**,
+不再有 per-game extractor/applier:GT 端走 `viz::serialize_public_for_perspective`
+(walker 遍历每个 viz=1 给该 perspective 的 slot,经 `read_field_slot`
+emit 到 AnyMap),session 端 `apply_initial_observation` 走
+`viz::apply_public_for_perspective`(同一 walker,经 `write_field_slot`
+整张覆盖)。和每步 `public_snapshot` 共享 walker / dispatcher,差别仅在
+slot 过滤条件:`public_snapshot` 只取 `all_public` base,initial obs 取
+viz=1 给该 perspective(包含 owner-only 起手牌等 perspective-private 字段)。
 
 ### 10.2 协议字段限制
 

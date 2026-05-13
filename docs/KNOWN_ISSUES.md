@@ -1445,6 +1445,8 @@ Web AI 落子 stats 中 `tail_solve_attempted=0`，但 web.json 里明明配了 
 
 ## [BUG-032] Selfplay per-perspective trackers 未被初始化 → randomize_unseen 覆写当前玩家自己的手牌 (OB-011)
 
+> **后续**：E13 (2026-05-13) 已经把 `initial_observation_extractor` / `applier` 这一对 per-game hook 整体删掉，改成框架层 walker（`viz::serialize_public_for_perspective` / `apply_public_for_perspective`）。下文里所有提到 `bundle.initial_observation_extractor` / `trace_obs_extractor` 的代码片段都是当时的现场，今天已经不存在；assertion 那一道仍然在 LL tracker 入口保留作为契约守门。
+
 ### 背景
 
 - BG-008 Phase 2 stage 5 引入 per-perspective trackers（每 seat 一份 tracker，观测事件累积到 game over），替代"每 ply re-init 单例 tracker"的旧路径

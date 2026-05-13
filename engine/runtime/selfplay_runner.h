@@ -200,13 +200,6 @@ SelfplayEpisodeResult run_selfplay_episode(
     // game's factory.
     int trace_perspective = -1,
     IBeliefTracker* trace_belief_tracker = nullptr,
-    PublicEventExtractor public_event_extractor = nullptr,
-    // Optional per-game initial-observation extractor used solely to fill
-    // result.initial_observation for trace consumers (the wire format
-    // GameSession::apply_initial_observation parses). Tracker bootstrap
-    // is separately handled by the walker (make_masked_state) — never
-    // through this AnyMap. If null, result.initial_observation is left
-    // empty.
-    board_ai::InitialObservationExtractor initial_observation_extractor = nullptr);
+    PublicEventExtractor public_event_extractor = nullptr);
 
 }  // namespace board_ai::runtime
