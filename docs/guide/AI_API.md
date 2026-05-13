@@ -77,7 +77,7 @@
 }
 ```
 
-`events` 是这次 transition 里公开可观察到的事件序列（如 Splendor 的 `deck_flip`、Azul 的 `factory_refill`），按 producer 发出的顺序排列；只喂给 belief tracker，不会作用到 state 上。`public_snapshot` 是 GT 端这一步之后所有公开 slot 的值——observer 用它整体覆写自己 session 的公开部分。**完全可观察的游戏**（TicTacToe、Quoridor）`events` 和 `public_snapshot` 都传 `[]` / `{}` 即可，session 通过 `do_action_fast` 重放动作推进。
+`events` 是这次 transition 里公开可观察到的事件序列（如 Splendor 的 `deck_flip`、Azul 的 `factory_refill`），按 producer 发出的顺序排列；只喂给 belief tracker，不会作用到 state 上。无 tracker 的游戏（Azul）events 仍会被 GT 端发出但没有消费方,observer 把整张 `public_snapshot` 灌回 session 公开字段就是全部信息。`public_snapshot` 是 GT 端这一步之后所有公开 slot 的值——observer 用它整体覆写自己 session 的公开部分。**完全可观察的游戏**（TicTacToe、Quoridor）`events` 和 `public_snapshot` 都传 `[]` / `{}` 即可，session 通过 `do_action_fast` 重放动作推进。
 
 事件格式：
 ```json
@@ -170,7 +170,7 @@ curl -sX DELETE http://localhost:8000/ai/sessions/$SID
 
 ## 公开事件（隐藏信息游戏必读）
 
-对有隐藏信息的游戏（Splendor / Azul / Love Letter / Coup），接入方必须在 `observe` 里附上正确的 `events` 列表和 `public_snapshot`，否则 AI 的 belief tracker 会偏离 ground truth、observer 的公开 state 也会失真。
+对走 snapshot 路径的游戏（Splendor / Azul / Love Letter / Coup——其中 Azul 没有非对称隐藏，但仍走 snapshot 同步公开局面），接入方必须在 `observe` 里附上正确的 `events` 列表和 `public_snapshot`，否则 AI 的 belief tracker（如有）会偏离 ground truth、observer 的公开 state 也会失真。
 
 事件流和 snapshot 各管一摊：
 - **`events`**：这次 transition 里 observer 能看到的公开事实序列（牌被翻开、tokens 被支付、谁宣称了什么角色），由 GT 端计算后 broadcast，**只喂给 belief tracker** 用来更新对隐藏信息的推断；不会作用到 observer 的 state 上。list 内顺序就是 producer 发出的顺序，tracker 只把它当事实序列消费，不区分动作前后。

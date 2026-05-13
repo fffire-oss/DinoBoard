@@ -69,13 +69,13 @@ You do not need to read `../ALGORITHM_OVERVIEW.md` unless you are modifying the 
 
 **Seven interlocking properties, all required:**
 
-1. **Root-sampling determinization.** Each simulation begins by `tracker->randomize_unseen(state, rng)` — a complete world is sampled from the observer's belief; descent is fully deterministic afterward. There are **no chance nodes**.
+1. **Root-sampling determinization.** Each simulation holds an independent RNG; the root step calls `tracker->randomize_unseen(state, observer, rng)` to sample a complete world from the observer's belief, and descent continues to draw from that same RNG only for `do_action_fast` physical randomness (e.g. Azul factory refill). Given the sim's seed, the whole rollout is reproducible. There are **no chance nodes**.
 2. **Per-acting-player node keying.** Each decision node is keyed by `state_hash_for_perspective(state.current_player())` — a schema-driven walk over every slot whose `viz[..., acting-player] = 1`, plus `step_count`.
 3. **DAG, not tree.** A global `unordered_map<hash, node_idx>` shares info-set nodes across paths. Visit/Q stats aggregate naturally.
 4. **UCT2 UCB.** `sqrt()` numerator uses the **incoming edge's** visit count, not the DAG node's global visit count. Plain UCT1 over-explores in DAGs by ~√2.
 5. **Step-counter acyclicity.** `IGameState::step_count_` increments on every `do_action_fast` and is folded into `state_hash_for_perspective` automatically. Two states never share a hash unless they share step count → DAG is structurally acyclic.
 6. **Encoder aligned with hash scope.** Encoder reads exactly the slots that hash sees — i.e. those with `viz[..., perspective] = 1` in the MaskedState. Same partition is hash scope and encoder scope; DAG nodes ⇄ network features stay 1:1.
-7. **Same MCTS for selfplay, web, API.** Selfplay, arena, web AI, and the observation-only REST API all run the identical C++ search. Session state in the API is rebuilt from the message stream (public via `public_state_applier`, hidden via `randomize_unseen` per ply) — the API is **structurally unable to read truth**.
+7. **Same MCTS for selfplay, web, API.** Selfplay, arena, web AI, and the observation-only REST API all run the identical C++ search. Session public state is rebuilt from the message stream via `public_state_applier`; hidden slots on the session are never freshened (per DEC-003) — only sims clone the tracker and call `randomize_unseen` at sim entry. The API is **structurally unable to read truth**.
 
 **Three game types, one algorithm:**
 

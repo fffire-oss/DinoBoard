@@ -312,13 +312,13 @@ void undo_action(IGameState& state, const UndoToken& token) const override {
 主搜索（selfplay / arena / API / GameSession）**不使用** `do_action_deterministic`。流程：
 
 1. `do_action_fast` 直接消费真实 state 里的 RNG（抽牌从 deck top 弹、翻牌翻 tier deck 等），正常推进
-2. MCTS 每次 sim 开头先 `belief_tracker.randomize_unseen(sim_state, rng)` 把未知字段采样成具体值，之后 descent 完全 deterministic
+2. MCTS 每次 sim 持独立 RNG;root 步调 `belief_tracker.randomize_unseen(sim_state, observer, sim_rng)` 把 viz=0 槽位采样成具体值,descent 期间 `do_action_fast` 仍可能消费同一个 sim_rng 处理物理随机(如 Azul 工厂 refill)。给定 sim 种子整个展开可复现
 3. 不同 sim 采不同的世界,observer 能分辨的后继(如 Splendor 翻出的公开
    牌)通过 `state_hash_for_perspective` 差异(viz=1 公开槽位变化)自然
    分叉,observer 不能分辨的后继(如 opp 抽的私牌)在 observer 视角下
    viz=0,hash 不变,自然在同一节点上汇聚
 
-开发者只需实现 `do_action_fast` / `undo_action` 时正确更新 `step_count_` 和 RNG 状态。**如果你的游戏需要 tail solver，额外实现 §3.2 的 `do_action_deterministic`**。详见 [ALGORITHM_OVERVIEW.md §8.7](../../ALGORITHM_OVERVIEW.md#87-物理随机--sampled-world)。
+`step_count_` 由框架的 `IGameRules` wrapper 在 `do_action_fast_impl` / `do_action_deterministic_impl` 之前自动 +1、`undo_action_impl` 之后自动 -1，**作者既看不到也无法直接维护**(字段 protected + `IGameRules` friend);开发者重写 `do_action_fast_impl` / `undo_action_impl` 时只需正确推进游戏字段和 RNG 状态。**如果你的游戏需要 tail solver，额外实现 §3.2 的 `do_action_deterministic_impl`**。详见 [ALGORITHM_OVERVIEW.md §9.7](../../ALGORITHM_OVERVIEW.md#97-物理随机--sampled-world)。
 
 ---
 
@@ -617,7 +617,7 @@ board_ai::GameRegistrar reg_4p("splendor_4p", factory<4>);
 
 ## 7. 配置文件
 
-配置字段说明已抽到独立文档：[CONFIG_REFERENCE.md](CONFIG_REFERENCE.md)。涵盖 `games/<game>/config/game.json` 的全部顶层字段、`network` / `selfplay` / `replay` / `eval` / `arena` / `optimizer` / `tail_solve` / `mcts` / `mcts_schedule` / `heuristic_guidance` / `training_action_filter` / `auxiliary_score` 等子段，以及 `web.json` 的 Web 平台配置（AI 难度、tail-solve、动作过滤）。
+配置字段说明已抽到独立文档：[CONFIG_REFERENCE.md](CONFIG_REFERENCE.md)。涵盖 `games/<game>/config/game.json` 的全部顶层字段、`network` / `training` / `replay` / `optimizer` / `tail_solve` / `heuristic_guidance` / `training_action_filter` / `auxiliary_score` / `mcts_profiles.{selfplay,arena,eval}` 等子段，以及 `web.json` 的 Web 平台配置(`mcts_profiles.{web_expert,web_casual,analysis}`、tail-solve、动作过滤)。MCTS 强度统一通过六个命名 profile + `resolve_profile(...)` 取用,不再有顶层 `mcts` / `mcts_schedule` 段。
 
 训练 pipeline 自动发现 `games/<game>/config/game.json`（通过 `training/cli.py` 中的 `find_game_config()`）。
 
@@ -923,7 +923,7 @@ b.episode_stats_extractor = [](const IGameState&,
 
 **ISMCTS 下的处理**：物理随机和信息不对称被**统一**——没有 chance node 专门机制。关键点：
 
-- Root 采样通过 `belief_tracker->randomize_unseen(sim_state, rng)` 一次性固定当前 sim 的"全部未来随机"（deck 顺序、未来翻牌结果等）
+- Root 采样通过 `belief_tracker->randomize_unseen(sim_state, observer, sim_rng)` 一次性固定当前 sim 的 hidden 抽样(opp 手牌、未观察到的 deck 顺序等);公开物理随机(如 Azul 工厂 refill)留到 descent 时由 `do_action_fast` 用同一个 sim_rng 即时抽
 - Descent 里 `do_action_fast` 照常从状态中读取随机源（如 `d.deck.top()` 或 `splitmix64(d.draw_nonce)`），每次 sim 拿到的值由 root 采样决定
 - 观察者可见的后果(Splendor 翻新卡到 tableau)自然通过
   `state_hash_for_perspective` 差异(即 `viz=1` 公开槽位变化)分化到不同
@@ -937,27 +937,27 @@ b.episode_stats_extractor = [](const IGameState&,
    袋子/盒盖,可以直接按 `bag_counts[color]` 抽色;对隐藏 deck,弹
    `deck.top()`)。**rng 不在 state 上**——sim 入口由 caller 提供
    `sim_rng`,GT 端提供 `gt_rng`,各自独立
-2. 实现 `IBeliefTracker::randomize_unseen(state, rng)`(仅在游戏有
-   asymmetric hidden info 时需要)—— 把 state 里 viz=0 的槽位按 belief
-   一次性采样填入。**约束**:产出世界中所有公开槽位(`viz=1` to anyone)
-   的内容只取决于 tracker 的观察历史,不依赖输入 state 的 hidden 内容
-   也不依赖调用者 RNG 特定值
+2. 实现 `IBeliefTracker::randomize_unseen(state, observer, rng)`(仅
+   在游戏有 asymmetric hidden info 时需要)—— 把 state 里 viz=0 的槽
+   位按 belief 一次性采样填入。**约束**:产出世界中所有公开槽位
+   (`viz=1` to anyone)的内容只取决于 tracker 的观察历史,不依赖输入
+   state 的 hidden 内容也不依赖调用者 RNG 特定值
 
 对**完全公开 + 物理随机** 的游戏(如 Azul):**不必注册 `belief_tracker`**——
 没有 viz=0 槽位需要采样。物理随机走 descent 中由 sim_rng 在
 `do_action_fast` 里即时抽的路径。
 
 ### 10.2 信息屏障：AI 链路从根源读不到真值
-完整论证见 [`CLAUDE.md` 「AI Pipeline Independence from Game State」](../CLAUDE.md#ai-pipeline-independence-from-game-state)：tracker 没有 `IGameState*`、session public 部分由 message 重建、session hidden 每步重新采样、selfplay/web/API 走同一套 per-perspective tracker——四条结构性约束让 AI 物理上没有路径可读真值。下文 §10.3 起讲各 hook 的具体签名与实装。
+完整论证见 [`CLAUDE.md` 「AI Pipeline Independence from Game State」](../../CLAUDE.md#ai-pipeline-independence-from-game-state)：tracker 没有 `IGameState*`、session public 部分由 message 整张覆盖、session viz=0 槽位决策侧物理上读不到(hash/encoder/sim 三家都把 viz=0 屏蔽掉)、selfplay/web/API 走同一套 per-perspective tracker——四条结构性约束让 AI 物理上没有路径可读真值。下文 §10.3 起讲各 hook 的具体签名与实装。
 
 ### 10.3 架构原理（ISMCTS）
 核心三层机制：
 
-1. **Root 采样 determinization**：每次 MCTS simulation 开头调 `belief_tracker->randomize_unseen(sim_state, rng)`，一次性把所有 hidden 字段（opp 手牌、deck 顺序、未来随机结果）采样成具体值。之后 descent **完全 deterministic**——动作按规则读 state 的采样值，不存在"chance 点重新抽"
+1. **Root 采样 determinization**：每次 MCTS simulation 持独立 RNG。Root 步调 `belief_tracker->randomize_unseen(sim_state, observer, sim_rng)`,把 viz=0 hidden 字段（opp 手牌、deck 顺序、未来 hidden 抽牌结果）采样成具体值;descent 期间该 sim_rng 仍可能被 `do_action_fast` 消费处理物理随机(如 Azul 工厂 refill 在 round-end 的公开重抽)。给定 sim 种子整个展开完全可复现
 2. **Per-acting-player DAG keying**：每决策节点用 `state.state_hash_for_perspective(state.current_player())` 当 key。全局 `unordered_map<StateHash64, int>` 表让不同路径到达同一信息集共享节点
 3. **UCT2 UCB**：DAG 下多父路径汇聚到同一节点时，`sqrt()` 分子底用刚经过的入边的 visit_count，避免 node global count 夸大探索预算
 
-**无 chance node 机制**——物理随机被 root 采样吞掉；observer-visible 后果通过 hash 自然分叉，observer-invisible 后果通过 hash 自然合并。
+**无 chance node 机制**——hidden 随机被 root 采样吞掉,公开物理随机由 descent 里 sim_rng 在 `do_action_fast` 内即时抽;observer-visible 后果通过 hash 自然分叉,observer-invisible 后果通过 hash 自然合并。
 
 **新游戏开发者要做**:
 - 在 `<game>_state.cpp` 用 `viz::declare_field` 声明每个 state 字段的 name
@@ -1099,7 +1099,7 @@ virtual AnyMap serialize() const = 0;
 
 两个 extractor 是小函数（~20-40 行），只读观察者可见字段，易于审计。
 
-`randomize_unseen(state, rng)` 是采样的**写入口**——可以读 state 的公开字段 + 观察者自己的字段（discard_piles、自己的 hand 等），但禁止读 opp 的 hidden 字段（对手手牌、deck 内容）。tracker 从自己累积的 belief 构建 unseen pool 和 known-hand 分配。
+`randomize_unseen(state, observer, rng)` 是采样的**写入口**——可以读 state 的公开字段 + observer 视角下 viz=1 的字段（discard_piles、自己的 hand 等），但禁止读 opp 视角下的 hidden 字段（对手手牌、deck 内容）。tracker 从自己累积的 belief 构建 unseen pool 和 known-hand 分配。
 
 **`randomize_unseen` 契约**:返回的世界必须满足所有公共不变量——
 `state_hash_for_perspective(any p)` 在 viz=1 的所有公开槽位部分,在相同
@@ -1109,11 +1109,9 @@ court-deck size 等)必须由 tracker 的 seen 信息**推导**出来,不能保�
 Stale 采样(opp hidden 字段的旧 cid 现在已经被公开看到)必须从当前未
 见池重采。
 
-**`randomize_unseen` 的两个调用点**：
-1. MCTS 根采样（per-sim determinization）：每次 sim 开头在 cloned state 上调用一次
-2. 会话末尾 freshening：`apply_observation` 末尾用 deterministic `(seed, ply)` RNG 调用一次，把会话 state_ 的隐藏字段重采成当前 tracker-consistent 的一份样本。selfplay / web / API 都走这条路径；框架包办，开发者无胶水代码
+**`randomize_unseen` 的唯一调用点**:MCTS sim 入口的 cloned `sim_tracker` 上一次调用(per-sim determinization)。**session 永远不调** `randomize_unseen`——session 的 viz=0 槽位是 unread bytes,不进 hash(`kHiddenHashSentinel`)、不进 encoder(`MaskedState` placeholder)、不进 sim 入口(sim 自己 clone tracker 重新采)。详见 [DEC-003](../KNOWN_ISSUES.md)。
 
-**开发者必须保证**：游戏的公开输出不依赖任何"只存在于 session state_ 里的隐藏字段"。做法是规范化的：`public_event_extractor` 把 post-action 的全部 public 字段 dump 进 `PublicEventTrace.public_snapshot`，`public_state_applier`（§5.1 项 8）把 snapshot 反向写回 session state_ 的 public 字段。**observer 路径上不调 `do_action_fast`** —— `apply_observation` 只走 `begin_step → public_state_applier(snapshot) → tracker.observe_public_event(events) → randomize_unseen`，公开部分完全由 message 重建，连"`do_action_fast` 内部读隐藏字段"这条泄漏路径都从结构上消失了。round-trip 测试 (`test_public_snapshot_round_trip`) + 60-seed drift 扫 (`test_public_hash_excludes_internal_rng`) 在 CI 里守这个契约。
+**开发者必须保证**：游戏的公开输出不依赖任何"只存在于 session state_ 里的隐藏字段"。做法是规范化的：`public_event_extractor` 把 post-action 的全部 public 字段 dump 进 `PublicEventTrace.public_snapshot`，`public_state_applier`（§5.1 项 8）把 snapshot 反向写回 session state_ 的 public 字段。**observer 路径上不调 `do_action_fast`** —— `apply_observation` 只走 `begin_step_for_session_observe → public_state_applier(snapshot) → tracker.observe_public_event(events)`,viz=0 hidden 槽位不被 freshen,公开部分完全由 message 重建。round-trip 测试 (`test_public_snapshot_round_trip`) + 60-seed drift 扫 (`test_public_hash_excludes_internal_rng`) 在 CI 里守这个契约。
 
 **Belief tracker 追踪公开聚合信息**（剩余牌池的多重集、已 flipped tier 卡集合等）。游戏技能合法获得的"私有知识"（Priest 偷看的对手牌、King 交换后双方知道的牌、Baron 比较中暴露的双方牌）由 GT 端 rules 直接通过 `viz::reveal_slot_to(viewer)` / `swap_slot_owned` 写到 `state.viz_` 上——schema 走 walker 进 `public_snapshot`，observer apply 后那些槽位天然以 viz=1 出现在 session state 里。`randomize_unseen` 只填 viz=0 的槽位，对 viz=1 的已知槽位不动。
 
@@ -1132,8 +1130,10 @@ Stale 采样(opp hidden 字段的旧 cid 现在已经被公开看到)必须从�
 每一步 ply（acting player = cp）：
   1. MCTS 搜索                                                 // 见 §MCTS
        root_tracker = per_perspective_trackers[cp]
-       每 sim 开头 root_tracker->randomize_unseen(sim_state, per_sim_rng)
-       descent 纯 deterministic
+       每 sim 开头 sim_tracker = root_tracker->clone()
+                  sim_tracker->randomize_unseen(sim_state, cp, sim_rng)
+       descent 给定 sim_rng 完全可复现(物理随机由 do_action_fast 里同一
+       sim_rng 即时抽)
   2. do_action_fast(state, chosen)                             // GT 执行动作
   3. 对每个座位 p：
        evt_p = bundle.public_event_extractor(before, action, after, p)
@@ -1473,7 +1473,7 @@ session 上 viz=0 槽位**不动**——决策侧的 hash 用 `kHiddenHashSentin
 
 | 游戏 | 事件类型 | 关键特点 | 位置 |
 |------|---------|---------|------|
-| Azul | `factory_refill` | stateless tracker，只同步 factories | `games/azul/azul_register.cpp` |
+| Azul | `factory_refill` | 不注册 tracker，事件仍发但无消费方;snapshot 是 observer 同步公开局面的唯一通道 | `games/azul/azul_register.cpp` |
 | Splendor | `deck_flip`, `self_reserve_deck` | tracker 维护 seen_cards，盲预订时 AI 需要知道自己抽了什么 | `games/splendor/splendor_register.cpp` |
 | Love Letter | 仅淘汰 / reset 性质事件，精确知识走 viz | Priest/Baron/King/Prince 的对手手牌信息由 rules 直接通过 `reveal_slot_to` / `swap_slot_owned` 写进 viz，snapshot 自带这些 cid；events 只在结构层面（座位淘汰、reveal 槽位变更通知 tracker 重算多重集）发声，tracker 不靠 events 重建 hand | `games/loveletter/loveletter_register.cpp` |
 

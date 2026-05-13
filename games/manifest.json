@@ -34,7 +34,7 @@
       "id": "azul",
       "enabled": true,
       "framework_whitelist": true,
-      "capabilities": ["hidden_info", "snapshot", "tracker"],
+      "capabilities": ["snapshot"],
       "sources": [
         "azul_state.cpp",
         "azul_rules.cpp",

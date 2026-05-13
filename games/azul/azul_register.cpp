@@ -759,7 +759,10 @@ board_ai::GameBundle make_azul(const std::string& game_id, std::uint64_t seed) {
   b.rules = std::make_unique<board_ai::azul::AzulRules<NPlayers>>();
   b.value_model = std::make_unique<board_ai::DefaultStateValueModel>();
   b.encoder = std::make_unique<board_ai::azul::AzulFeatureEncoder<NPlayers>>();
-  b.belief_tracker = std::make_unique<board_ai::azul::AzulBeliefTracker<NPlayers>>();
+  // No belief_tracker registered: every Azul state field is all_public; bag
+  // and box_lid live in schema as per-color counts (also all_public). There
+  // is no per-perspective hidden information to track and nothing for
+  // randomize_unseen to fill at sim entry.
   b.state_serializer = serialize_azul<NPlayers>;
   b.action_descriptor = describe_azul<NPlayers>;
   b.heuristic_picker = azul_heuristic::pick<NPlayers>;
@@ -771,8 +774,8 @@ board_ai::GameBundle make_azul(const std::string& game_id, std::uint64_t seed) {
   b.tail_solver = std::make_unique<board_ai::search::AlphaBetaTailSolver>();
   // AzulRules::do_action_deterministic forces a draw-terminal (winner=-1)
   // whenever an action would trigger a round-end factory refill (the only
-  // source of hidden randomness in Azul). Tail solver therefore never
-  // consumes hidden chance outcomes — safe to combine with belief tracker.
+  // source of physical randomness in Azul). Tail solver therefore never
+  // consumes hidden chance outcomes — safe even though Azul has no tracker.
   b.stochastic_tail_solve_safe = true;
 
   // Trigger: at least one player has ≥4 tiles in some pattern-line row,

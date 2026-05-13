@@ -10,9 +10,9 @@ Historically this file also contained a
 `test_tracker_belief_invariant_under_seed_shuffle` that attempted to drive
 two differently-seeded sessions through the SAME action-id sequence.
 That design didn't work: different seeds produce different public state
-(e.g. Splendor's initial tableau, Azul's factories), so the first few
-actions legal in session A are usually not legal in session B, and the
-test skipped nearly 100% of the time. Deleted — `test_api_belief_matches_selfplay`
+(e.g. Splendor's initial tableau), so the first few actions legal in
+session A are usually not legal in session B, and the test skipped
+nearly 100% of the time. Deleted — `test_api_belief_matches_selfplay`
 covers the same invariant correctly.
 """
 from __future__ import annotations
@@ -30,8 +30,8 @@ from conftest import get_test_model
 
 
 # Games whose tracker is non-trivial (carries hidden-info belief). Games
-# without a tracker (TicTacToe, Quoridor) have nothing to assert here.
-TRACKER_GAMES = ["loveletter", "splendor", "azul"]
+# without a tracker (TicTacToe, Quoridor, Azul) have nothing to assert here.
+TRACKER_GAMES = ["loveletter", "splendor"]
 
 
 @pytest.mark.parametrize("game_id", TRACKER_GAMES)

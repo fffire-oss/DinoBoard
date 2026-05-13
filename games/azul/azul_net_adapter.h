@@ -11,9 +11,11 @@
 
 namespace board_ai::azul {
 
-// Azul has symmetric random state (bag contents) but no per-player hidden
-// fields — every player sees the same public info. private_feature_dim()
-// is 0.
+// Azul has fully-public state — every game-facing field is all_public,
+// including bag and box_lid (declared in schema as per-color counts). No
+// per-player hidden information; private_feature_dim() is 0 and no
+// belief tracker is registered (decision-side determinization at MCTS sim
+// entry has nothing to fill).
 template <int NPlayers>
 class AzulFeatureEncoder final : public IFeatureEncoder {
  public:
@@ -36,26 +38,8 @@ class AzulFeatureEncoder final : public IFeatureEncoder {
       std::vector<float>* /*out*/) const override {}
 };
 
-template <int NPlayers>
-class AzulBeliefTracker final : public IBeliefTracker {
- public:
-  void init(const AnyMap& initial_observation) override;
-  void observe_public_event(
-      int actor,
-      ActionId action,
-      const std::vector<PublicEvent>& events) override;
-  void randomize_unseen(IGameState& state, int observer,
-                        std::mt19937_64& rng) const override;
-  std::unique_ptr<IBeliefTracker> clone() const override {
-    return std::make_unique<AzulBeliefTracker<NPlayers>>(*this);
-  }
-};
-
 extern template class AzulFeatureEncoder<2>;
 extern template class AzulFeatureEncoder<3>;
 extern template class AzulFeatureEncoder<4>;
-extern template class AzulBeliefTracker<2>;
-extern template class AzulBeliefTracker<3>;
-extern template class AzulBeliefTracker<4>;
 
 }  // namespace board_ai::azul

@@ -199,8 +199,8 @@ def test_arena_splendor_hidden_info():
     assert r["total_plies"] > 0
 
 
-def test_arena_azul_hidden_info():
-    """Arena for hidden-info game (Azul) should complete."""
+def test_arena_azul_snapshot_path():
+    """Arena for Azul (fully public, snapshot-driven session sync) should complete."""
     m = get_test_model("azul")
     r = dinoboard_engine.run_arena_match(
         game_id="azul", seed=42,

@@ -95,9 +95,13 @@ class IBeliefTracker {
   // across any two trackers with the same observation history, regardless
   // of the input state's hidden contents or the caller's RNG.
   //
-  // Called both at MCTS simulation root (different RNG per sim; hidden
-  // contents differ but observer-visible fields don't) and at the end
-  // of apply_observation (to re-sample session state's hidden fields).
+  // Called in exactly one place (per DEC-003): at MCTS simulation root
+  // on a cloned sim_tracker (different RNG per sim; hidden contents
+  // differ but observer-visible fields don't). The session itself does
+  // NOT call randomize_unseen — its viz=0 slots are unread bytes that
+  // the framework structurally hides from the hash (kHiddenHashSentinel),
+  // the encoder (MaskedState placeholder), and from sim entry (sim
+  // clones and resamples the tracker independently).
   virtual void randomize_unseen(IGameState& state, int observer,
                                 std::mt19937_64& rng) const = 0;
 

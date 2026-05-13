@@ -57,7 +57,7 @@
 
 | 名词 | 定位 | 一句话 |
 |------|------|--------|
-| **ISMCTS** | 本框架的搜索算法 | Information Set MCTS:每次 sim 从 belief 采一个 determinized world、descent deterministic、用 perspective hash 共享 DAG 节点;详见 §9 |
+| **ISMCTS** | 本框架的搜索算法 | Information Set MCTS:每次 sim 持独立 RNG,root 从 belief 采一个 determinized world,descent 给定 sim 种子完全可复现(同一 sim_rng 也驱动 descent 里 `do_action_fast` 的物理随机),用 perspective hash 共享 DAG 节点;详见 §9 |
 
 ## 一句话主线
 
@@ -143,9 +143,10 @@ perspective snapshot。GT 不做 belief、不做搜索、不做信息集推断�
 事件流的语义负载就是 tracker belief 更新——`tracker.observe_public_event(
 actor, action, events)` 把这次 transition 的事实折进观察记忆。observer 的
 session state **不再跑 `do_action_fast`**：public 字段直接被
-`public_state_applier(public_snapshot)` 整张覆盖，hidden 字段被
-`tracker.randomize_unseen` 重采。事件不应用到 state 上，只应用到 tracker 上。
-完整一次 ply 的时序见 §10.2。
+`public_state_applier(public_snapshot)` 整张覆盖，**viz=0 hidden 槽位
+session 端不维护**(决策侧物理上读不到——hash 用 `kHiddenHashSentinel`、
+encoder 用 placeholder、MCTS sims 在自己的克隆上 determinize)。事件不应
+用到 state 上，只应用到 tracker 上。完整一次 ply 的时序见 §10.2。
 
 ### 1.2 AI session
 
@@ -185,7 +186,7 @@ AI 端面对信息不全。收到
 ```cpp
 state = session.state.clone_state();             // viz 作为 state 的字段一起 clone
 sim_tracker = session.belief_tracker.clone();    // tracker 也 clone，sim 内可写
-sim_tracker->randomize_unseen(*state, per_sim_rng);  // 把 viz=0 槽位填上具体值
+sim_tracker->randomize_unseen(*state, observer, per_sim_rng);  // 把 viz=0 槽位填上具体值
 ```
 
 填完 state 完整（所有字段都有值）才能跑 `do_action_fast`。Descent 每步
@@ -406,13 +407,15 @@ GT 端
                                                                           ▼
                                                           AI 端 apply_observation
                                                           (session 公开字段 ← public_snapshot;
-                                                           hidden 槽末尾由 tracker.randomize_unseen 重采)
+                                                           viz=0 hidden 槽 session 不维护——
+                                                           hash 看 kHiddenHashSentinel,
+                                                           encoder 看 placeholder)
 
 每个 MCTS sim：
   session.state ──clone──▶ sim_state
                               │
                               ▼
-          tracker->randomize_unseen(sim_state, rng)  ← hidden 槽填具体值
+          tracker->randomize_unseen(sim_state, observer, rng)  ← hidden 槽填具体值
                               │
                               ▼
               descent 每步：do_action_fast(sim_state, action)
@@ -514,9 +517,13 @@ tracker 接口里**没有 `IGameState*`**——`init` 拿 `AnyMap`、
 public_event` 累积；sim 结束 sim_tracker 连同 state 一起丢弃,session 持
 有的 tracker 不被污染。
 
-**tracker 不进 hash、不进协议、不参与决策路径**——只在 encoder 提取特
-征时被读取。`belief` 公式可以读 tracker 的公开统计当辅助输入，但**不允许
-把 prior 缓存进 tracker**。
+**tracker 不进 hash、不进协议**——节点 identity 只走 schema slot 的
+state hash;wire 协议只传 `(actor, action, events, public_snapshot)`,
+tracker 自己的内部状态不上线。但 **tracker 参与决策路径**:`randomize_
+unseen` 是 ISMCTS 每个 sim 入口必经一步(sim_tracker 在 cloned sim_state
+上把 viz=0 槽位填出一个具体世界,直接决定该 sim 的合法动作和 value
+backup),encoder 读 tracker 的衍生公开统计是另一条用途。`belief` 公式可
+以读 tracker 的公开统计当辅助输入,但**不允许把 prior 缓存进 tracker**。
 
 当前六款游戏的实际选择：TicTacToe / Quoridor / Azul 没注册 tracker——
 前两者无随机无隐藏、没有 NN 衍生特征想缓存,Azul 的物理随机也是发牌时
@@ -535,15 +542,19 @@ Belief 不是独立类——它就是 `IBeliefTracker::randomize_unseen` 这一�
 方法：
 
 ```cpp
-void randomize_unseen(IGameState& state, std::mt19937& rng) const;
+void randomize_unseen(IGameState& state, int observer,
+                      std::mt19937_64& rng) const;
 ```
 
 - 读：tracker 自己累积的观察 + state 上 perspective 可见的槽位（viz=1）
 - 写：state 上 perspective 不可见的槽位（viz=0）
 
-调用语义：在 sim 入口 / `apply_observation` 末尾，传入一个**已经按
-perspective 视角准备好的 state**（公开字段从 snapshot 重建、hidden 字段
-是占位），tracker 按自己累积的 belief 把 hidden 槽填上一个具体世界。
+调用语义:**唯一调用点是 MCTS sim 入口**(在 cloned sim_state 和
+cloned sim_tracker 上),传入一个公开字段已对齐 observer 视角的 state,
+tracker 按自己累积的 belief 把 viz=0 hidden 槽填上一个具体世界。
+session 自己**不**调 `randomize_unseen`(DEC-003)——session 的 viz=0
+槽位是 unread bytes,决策路径(hash / encoder / sim 入口)都用结构性手
+段从读侧屏蔽掉,不需要 freshen。
 
 约束：产出世界中所有公开槽位（任意 perspective 都能看到的 viz=1 槽位）
 的内容，必须**只**取决于 tracker 的观察历史，与输入 state 的 hidden 内
@@ -585,9 +596,10 @@ weighted prior（Coup tracker 已经做了 claim-driven weighting）。不写就
 
 ### 9.1 七条互锁的实现属性
 
-1. **Root 采样 determinization**：每个 sim 入口
-   `tracker->randomize_unseen(state, rng)` 采一个完整世界，descent 完全
-   deterministic
+1. **Root 采样 determinization**：每个 sim 持独立 RNG;root 步
+   `tracker->randomize_unseen(state, observer, sim_rng)` 采一个完整
+   世界,descent 期间该 sim_rng 仍可能被 `do_action_fast` 消费处理物
+   理随机(如 Azul 工厂 refill)。给定 sim 种子整个 sim 完全可复现
 2. **Per-acting-player 节点 keying**：`state_hash_for_perspective
    (state.current_player())` 作 key——哪位玩家在决策，就用那位玩家的
    信息集
@@ -597,16 +609,18 @@ weighted prior（Coup tracker 已经做了 claim-driven weighting）。不写就
    哪条路径到达都是同一个节点
 4. **UCT2 UCB**：`sqrt()` 分子底用"刚经过的入边"的 visit_count，不是
    node 的 global visit_count（§9.6）
-5. **无 chance node 专门机制**：
-   - **有 belief tracker 的游戏**(LL / Splendor / Coup):物理随机被 root
-     采样吞掉,sim 入口 `randomize_unseen` 一次性把所有 viz=0 槽位填成
-     具体世界,descent 完全 deterministic
-   - **完全公开 + 物理随机的游戏**(Azul):不注册 tracker,sim 入口不调
-     `randomize_unseen`,物理随机走 descent 中由 sim_rng 在
-     `do_action_fast` 里即时抽的路径(§9.2 行 2)
+5. **无 chance node 专门机制**：每个 sim 持独立 RNG,root 步先调
+   `randomize_unseen` 把 viz=0 槽位填成具体世界,descent 期间该 RNG 仍
+   可能被 `do_action_fast` 消费处理物理随机(如 Azul 工厂 refill),给
+   定 sim 种子整个展开完全可复现。
+   - **有 belief tracker 的游戏**(LL / Splendor):root 步从信息集中
+     采一个世界,unseen 池由 tracker 维护
+   - **完全公开 + 物理随机的游戏**(Azul):不注册 tracker,sim 入口直接
+     跳过 `randomize_unseen`(没有 viz=0 槽位),物理随机靠 descent 里
+     `do_action_fast(state, action, sim_rng)` 处理(§9.2)
 
-   两条路径殊途同归:不同 sim 采不同世界 → 不同观察者可见后继 → 不同
-   hash → 自然分叉(§9.7)
+   不同 sim 采不同世界 → 不同观察者可见后继 → 不同 hash → 自然分叉
+   (§9.7)
 6. **Step counter 防环**：`step_count_` 每次 `do_action_fast` 递增，
    纳入 public hash → DAG 结构性 acyclic（§9.5）
 7. **Encoder 对齐 hash scope**：encoder 只读 acting player 视角下 `viz=1`
@@ -680,7 +694,9 @@ std::unordered_map<StateHash64, int> node_index;      // per-search DAG 查找�
    sim_tracker = session.belief_tracker
                    ? session.belief_tracker.clone() : nullptr
    sim_rng    = mt19937_64(derive_subseed(search_seed, sim_index))
-2. if (sim_tracker) sim_tracker.randomize_unseen(*sim_state, sim_rng)
+2. if (sim_tracker) sim_tracker.randomize_unseen(*sim_state,
+                                                 root.current_player(),
+                                                 sim_rng)
 
 3. path = []                          // 每条路径上的 (node_idx, edge_idx)
    cur = 0
@@ -928,13 +944,13 @@ truth 在 `gt_rng` 上跑完 `do_action_fast` 之后,runner 把每个 seat
 ```
 per_perspective_extractor(truth_before, action, truth_after, p)
   → PublicEventTrace evt_p   // {events, public_snapshot}
-seat[p].begin_step_for_session_observe()
+seat[p].begin_step_for_session_observe()  // 框架包办 step_count_++
 public_state_applier(seat[p], evt_p.public_snapshot)
   // ↑ 用 truth-side 抽出来的公开字段快照覆盖回 session 的 public 字段
 per_perspective_trackers[p]->observe_public_event(actor, action, evt_p.events)
   // ↑ 事件只折进 tracker,不应用到 session state
-per_perspective_trackers[p]->randomize_unseen(seat[p], p, freshen_rng[p])
-  // ↑ session 的 hidden 字段重新从 belief 采样,与 truth hidden 无关
+// 注:session 不再调 randomize_unseen。viz=0 槽位是上一次 observe 留下
+// 的旧字节,决策侧物理上读不到(hash/encoder/sim 三者都把 viz=0 屏蔽掉)
 ```
 
 session state **不再调 `do_action_fast`**——信息不全跑没有意义,session
@@ -942,8 +958,9 @@ session state **不再调 `do_action_fast`**——信息不全跑没有意义,se
 - **public 字段** 每步由 `public_state_applier` 从公开事件流的 snapshot
   覆盖,truth 端 walker 在每个 perspective 各自 snapshot 里只写
   `viz[..., p]=1` 的 slot,observer 端整张替换
-- **hidden 字段** session 入口由 `randomize_unseen` 重采样,sim 入口由
-  `sim_tracker.randomize_unseen` 再重采样一次,根本不是 truth 的拷贝
+- **viz=0 hidden 槽位** session 不维护——determinization 只在 MCTS sim
+  入口对克隆出来的 sim_tracker 调一次 `randomize_unseen`,session 自身
+  的 viz=0 字节是 unread bytes
 
 调用方决定要不要走 per-seat 化:`per_seat_states` 入参为空时 runner 退
 回 truth 路径(未 in-scope 的游戏走这条兼容档)。In-scope 的
@@ -1010,10 +1027,11 @@ action, state_after, perspective) diff 生成(`engine/core/game_registry.h`)。
 
 > **为什么 state mutation 不再走 events**:observer 不跑 `do_action_fast`
 > ——信息不全跑没有意义,session 只能从自己 sample 出的 hidden 上算逻辑,
-> 算出的值随后会被 snapshot 覆盖、被 `randomize_unseen` 重采,纯属浪费。
-> 所以事件没有"动作前 vs 动作后"的时序需求,合并成单一 list 就够了。
-> public 字段每步从 `public_snapshot` 整张覆盖,hidden 字段每步由
-> `randomize_unseen` 重采,session state 的最终一致性靠这两条担保。
+> 算出的值随后会被 snapshot 覆盖,纯属浪费。所以事件没有"动作前 vs 动作
+> 后"的时序需求,合并成单一 list 就够了。public 字段每步从
+> `public_snapshot` 整张覆盖,viz=0 hidden 槽位 session 不维护(DEC-003);
+> session state 的最终一致性靠"public 整张覆盖 + 决策侧物理上读不到
+> viz=0"这两条担保。
 
 实现可走两条路径(wire 一致):
 - **walker 化路径**:`viz::serialize_public` / `viz::apply_public`
@@ -1135,9 +1153,9 @@ NN 衍生特征想缓存就注册,不想就不注册。
     - `init(const AnyMap& initial_obs)`:根据初始观察构建 belief
       (**接口签名里没有 `IGameState*`**,tracker 物理上拿不到 truth)
     - `observe_public_event(...)`:从事件流更新 belief
-    - `randomize_unseen(state, rng)`:根据 belief 给 state 填充未见字
-      段。产出世界中所有公开槽位的内容只取决于 tracker 的观察历史,不
-      依赖输入 state 的 hidden 内容
+    - `randomize_unseen(state, observer, rng)`:根据 belief 给 state
+      填充未见字段。产出世界中所有公开槽位的内容只取决于 tracker 的观
+      察历史,不依赖输入 state 的 hidden 内容
     - (可选)tracker 内部顺便缓存 GT 不 care 的公开衍生特征(claim 历
       史、多重集统计等)给 encoder 吃
 - Feature encoder 读 MaskedState——viz=1 槽位读到真值,viz=0 槽位读到

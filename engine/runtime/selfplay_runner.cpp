@@ -134,7 +134,9 @@ SelfplayEpisodeResult run_selfplay_episode(
   // Called after truth has been advanced by `chosen`, with the truth state
   // before/after both available. For each seat:
   //   - hidden-info game (public_event_extractor registered): public_snapshot
-  //     overwrites public fields. Hidden is later freshened by tracker.
+  //     overwrites the seat's public fields. Per DEC-003, viz=0 hidden
+  //     slots are NOT freshened — they are unread bytes that the framework
+  //     structurally hides from the hash, encoder, and sim entry.
   //     do_action_fast is NOT run on the seat — the observer has incomplete
   //     information so replaying the action there would just sample one
   //     world; the public projection arrives whole via the snapshot, and
@@ -163,7 +165,8 @@ SelfplayEpisodeResult run_selfplay_episode(
         public_state_applier(seat, evt_p.public_snapshot);
       }
       // tracker.observe_public_event is called in the per_perspective loop
-      // immediately below; freshening of hidden happens after observe.
+      // immediately below. No hidden-slot freshening — sim entry will
+      // sample fresh worlds on a cloned sim_tracker (DEC-003).
     }
   };
 

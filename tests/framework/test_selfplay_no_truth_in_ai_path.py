@@ -3,14 +3,15 @@ output depends ONLY on the observation history — not on truth's
 internal hidden state.
 
 Background (CLAUDE.md "AI Pipeline Independence" + ALGORITHM_OVERVIEW
-§9.8 + OVERVIEW_LANDING.md §A):
+§9.8 + DEC-003):
 
-  After §A.a, selfplay_runner advances per-seat session state via the
-  public-event protocol after each truth do_action_fast. MCTS / encoder
-  / legal_actions on the AI path read from per_seat_states[player],
-  not from the truth state. Hidden fields on session state are
-  re-sampled every ply via tracker.randomize_unseen — so they are
-  belief samples, not copies of truth.
+  selfplay_runner advances per-seat session state via the public-event
+  protocol after each truth do_action_fast. MCTS / encoder /
+  legal_actions on the AI path read from per_seat_states[player], not
+  from the truth state. Per DEC-003, the session itself NEVER calls
+  randomize_unseen — viz=0 slots on the session are unread bytes
+  (kHiddenHashSentinel in the hash, kPlaceholder in the encoder); only
+  MCTS sims sample fresh worlds at sim entry on a cloned sim_tracker.
 
   Operationally this means: for two selfplay episodes that differ
   only in something invisible to the perspective player (e.g. truth's
@@ -20,9 +21,12 @@ Background (CLAUDE.md "AI Pipeline Independence" + ALGORITHM_OVERVIEW
     - per-seat session public state is rebuilt from public_snapshot,
       which is derived from public_event_extractor — itself invariant
       under truth's hidden internals
-    - per-seat session hidden state is re-sampled from the tracker's
-      information set with a session-seeded RNG that depends only on
-      (episode_seed, ply, seat) — never on truth's hidden values
+    - the session's own viz=0 bytes do not feed the hash or the
+      encoder, so even if they happen to differ between seeds (they
+      do — initial reset_with_seed leaves whatever the rules wrote)
+      decision-side reads cannot distinguish them; sim-entry
+      determinization on a clone is the only path that reads viz=0,
+      and it draws from the tracker, not from session bytes
 
   We can't easily perturb only "truth-internal hidden" through the
   Python binding without also changing the action stream (selfplay's
@@ -41,14 +45,12 @@ Background (CLAUDE.md "AI Pipeline Independence" + ALGORITHM_OVERVIEW
     games whose tracker is deterministic given history) identical
     belief — i.e. truth's seed cannot leak through into the AI's
     public-state view. (test_api_belief_matches_selfplay covers this
-    for hidden-info games; this test extends the structural claim to
-    the four §A.a in-scope games.)
+    for hidden-info games.)
 
-Scope: TicTacToe / Quoridor / Azul / Splendor — the four games to
-which §A.a's per-seat session state applies. LoveLetter / Coup are
-covered by their own checklists once §G migrates perspective-baked
-tracker knowledge into state.viz; per OVERVIEW_LANDING.md they are
-intentionally out of §A.a parametrize.
+Scope (IN_SCOPE_GAMES below): TicTacToe / Quoridor / Azul / Splendor /
+LoveLetter — the five games whose per-seat session state is currently
+driven by the public-event protocol. Coup is excluded (manifest
+enabled=false until its schema-driven tracker rewrite).
 """
 from __future__ import annotations
 
@@ -105,8 +107,8 @@ def test_selfplay_deterministic_under_same_seed(game_id):
     assert _samples_to_signature(ep_a["samples"]) == \
         _samples_to_signature(ep_b["samples"]), (
             f"[{game_id}] selfplay with the same seed produced different "
-            f"AI decisions across runs. Non-determinism in MCTS or "
-            f"per-seat session freshening — every input the AI path reads "
+            f"AI decisions across runs. Non-determinism in MCTS or in "
+            f"per-seat session advance — every input the AI path reads "
             f"must be reproducible from (episode_seed, ply, seat).")
 
     # Feature vectors are part of the AI output (the encoder reads from
@@ -128,11 +130,12 @@ def test_api_session_independent_of_truth_seed(game_id):
     secretly depends on truth's hidden-internal RNG path, which would
     mean public_state_applier or randomize_unseen is leaking.
 
-    For TicTacToe / Quoridor (no hidden info) this is trivially
-    public state equivalence. For Azul / Splendor (hidden info via
-    bag / deck composition) the test is meaningful: their public
-    state under the per-seat session must ignore the API session's
-    own seed.
+    For TicTacToe / Quoridor / Azul (no tracker — the latter has fully
+    public state including bag/box_lid as per-color counts) this is
+    public state equivalence under apply_action replay. For Splendor /
+    Love Letter (tracker registered, hidden info via deck composition or
+    private hands) the test is meaningful: their public state under the
+    per-seat session must ignore the API session's own seed.
     """
     perspective = 0
     seed_truth = 42
@@ -140,7 +143,7 @@ def test_api_session_independent_of_truth_seed(game_id):
     model_path = get_test_model(game_id)
 
     # Generate the canonical observation trace from a perspective.
-    if game_id in ("tictactoe", "quoridor"):
+    if game_id in ("tictactoe", "quoridor", "azul"):
         # Fully-public games: no belief tracker → no observation_trace
         # extraction. Drive both API sessions via apply_action against the
         # truth's action history instead.

@@ -115,5 +115,5 @@ requests.delete(f"{BASE}/ai/sessions/{sid}")
 ## 常见踩坑
 
 - **忘传 `public_snapshot`**：observer 路径上不重放规则，所有公开字段（factories、center、各家面板、丢弃区、袋中色数）每步都要从 snapshot 整体覆写。漏传一个公开 slot，observer 会跟 truth 立刻偏
-- **`factory_refill` 事件给 tracker 用**：Azul 全部公开，本身没强信息差，但事件流仍然按 schema 在做，tracker 只是空操作；snapshot 才是 observer 同步公开局面的主路径
+- **没有 belief tracker**：Azul 全部公开（袋子和 box_lid 在 schema 里以 per-color counts 体现），不注册 tracker；GT 端仍会按规则发 `factory_refill` 事件,observer 收到后没有 tracker 消费(events 走空消费路径),snapshot 是 observer 同步公开局面的唯一有效通道
 - **不需要单独 `take_tiles` 事件**：动作本身（action_id）已经表达了"从哪个 source 拿什么色"，public_snapshot 把对应槽位刷新即可

@@ -110,34 +110,8 @@ void AzulFeatureEncoder<NPlayers>::encode_public(
   out->push_back(static_cast<float>(bag_total) / 100.0f);
 }
 
-template <int NPlayers>
-void AzulBeliefTracker<NPlayers>::init(
-    const AnyMap& /*initial_observation*/) {
-  // Azul has no perspective-specific state to remember; bag composition
-  // is publicly derivable from token counts.
-}
-
-template <int NPlayers>
-void AzulBeliefTracker<NPlayers>::observe_public_event(
-    int /*actor*/,
-    ActionId /*action*/,
-    const std::vector<PublicEvent>& /*events*/) {
-  // Azul has no explicit belief state (bag is shuffled from full counts in
-  // randomize_unseen; tracker doesn't need to maintain progress).
-}
-
-template <int NPlayers>
-void AzulBeliefTracker<NPlayers>::randomize_unseen(IGameState& /*state*/, int /*observer*/, std::mt19937_64& /*rng*/) const {
-  // No-op: the bag is now stored as per-color counts (the only public
-  // fact). There is no order to resample, and counts are publicly
-  // derivable, so observer state already matches truth.
-}
-
 template class AzulFeatureEncoder<2>;
 template class AzulFeatureEncoder<3>;
 template class AzulFeatureEncoder<4>;
-template class AzulBeliefTracker<2>;
-template class AzulBeliefTracker<3>;
-template class AzulBeliefTracker<4>;
 
 }  // namespace board_ai::azul

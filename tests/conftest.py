@@ -84,12 +84,12 @@ def games_with_tracker() -> list:
 
 # Framework matrix — minimal carrier set used by tests/framework/. These
 # three games together cover every structural feature the framework cares
-# about (deterministic / symmetric-random / asymmetric-hidden, 2p / 2-4p,
-# tail solver, belief tracker with and without per-player private fields,
-# elimination). Per-game tests in tests/<game>/ test their own game in full
-# regardless of whether it is in this list.
+# about (deterministic / fully-public-with-physical-randomness /
+# asymmetric-hidden-with-tracker, 2p / 2-4p, tail solver, elimination).
+# Per-game tests in tests/<game>/ test their own game in full regardless
+# of whether it is in this list.
 FRAMEWORK_GAMES = ["quoridor", "azul", "loveletter"]
-FRAMEWORK_HIDDEN_INFO_GAMES = ["azul", "loveletter"]
+FRAMEWORK_HIDDEN_INFO_GAMES = ["loveletter"]
 FRAMEWORK_MULTIPLAYER_GAMES = ["azul", "loveletter"]
 FRAMEWORK_TAIL_SOLVER_GAMES = ["quoridor"]
 

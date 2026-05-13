@@ -1662,6 +1662,8 @@ for (int cid = 0; cid < 90; ++cid) {
 
 ## [BUG-028] public hash 混入不可观察随机源，导致 ISMCTS DAG 按隐藏信息分裂
 
+> ⚠️ **历史归档**:本条目记录的修复路径(MVP-B / BG-008 Phase 2)已在 [DEC-003] 中被进一步收紧。当前架构以 DEC-003 + 当前代码为准——session 不再每步调 `randomize_unseen`、`apply_observation` 末尾不再有 truth-override patch event,viz=0 槽位永远不被框架 freshen。本条目里"BG-008 把 randomize_unseen 搬到每个 apply_observation 末尾"等叙述属于演进过程,不再描述当前行为。
+
 **分类**：游戏层（Azul / Splendor）— 开发新游戏时必须参考此案例审计 `hash_public_fields()`
 **状态**：已修复
 **文件**：`games/azul/azul_state.cpp`、`games/splendor/splendor_state.cpp`
@@ -1733,11 +1735,14 @@ BG-008 MVP-B 落地之后：`IBeliefTracker::reconcile_state` 虚函数删除；
 2. **Coup `public_return_card` post-event 删除** —— snapshot 里的 `court_deck_size` 覆盖尺寸漂移；新增 `exchange_drawn_mask` 覆盖 shape（opp 私有 char id 不泄漏，perspective 自己的走 `self_exchange_draw`）
 3. **新游戏入职心智负担下降** —— 不再需要人肉识别 "do_action_fast 里哪个公共输出读了 hidden"，snapshot 是 public 的 single source of truth
 4. **回归保护新增**：`tests/framework/test_public_snapshot_round_trip.py` 逐 ply 检查 `truth → extract snapshot → blank observer → apply snapshot → hash_public byte-equal truth`，钉住 applier + extractor + hash_public_fields 三件套的 field-level 一致性
-5. **OB-005 数据层修复**：selfplay_runner 改成持有 N 个 per-perspective tracker，每个 tracker init 一次后只 observe_public_event 增量更新。MCTS root 暂时仍走 legacy 单 tracker 路径（per-perspective tracker 的 narrower belief 暴露了 LL hash scope 的 latent bug，独立 audit 后再合流）
+5. **OB-005 数据层修复**：selfplay_runner 改成持有 N 个 per-perspective tracker，每个 tracker init 一次后只 observe_public_event 增量更新。MCTS root 暂时仍走 legacy 单 tracker 路径（per-perspective tracker 的 narrower belief 暴露了 LL hash scope 的 latent bug，独立 audit 后再合流）  
+   ⚠️ **历史归档**:此句的"MCTS root 暂时仍走 legacy 单 tracker 路径"已不再成立。当前 selfplay_runner 在 MCTS 前已把当前行动玩家的 per-perspective tracker 交给 MCTS(`mcts_cfg.root_belief_tracker = per_perspective_trackers[player]`),legacy 单 tracker 路径已删除。
 
 完整设计见 `docs/plans/MESSAGE_DRIVEN_AI_REFACTOR.md`。
 
 回归保护：`tests/framework/test_public_hash_excludes_internal_rng.py`（60-seed × 4 hidden-info 游戏）+ `tests/framework/test_session_hidden_fields_resampled.py`（新增，断言 session state_ 的隐藏字段在每 ply 末被重新采样），连续 5 次稳定通过。
+
+> ⚠️ **历史归档**:`test_session_hidden_fields_resampled.py` 已在 [DEC-003] 中删除——session 不再每步 freshen hidden,断言"每 ply 末重新采样"已不是当前契约。当前的隐藏字段不变性由 `test_public_hash_excludes_internal_rng`(viz=0 槽位的真实值不进 hash)守护。
 
 ### 教训
 

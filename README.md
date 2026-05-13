@@ -44,7 +44,11 @@ OpenSpiel can't do — its real games (Gin Rummy and others) also use
 visibility bitmaps — only that OpenSpiel doesn't enforce this shape;
 authors who get it wrong are caught by round-trip tests in their own
 repo. DinoBoard pushes it down to a base-class facility shared by
-every game, so a single set of CI tests covers everyone.
+every game; a small carrier set of games (currently
+`quoridor / azul / loveletter`, see `tests/conftest.py
+::FRAMEWORK_GAMES`) is matrix-driven through the framework
+invariants in CI, while per-game behavioural assertions live in
+`tests/<game>/test_checklist.py`.
 
 ### 2. Physical separation between GT and AI session
 
@@ -83,8 +87,10 @@ is the last line of defense.
 
 ISMCTS over a DAG:
 
-- **Root determinization**: each sim draws a complete world from the
-  belief tracker; descent is fully deterministic afterward —
+- **Root determinization**: each sim holds an independent RNG; root
+  draws a complete world from the belief tracker, and descent
+  continues to consume that same RNG only for `do_action_fast`
+  physical draws (e.g. Azul factory refill). No chance nodes —
   physical randomness and information asymmetry are handled
   uniformly inside search
 - **DAG, not tree**: keyed by `(state hash, current_player)` — the
@@ -113,9 +119,13 @@ Callers don't need to share game-state code or embed the C++ engine
 — translating their own events into action_id + public events is
 enough. The GT side can be anything (an external API, a physical
 tabletop). This is the public-interface instantiation of the "GT/AI
-session physical separation" architecture above; selfplay / web /
-API are behaviorally equivalent at the MCTS level (guarded by
-`test_api_mcts_policy_invariance`).
+session physical separation" architecture above. A statistical
+regression on Love Letter
+(`test_api_mcts_policy_invariance`) checks that the API path's MCTS
+visit distribution stays close to selfplay over the same observation
+trace; Splendor is currently excluded due to a known
+replay/`self_reserve_deck` interleave issue, and the Web path is not
+directly covered by that test.
 
 See [docs/guide/AI_API.md](docs/guide/AI_API.md).
 
@@ -128,9 +138,11 @@ selfplay → collect samples → train net → gating eval → update best model
 ```
 
 selfplay / arena / search / solver run entirely in C++; Python only
-runs the training loop and the network update. Config-driven — all
-training hyperparameters live in `games/<game>/config/game.json`,
-no code edits.
+runs the training loop and the network update. Config-driven — training
+loop hyperparameters live in `games/<game>/config/game.json`; MCTS
+strength is split across six named profiles (selfplay / arena / eval in
+`game.json`, web_expert / web_casual / analysis in `web.json`). No code
+edits per training run.
 
 Optional training boosts: heuristic guidance (three-stage schedule),
 auxiliary score signal, action filtering, temperature schedule,

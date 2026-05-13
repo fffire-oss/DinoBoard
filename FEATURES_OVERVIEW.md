@@ -32,8 +32,10 @@ DinoBoard 把"推游戏"和"AI 决策"彻底分离。这是整个框架的心智
   `public_snapshot`）。GT 可以是我们的 C++ 引擎，也可以是外部 API、甚至
   物理桌游——AI 不在乎 GT 是谁
 - **AI session（每个 perspective 一份）只吃消息流**——内部持一份本地
-  state 副本，public 字段每步从 `public_snapshot` 重建，hidden 字段每
-  步 `randomize_unseen` 重新采样。session state 永远不是 truth 的拷贝
+  state 副本，public 字段每步从 `public_snapshot` 整张覆盖;viz=0 hidden
+  槽位 session 不维护(决策侧物理上读不到——hash 看 `kHiddenHashSentinel`、
+  encoder 看 placeholder、MCTS sims 在自己克隆的 sim_tracker 上才调
+  `randomize_unseen`)。session state 永远不是 truth 的拷贝
 - **MCTS / encoder 在 selfplay / web / API 三条路径下吃的都是 AI session
   state**（不是 truth）——这是"AI 结构性不读真值"的根。AI session 的
   接口里没有 `IGameState*` 指向 truth，物理上拿不到
@@ -64,11 +66,13 @@ DinoBoard 把"推游戏"和"AI 决策"彻底分离。这是整个框架的心智
 ## 搜索：ISMCTS
 
 神经网络引导的 MCTS，原生支持 2-4 人。**算法详解见
-[ALGORITHM_OVERVIEW.md §8](ALGORITHM_OVERVIEW.md#8-mcts--ismcts-over-a-dag)**。
+[ALGORITHM_OVERVIEW.md §9](ALGORITHM_OVERVIEW.md#9-mcts--ismcts-over-a-dag)**。
 要点：
 
-- **Root 采样 determinization**：每次 sim 从 belief 采一个完整世界，descent
-  纯 deterministic
+- **Root 采样 determinization**：每次 sim 持独立 RNG；root 从 belief
+  采一个完整世界,descent 期间该 RNG 仍可能被 `do_action_fast` 消费处
+  理物理随机(如 Azul 工厂 refill)。给定 sim 的种子,整个 sim 的展开
+  完全可复现
 - **DAG 而非 tree**：全局 hash 表，同一 info set 不同路径共享节点；UCT2
   修正多父路径下的 over-exploration
 - **节点 key 按 acting player 视角**：
@@ -146,7 +150,10 @@ Splendor / Azul 已实现，Love Letter / Coup 未实现。详见
 1. **结构性证明 AI 不读真值**——架构层已经讲过 AI session 拿不到
    `IGameState*` 指向 truth；API 层的额外守护测试有
    `test_public_snapshot_round_trip` / `test_public_hash_excludes_internal_rng` /
-   `test_api_belief_matches_selfplay` / `test_api_mcts_policy_invariance`
+   `test_api_belief_matches_selfplay`,以及一个针对 Love Letter 的
+   API/selfplay MCTS 策略统计回归 `test_api_mcts_policy_invariance`(Splendor 因
+   replay / `self_reserve_deck` 交错的已知问题暂不纳入,Web 路径不直接
+   覆盖)
 2. **接入第三方**——GT 端可以是任意来源（外部 API、物理桌游），只要实现
    "事件 → API"翻译层即可使用 AI，无需共享 state 代码或嵌入 C++ 引擎
 
@@ -284,7 +291,7 @@ vs best，胜率 ≥ 阈值更新 best）。N 人游戏 candidate 轮坐每个�
 | TicTacToe | 最小闭环；schema 全 all_one，不需要任何 optional 组件 |
 | Quoridor | 完全信息确定游戏；heuristic_picker / tail_solver / adjudicator / auxiliary_scorer / training_action_filter 全配齐 |
 | Splendor | **端到端 walker 化参考实现**：reserve owner-only viz、`mask_field_slot` 走 COW shared_ptr 一次 detach、snapshot 走 `serialize_public(MaskedState)` walker 路径、`do_action_deterministic` 用 `forced_draw_override = -2` 占位符 |
-| Azul | 纯对称物理随机；belief_tracker 只驱动 `randomize_unseen`，schema 仍 all_public（袋子组成由公开 token 守恒派生） |
+| Azul | 纯对称物理随机；schema 全 all_public（袋子和 box_lid 在 schema 里以 per-color counts 体现），不注册 `belief_tracker`——sim 入口没东西可 determinize，物理随机走 `do_action_fast` 里 `sim_rng` 即时抽 |
 | Love Letter | 非对称隐藏 + viz reveal 槽位承载确定信息（rules 通过 `reveal_slot_to` / `swap_slot_owned` 写入），tracker stateless 只做剩余牌池均匀采样 |
 | Coup | **自定义 randomize_unseen** 范例：claim/challenge 历史驱动加权联合采样，避免诈唬游戏的 uniform 退化均衡 |
 

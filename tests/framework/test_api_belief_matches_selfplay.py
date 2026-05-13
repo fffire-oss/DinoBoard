@@ -34,12 +34,13 @@ from conftest import get_test_model
 
 
 # Belief / public-state / legal-action equivalence under independent
-# seeds. The framework matrix carrier (azul + loveletter) covers both
-# uniform sampling (azul) and per-player private state (loveletter).
-# Splendor and Coup get the SAME equivalence assertions in their own
-# tests/<game>/test_checklist.py — that's where game-specific coverage
-# belongs. Don't add new games here.
-GAMES_WITH_EVENT_PROTOCOL = ["azul", "loveletter"]
+# seeds. Carrier here is loveletter (per-player private hand + tracker
+# serialization). Splendor and Coup get the SAME equivalence assertions
+# in their own tests/<game>/test_checklist.py — that's where game-specific
+# coverage belongs. Azul has no tracker (fully public state, including bag
+# composition as per-color counts) and is exercised by
+# test_public_snapshot_round_trip instead.
+GAMES_WITH_EVENT_PROTOCOL = ["loveletter"]
 
 
 def _apply_trace_step(api_gs, step: dict) -> None:
@@ -141,9 +142,7 @@ def test_api_public_state_matches_after_trace(game_id):
     for step in ep["observation_trace"]:
         _apply_trace_step(api_gs, step)
 
-    # Compare public state fields. For Azul, everything in state_dict is
-    # public except "bag_counts" / "bag_total" (which are derivable but may
-    # differ in representation due to box_lid bookkeeping).
+    # Compare public state fields.
     api_state = api_gs.get_state_dict()
     # Recreate ground-truth session and replay its action history to get
     # its final state dict (there's no direct "final state dict" output).

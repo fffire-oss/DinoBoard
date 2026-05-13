@@ -56,7 +56,7 @@ callsite 按 profile 名索引（`resolve_profile(game_id, "arena")`），不再
 
 ### 继承机制（`inherits`）
 
-每个 profile 都可以 `inherits` 另一个 profile（同文件或跨文件），未指定的字段从父 profile 继承；BASE 默认值见 `training/mcts_profile.py:_BASE`。继承允许多层链，循环时抛错。跨 game.json 与 web.json 的继承允许（例如 `analysis` 可以 `inherits: "selfplay"`），但同名 profile 在两边同时出现是硬错误。
+每个 profile 都可以 `inherits` 另一个 profile（同文件或跨文件），未指定的字段从父 profile 继承；BASE 默认值见 `training/mcts_profile.py:_BASE_DICT`。继承允许多层链，循环时抛错。跨 game.json 与 web.json 的继承允许（例如 `analysis` 可以 `inherits: "selfplay"`），但同名 profile 在两边同时出现是硬错误。
 
 ### temperature_schedule 形状
 

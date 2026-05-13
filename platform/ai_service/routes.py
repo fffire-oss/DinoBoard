@@ -7,18 +7,22 @@ Endpoints:
   DELETE /ai/sessions/{id}       — close a session
   GET /ai/sessions/{id}          — status (actions observed, turn, terminal)
 
-Hidden-info games (splendor / azul / loveletter / coup) require the caller
-to pass `events` and `public_snapshot` on every observe call so the AI's
-belief tracker stays consistent with truth — the action_id alone is not
-enough information for the AI to update hidden state. Deterministic games
+Snapshot-path games (splendor / loveletter / coup carry hidden info +
+trackers; azul is fully public but still uses the snapshot protocol)
+require the caller to pass `events` and `public_snapshot` on every
+observe call so the AI's belief tracker (where present) stays consistent
+with truth and the session's public state is rebuilt from the wire — the
+action_id alone is not enough. Fully-public no-tracker games
 (tictactoe / quoridor) only need `action_id`.
 
-AI strength is server-controlled — `simulations` and `temperature` are not
-wire fields. The server resolves them per-game from `web.json`
-`difficulty_overrides.expert` (with fallback `{simulations: 800,
-temperature: 0.0}`). `seed` is optional; omitting it lets the server pick
-a fresh `secrets.randbits(64)` value, which is the default for production
-clients. Tests may pass an explicit `seed` for reproducibility.
+AI strength is server-controlled — `simulations` / `temperature` /
+`opponent_selection` are not wire fields. The server resolves them per-game
+via `resolve_profile(game_id, "web_expert")` against the unified six-profile
+config (selfplay / arena / eval in `game.json`; web_expert / web_casual /
+analysis in `web.json`); see `training/mcts_profile.py` and
+`docs/guide/CONFIG_REFERENCE.md`. `seed` is optional; omitting it lets the
+server pick a fresh `secrets.randbits(64)` value, which is the default for
+production clients. Tests may pass an explicit `seed` for reproducibility.
 """
 from __future__ import annotations
 
