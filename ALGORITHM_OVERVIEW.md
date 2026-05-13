@@ -1059,14 +1059,31 @@ action, state_after, perspective) diff 生成(`engine/core/game_registry.h`)。
 
 `initial_observation` 是另一种 opening-fact dict(每个 perspective 在
 session 启动时收到一次,内容是该 perspective 看得见的开局事实——例如
-LL 自己的开局手牌、Coup 自己的两张 influence cid)。它**框架级 walker 驱动**,
-不再有 per-game extractor/applier:GT 端走 `viz::serialize_public_for_perspective`
-(walker 遍历每个 viz=1 给该 perspective 的 slot,经 `read_field_slot`
-emit 到 AnyMap),session 端 `apply_initial_observation` 走
-`viz::apply_public_for_perspective`(同一 walker,经 `write_field_slot`
-整张覆盖)。和每步 `public_snapshot` 共享 walker / dispatcher,差别仅在
-slot 过滤条件:`public_snapshot` 只取 `all_public` base,initial obs 取
-viz=1 给该 perspective(包含 owner-only 起手牌等 perspective-private 字段)。
+LL 自己的开局手牌、开局发给起手玩家的 `drawn_card`)。它的 wire 形状
+**与逐 ply snapshot 同构**,两段:
+
+```
+{ "public_snapshot": <viz::serialize_public(state, schema)>,    # 完全同一个 walker,只取 all_public slot
+  "tracker_init":    <tracker.pack_init_payload(state, p)> }   # 视角私有引导(AnyMap)
+```
+
+GT 端先用 `viz::serialize_public` 走 walker 把所有 `all_public` slot 写
+进 `public_snapshot`(和逐 ply 完全同一条路径);再调
+`tracker.pack_init_payload(gt_state, perspective)` 拿到该 perspective 在
+session 启动时需要的私有引导(默认空 AnyMap;LL 在 `pack_init_payload`
+里塞 `own_hand`,以及当 `drawn_card` 已被 `reveal_slot_to(perspective)`
+时塞 `drawn_card`)。
+
+session 端 `apply_initial_observation(perspective, obs)` 解开两段:
+`public_snapshot` 走 `viz::apply_public` 整张覆盖(和逐 ply 同一函
+数);`tracker_init` 直接传给 `tracker.init(*state, perspective, payload)`,
+让 tracker 把私有 slot 写进 session 的 state 并翻 viz=1。
+
+这条协议把"开局"和"逐 ply"合并到同一个 walker 上:public 部分共享
+`serialize_public` / `apply_public`,perspective-private 部分由
+`pack_init_payload` ↔ `tracker.init`(opening 端)和 `public_event_extractor`
+↔ `tracker.observe_public_event`(per-ply 端)分别承担,框架不再为开局
+搞特例分支。
 
 ### 10.2 协议字段限制
 

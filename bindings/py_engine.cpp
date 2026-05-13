@@ -49,14 +49,14 @@ inline search::OpponentSelection parse_opponent_selection(
 // empty vectors (tracker becomes effectively a no-op for those games, which
 // matches their pre-migration behavior since they had no hidden info).
 inline void tracker_init(IBeliefTracker& bt, const GameBundle& /*bundle*/,
-                         const IGameState& state, int perspective) {
-  // Bootstrap MaskedState — walker-produced "nature action 0" snapshot
-  // for `perspective`. The tracker can read schema fields via
-  // bootstrap.read_field_slot(name, idx); viz=0 slots structurally
-  // contain kPlaceholder so the tracker physically cannot read truth
-  // that wasn't visible to the observer at game start.
-  auto bootstrap = make_masked_state(state, state.schema_ref(), perspective);
-  bt.init(*bootstrap, perspective);
+                         IGameState& state, int perspective,
+                         const AnyMap& payload = {}) {
+  // Two-step init: walker `apply_public` (the broadcast public snapshot
+  // path) is the responsibility of the caller; here we just hand the
+  // perspective-private bootstrap payload to the tracker. The tracker
+  // writes any private slots into `state` and seeds its own memory by
+  // reading public facts from `state`.
+  bt.init(state, perspective, payload);
 }
 
 inline void tracker_observe(IBeliefTracker& bt, const GameBundle& bundle,
@@ -1143,41 +1143,70 @@ class GameSessionWrapper {
 
   // Test/integration helper: extract the initial observation for a given
   // perspective from the truth state, the way the partner-side server would
-  // before sending it to the AI. Walker-driven: serializes every viz=1 slot
-  // for `perspective` keyed by schema field name (same wire shape as
-  // `public_snapshot`). For fully-public games the result carries every
-  // field; for hidden-info games it carries the perspective's own visible
-  // slots (e.g. Love Letter `hand[perspective]`, Splendor `tableau`).
+  // before sending it to the AI. Two-section wire shape, structurally
+  // identical to per-ply snapshot:
+  //   {"public_snapshot": <walker viz::serialize_public(state)>,
+  //    "tracker_init":    <tracker.pack_init_payload(state, perspective)>}
+  // The public_snapshot half carries only all_public schema slots — exactly
+  // what every viewer sees at every ply. Perspective-private bootstrap that
+  // all_public broadcast can't reach (e.g. Love Letter own starting hand)
+  // flows through tracker_init.
   py::dict extract_initial_observation(int perspective) {
-    AnyMap snap;
+    AnyMap pub;
+    AnyMap tk_init;
     {
       py::gil_scoped_release release;
-      viz::serialize_public_for_perspective(
-          *bundle_->state, bundle_->state->schema_ref(), perspective, snap);
+      viz::serialize_public(
+          *bundle_->state, bundle_->state->schema_ref(), pub);
+      if (bt_) {
+        tk_init = bt_->pack_init_payload(*bundle_->state, perspective);
+      }
     }
+    py::dict pub_d;
+    for (const auto& [k, v] : pub) pub_d[py::cast(k)] = any_to_py(v);
+    py::dict tk_d;
+    for (const auto& [k, v] : tk_init) tk_d[py::cast(k)] = any_to_py(v);
     py::dict out;
-    for (const auto& [k, v] : snap) out[py::cast(k)] = any_to_py(v);
+    out["public_snapshot"] = pub_d;
+    out["tracker_init"] = tk_d;
     return out;
   }
 
-  // Partner-provided initial observation: perspective-specific info the AI
-  // would know at game start (e.g. own starting hand). Walker-driven —
-  // every viz=1 slot in the wire payload is written via write_field_slot;
-  // viz=0 slots stay at whatever the session's `reset_with_seed` produced
-  // (semantically-undefined leftovers; sim-entry randomize_unseen on a
-  // clone is the only path that reads them). Tracker init bootstraps from
-  // a fresh walker MaskedState, structurally placeholder-only on viz=0
-  // slots — wire payload cannot reach it.
+  // Partner-provided initial observation. Two-section wire shape mirrors
+  // per-ply snapshot: `public_snapshot` is wholesale-applied via
+  // `viz::apply_public` (same path per-ply uses); `tracker_init` is handed
+  // to `tracker.init` so it can write any perspective-private slots into
+  // session state and seed its own memory. The session's viz=0 slots are
+  // never touched here — sim-entry `randomize_unseen` on a clone is the
+  // only path that reads them.
   void apply_initial_observation(int perspective_player, py::dict initial_obs) {
     AnyMap obs_map = py_dict_to_any_map(initial_obs);
+    auto pub_it = obs_map.find("public_snapshot");
+    auto tk_it = obs_map.find("tracker_init");
+    if (pub_it == obs_map.end()) {
+      throw std::runtime_error(
+          "apply_initial_observation: missing 'public_snapshot' field");
+    }
+    if (pub_it->second.type() != typeid(AnyMap)) {
+      throw std::runtime_error(
+          "apply_initial_observation: 'public_snapshot' must be an AnyMap");
+    }
+    const AnyMap& pub = std::any_cast<const AnyMap&>(pub_it->second);
+    AnyMap tk_payload;
+    if (tk_it != obs_map.end()) {
+      if (tk_it->second.type() != typeid(AnyMap)) {
+        throw std::runtime_error(
+            "apply_initial_observation: 'tracker_init' must be an AnyMap");
+      }
+      tk_payload = std::any_cast<const AnyMap&>(tk_it->second);
+    }
     py::gil_scoped_release release;
     external_obs_mode_ = true;
     api_perspective_ = perspective_player;
-    viz::apply_public_for_perspective(
-        *bundle_->state, bundle_->state->schema_ref(), perspective_player,
-        obs_map);
+    viz::apply_public(
+        *bundle_->state, bundle_->state->schema_ref(), pub);
     if (bt_) {
-      tracker_init(*bt_, *bundle_, *bundle_->state, perspective_player);
+      bt_->init(*bundle_->state, perspective_player, tk_payload);
     }
   }
 

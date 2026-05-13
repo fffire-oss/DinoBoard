@@ -467,13 +467,24 @@ GameBundle 是一个聚合所有游戏组件的结构体。工厂函数返回一
 | 16 | `auxiliary_scorer` | `AuxiliaryScorer` | 否 | 辅助训练信号 |
 | 17 | `training_action_filter` | `TrainingActionFilter` | 否 | 训练时约束动作空间 |
 
-> **注**：开局观察(`initial_observation`)是**框架级 walker 驱动**,不再通过
-> per-game extractor/applier。GT 端走 `viz::serialize_public_for_perspective`
-> (walker 遍历 viz=1 给该 perspective 的每个 slot,经 `read_field_slot`
-> emit),session 端 `apply_initial_observation` 走
-> `viz::apply_public_for_perspective`(同 walker,`write_field_slot` 整张
-> 覆写)。游戏只要把 schema visibility + per-slot dispatcher 写对,框架自
-> 动正确处理 perspective-private 字段(LL 起手牌、Splendor 起手 tableau 等)。
+> **注**:开局观察(`initial_observation`)和逐 ply snapshot **共享同一条
+> 框架级 walker**,wire shape 是两段:
+>
+> ```
+> { "public_snapshot": <viz::serialize_public(state, schema)>,    # 所有 all_public slot,与逐 ply 完全同源
+>   "tracker_init":    <tracker.pack_init_payload(state, p)> }   # 视角私有引导(默认空 AnyMap)
+> ```
+>
+> GT 端先用 `viz::serialize_public` 走 walker(经 `read_field_slot` emit
+> 每个 `all_public` slot),再调 `tracker.pack_init_payload` 取该 perspective
+> 的私有引导。session 端 `apply_initial_observation` 把 `public_snapshot`
+> 喂给 `viz::apply_public`(经 `write_field_slot` 整张覆写),把
+> `tracker_init` 喂给 `tracker.init(*state, perspective, payload)`,由
+> tracker 负责把私有 slot 写进 session state 并翻 viz=1。
+>
+> 游戏只要把 schema visibility + per-slot dispatcher 写对,public 部分零
+> 工作量;perspective-private 字段(LL 起手牌、LL 起手 `drawn_card`)在
+> 自家 tracker 的 `init` / `pack_init_payload` 里实现就够了。
 
 ### 5.2 各类型签名
 
@@ -1154,7 +1165,16 @@ web / API / per-seat selfplay 推 observer state（不调 do_action_fast）：
                                                                 // (viz=0 不动)
 ```
 
-游戏开发者只需实现 `IBeliefTracker` 的 5 个方法 + `public_event_extractor`(+ `public_state_applier`,隐藏信息游戏必装)。开局观察由框架 walker (`viz::serialize_public_for_perspective` / `apply_public_for_perspective`) 自动处理,无需 per-game extractor/applier。extractor 调用封装见 `bindings/py_engine.cpp`。
+游戏开发者只需实现 `IBeliefTracker` 的方法(`init` / `pack_init_payload` /
+`observe_public_event` / `randomize_unseen` / `serialize` / `clone`)+
+`public_event_extractor`(+ `public_state_applier`,隐藏信息游戏必装)。
+开局观察统一走两段式 wire(`{"public_snapshot": viz::serialize_public(...),
+"tracker_init": tracker.pack_init_payload(...)}`),public 部分由框架 walker
+自动处理,perspective-private 引导由 tracker 自家的 `pack_init_payload` /
+`init` 收尾——session 端 `apply_initial_observation` 把
+`public_snapshot` 喂给 `viz::apply_public`,把 `tracker_init` 喂给
+`tracker.init(*state, perspective, payload)`。extractor 调用封装见
+`bindings/py_engine.cpp`。
 
 ### 10.6 实现示例
 Belief tracker 有两种不同定位，由游戏的信息结构决定：
@@ -1454,8 +1474,10 @@ m["box_counts"] = std::any(box_counts);
 3. 实现 public-event 协议（§14.3），在 GameBundle 注册：
    - `public_event_extractor` — GT 侧：`(state_before, action, state_after, perspective) → PublicEventTrace { events, public_snapshot }`
    - `public_state_applier` — observer 侧：把 `public_snapshot` 整体写回 session state 的公开字段
-   - 开局观察由框架 walker (`viz::serialize_public_for_perspective` /
-     `apply_public_for_perspective`) 自动处理,不需要 per-game 函数
+   - 开局观察 = `viz::serialize_public` (public 部分,框架 walker)+
+     `tracker.pack_init_payload` (perspective-private 引导,游戏自家
+     tracker 实现);session 端 `apply_initial_observation` 自动分别走
+     `viz::apply_public` 和 `tracker.init`
 4. 在 `tests/<your_game>/test_checklist.py` 里加一个 `TestApiBeliefEquivalence` 类(参考 `tests/loveletter/` / `tests/splendor/` / `tests/coup/test_checklist.py`),调用 `assert_api_belief_matches_selfplay(GAME, PUBLIC_KEYS)` —— 这个 helper 一次完成三层等价断言(belief snapshot 每步一致 / 公开 state 字段终局相等 / perspective 回合 legal actions 相等),不需要重新实现
 
 ### 14.3 Public-Event 协议设计
@@ -1475,13 +1497,30 @@ session 上 viz=0 槽位**不动**——决策侧的 hash 用 `kHiddenHashSentin
 
 **可见性过滤**：ground truth 端实现 `public_event_extractor` 时决定给 perspective 看什么。比如对手盲抽一张卡，事件只传 `{"player": 1}`（不带牌面），AI 知道"发生过抽牌"但不知道具体卡。框架不做 firewall——ground truth 愿意多传也可以（对接友好）。
 
-**初始观察**:框架 walker 驱动,无 per-game 代码。GT 端调
-`viz::serialize_public_for_perspective(state, schema, p, snap)` 把每个
-viz=1 给 perspective p 的 slot 经 `read_field_slot` emit 到 AnyMap;session
-端 `apply_initial_observation(p, snap)` 调 `viz::apply_public_for_perspective`
-经 `write_field_slot` 整张写回。Love Letter 的 `my_hand`(owner_only_first_axis)、
-Splendor 的 `tableau` + `nobles`(all_public)等都通过同一条 walker 路径,
-不再需要 game-side extractor/applier。
+**初始观察**:与逐 ply snapshot 共用同一条 walker,wire shape 是两段:
+
+```
+{ "public_snapshot": <viz::serialize_public(state, schema)>,    # 所有 all_public slot
+  "tracker_init":    <tracker.pack_init_payload(state, p)> }   # 视角私有引导(默认空)
+```
+
+- **public 部分**:GT 端 `viz::serialize_public` 走 walker 经
+  `read_field_slot` emit 每个 `all_public` slot;session 端
+  `viz::apply_public` 经 `write_field_slot` 整张覆写。Splendor 的
+  `tableau` + `nobles`、LL 的 `discard_count` / `face_up_count` /
+  `deck_size` 都走这条,无 per-game 代码。
+- **perspective-private 部分**:由游戏自家 tracker 的 `pack_init_payload`
+  / `init` 负责。LL 在 `pack_init_payload` 里塞 `own_hand`(以及当
+  rules 已经 `reveal_slot_to(starting_player)` 把 `drawn_card` 翻成
+  viz=1 时,顺手把 `drawn_card` 也塞进 payload),`init` 把这两个值
+  写进 session state 并把 viz 翻成 1。Splendor 起手没有
+  perspective-private 字段,`pack_init_payload` 直接返回空。
+
+session 端 `apply_initial_observation(perspective, obs)` 解开两段分别走
+`viz::apply_public` 和 `tracker.init(*state, perspective, payload)`。
+opening 和 per-ply 在框架眼里是同一种"public_snapshot + 视角私有引导"
+模式,只是引导通道不同(opening 走 `pack_init_payload` ↔ `init`,
+per-ply 走 `public_event_extractor` ↔ `observe_public_event`)。
 
 ### 14.4 参考实现
 

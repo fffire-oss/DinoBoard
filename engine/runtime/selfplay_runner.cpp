@@ -92,12 +92,15 @@ SelfplayEpisodeResult run_selfplay_episode(
     }
     for (int p = 0; p < num_players; ++p) {
       if (per_perspective_trackers[p]) {
-        // Bootstrap each tracker from a walker-produced MaskedState —
-        // viz=1 slots carry truth, viz=0 slots are kPlaceholder. The
-        // tracker physically cannot read truth that wasn't visible to
-        // the observer at game start.
-        auto bootstrap = make_masked_state(*state, state->schema_ref(), p);
-        per_perspective_trackers[p]->init(*bootstrap, p);
+        // selfplay path: per-seat session state was reset_with_seed at
+        // game start, identical to truth. payload is empty — the
+        // tracker's init only seeds its own public memory by reading
+        // public slots from state. The session API path constructs a
+        // non-empty payload via pack_init_payload to bootstrap
+        // perspective-private slots when the session was seeded
+        // independently of GT.
+        IGameState& seat = *per_seat_states[p];
+        per_perspective_trackers[p]->init(seat, p, AnyMap{});
       }
     }
   }
@@ -111,24 +114,32 @@ SelfplayEpisodeResult run_selfplay_episode(
   // not silently paper over with a session-side resample.
 
   // Tracing uses its own separate tracker instance so trace output stays
-  // reproducible across refactors of MCTS tracker routing. The bootstrap
-  // is a walker-produced MaskedState for the trace perspective; on the
-  // wire it is serialized as an AnyMap of viz=1 slot values keyed by
-  // schema field name (see viz::serialize_public_for_perspective).
+  // reproducible across refactors of MCTS tracker routing. Initial
+  // observation is the snapshot-path's opening twin:
+  //   { "public_snapshot": <walker viz::serialize_public(state)>,
+  //     "tracker_init":    <tracker.pack_init_payload(state, p)> }
+  // Wire shape mirrors per-ply public_snapshot: the public part is
+  // produced by exactly the same walker, and `tracker_init` plays the
+  // role per-ply `events` plays for `tracker.observe_public_event`.
   if (tracing) {
+    AnyMap pub;
+    viz::serialize_public(*state, state->schema_ref(), pub);
+    AnyMap tracker_init_payload;
     if (trace_belief_tracker) {
-      auto trace_bootstrap = make_masked_state(
-          *state, state->schema_ref(), trace_perspective);
-      trace_belief_tracker->init(*trace_bootstrap, trace_perspective);
+      tracker_init_payload = trace_belief_tracker->pack_init_payload(
+          *state, trace_perspective);
+      // Trace's own tracker bootstrap: per_seat_states[trace_perspective]
+      // already mirrors truth, so the payload is redundant on selfplay's
+      // own state — but feeding the same payload here guarantees the
+      // trace tracker's init is exercised on the same path API uses.
+      trace_belief_tracker->init(
+          *per_seat_states[trace_perspective], trace_perspective,
+          tracker_init_payload);
       result.initial_belief_snapshot = trace_belief_tracker->serialize();
     }
-    // Wire-shape bootstrap snapshot for trace consumers — walker-driven,
-    // same AnyMap shape as per-ply public_snapshot. The tracker bootstrap
-    // above does NOT use this AnyMap; tracker.init reads the walker
-    // MaskedState directly.
-    viz::serialize_public_for_perspective(
-        *state, state->schema_ref(), trace_perspective,
-        result.initial_observation);
+    result.initial_observation["public_snapshot"] = std::any(std::move(pub));
+    result.initial_observation["tracker_init"] =
+        std::any(std::move(tracker_init_payload));
   }
 
   std::mt19937_64 heuristic_rng(

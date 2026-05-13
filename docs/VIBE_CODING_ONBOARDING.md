@@ -83,7 +83,7 @@ You do not need to read `../ALGORITHM_OVERVIEW.md` unless you are modifying the 
 |------|---------|----------------------|
 | Public + deterministic | TicTacToe, Quoridor | state / rules / encoder only |
 | Public + symmetric random | Azul | state / rules / encoder; no tracker (physical randomness lives on public counts, sim_rng samples on the fly inside `do_action_fast`) |
-| Asymmetric hidden info | Splendor, Love Letter, Coup | + `belief_tracker` + visibility schema with owner-only fields + per-slot `hash_field_slot` / `mask_field_slot` / `read_field_slot` / `write_field_slot` dispatchers (initial observation handshake is walker-driven via `viz::serialize_public_for_perspective` / `apply_public_for_perspective`; per-ply public snapshot via `public_event_extractor` / `public_state_applier`) |
+| Asymmetric hidden info | Splendor, Love Letter, Coup | + `belief_tracker` + visibility schema with owner-only fields + per-slot `hash_field_slot` / `mask_field_slot` / `read_field_slot` / `write_field_slot` dispatchers. Wire protocol unifies opening and per-ply on one walker: opening = `viz::serialize_public` (all_public slots) + `tracker.pack_init_payload` (perspective-private bootstrap) → applied via `viz::apply_public` + `tracker.init`; per-ply = `public_event_extractor` / `public_state_applier` + `tracker.observe_public_event`. |
 
 ---
 

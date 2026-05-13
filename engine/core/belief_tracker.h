@@ -46,21 +46,45 @@ class IBeliefTracker {
  public:
   virtual ~IBeliefTracker() = default;
 
-  // Initialize at game start from the bootstrap MaskedState (the
-  // walker-produced "nature action 0" snapshot for `perspective`).
+  // Initialize at game start.
   //
-  // The MaskedState is a clone of the GT-side starting state with every
-  // viz=0 slot for `perspective` overwritten with kPlaceholder — the
-  // tracker structurally cannot read truth that wasn't visible to the
-  // observer at game start. perspective-agnostic by convention: the same
-  // walker output (per `perspective`) feeds tracker.init and
-  // session.apply_initial_snapshot, but the tracker must not store
-  // anything that would diverge if fed a different perspective's view.
+  // Two-step initialization protocol (the per-ply path's parallel):
+  //   - per-ply: walker `apply_public` overwrites every all_public slot,
+  //     then `observe_public_event` updates tracker memory from the event
+  //     stream;
+  //   - opening: walker `apply_public` overwrites every all_public slot,
+  //     then `init` is called with a `payload` AnyMap carrying any
+  //     perspective-private bootstrap that all_public broadcast can't
+  //     reach (e.g. Love Letter's `hand[perspective]`, Coup's two own
+  //     influence cids). The tracker (a) writes those private values
+  //     into `state` (and toggles `state.viz_` if needed), and (b) seeds
+  //     its own internal memory by reading public facts from `state`.
   //
-  // Trackers that need to read public initial facts (e.g. Splendor's
-  // tableau card IDs, Love Letter's face_up_count) read them via
-  // `bootstrap.read_field_slot(name, idx)` keyed by schema field name.
-  virtual void init(const MaskedState& bootstrap, int perspective) = 0;
+  // payload's shape is game-specific and produced by `pack_init_payload`
+  // on the GT side. For fully-public / symmetric-random games and games
+  // whose perspective-private bootstrap is empty, payload is empty and
+  // the default impl does nothing beyond initializing tracker memory.
+  //
+  // In selfplay / arena / heuristic paths the per-seat session state is
+  // initialized with the same seed as truth and already carries correct
+  // data + correct viz, so payload is empty and `init` is a no-op-on-state
+  // (just seeds tracker memory). In the API / web session path the session
+  // state was seeded independently and its perspective-private slots hold
+  // wrong values; payload carries the correct ones.
+  virtual void init(IGameState& state, int perspective,
+                    const AnyMap& payload) = 0;
+
+  // GT-side: package the perspective-private bootstrap that walker's
+  // all_public broadcast cannot reach. Called once on the GT state when
+  // building the wire `initial_observation` (paired with
+  // `viz::serialize_public` for the public part). Default: empty —
+  // override in games whose opening reveals owner-private slots
+  // (LL hand, Coup own influences). The output is fed back as `payload`
+  // to a peer session's `init` after walker `apply_public` has run.
+  virtual AnyMap pack_init_payload(
+      const IGameState& /*gt_state*/, int /*perspective*/) const {
+    return {};
+  }
 
   // Update after each action using ONLY the public event stream.
   //

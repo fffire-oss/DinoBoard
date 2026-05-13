@@ -103,11 +103,84 @@ void LoveLetterFeatureEncoder<NPlayers>::encode_private(
 
 template <int NPlayers>
 void LoveLetterBeliefTracker<NPlayers>::init(
-    const MaskedState& /*bootstrap*/, int /*perspective*/) {
+    IGameState& state, int perspective, const AnyMap& payload) {
   // Tracker is perspective-agnostic and stateless. All per-perspective
   // hand/drawn knowledge lives on state.viz_ (rules-driven reveals).
-  // No private fields to seed; randomize_unseen reads everything it
+  // No tracker memory to seed; randomize_unseen reads everything it
   // needs from the public state + observer's viz=1 slots.
+  //
+  // Bootstrap responsibility: write the perspective's perspective-private
+  // starting state into the session and toggle viz to 1 for that
+  // viewer. selfplay / arena / heuristic paths run through
+  // pack_init_payload→init even though their per-seat session state was
+  // reset_with_seed identically to truth — keying off the same payload
+  // path keeps API / web (independently seeded session) on the same
+  // code path without a special branch. Two payload entries:
+  //   - "own_hand"   (int): perspective's starting hand card id.
+  //   - "drawn_card" (int): the top-of-deck card revealed to the
+  //                          starting player at game start; absent
+  //                          (or value 0) when perspective is not the
+  //                          starting player. Written into
+  //                          state.drawn_card and viz toggled iff present.
+  if (perspective < 0 || perspective >= NPlayers) return;
+  auto* s = dynamic_cast<LoveLetterState<NPlayers>*>(&state);
+  if (!s) return;
+
+  auto it_hand = payload.find("own_hand");
+  if (it_hand != payload.end() && it_hand->second.type() == typeid(int)) {
+    const int hv = std::any_cast<int>(it_hand->second);
+    if (hv >= 0) {
+      s->data.hand[static_cast<size_t>(perspective)] =
+          static_cast<std::int8_t>(hv);
+      auto& hand_v = viz::viz_get(state, "hand");
+      const int n_viewers = hand_v.viewer_count();
+      if (n_viewers > 0 && perspective < n_viewers) {
+        const std::size_t off =
+            static_cast<std::size_t>(perspective) *
+                static_cast<std::size_t>(n_viewers) +
+            static_cast<std::size_t>(perspective);
+        if (off < hand_v.data.size()) hand_v.data[off] = 1;
+      }
+    }
+  }
+
+  auto it_drawn = payload.find("drawn_card");
+  if (it_drawn != payload.end() && it_drawn->second.type() == typeid(int)) {
+    const int dv = std::any_cast<int>(it_drawn->second);
+    if (dv > 0) {
+      s->data.drawn_card = static_cast<std::int8_t>(dv);
+      auto& drawn_v = viz::viz_get(state, "drawn_card");
+      const int n_viewers = drawn_v.viewer_count();
+      if (n_viewers > 0 && perspective < n_viewers) {
+        const std::size_t off = static_cast<std::size_t>(perspective);
+        if (off < drawn_v.data.size()) drawn_v.data[off] = 1;
+      }
+    }
+  }
+}
+
+template <int NPlayers>
+AnyMap LoveLetterBeliefTracker<NPlayers>::pack_init_payload(
+    const IGameState& gt_state, int perspective) const {
+  if (perspective < 0 || perspective >= NPlayers) return {};
+  const auto* s = dynamic_cast<const LoveLetterState<NPlayers>*>(&gt_state);
+  if (!s) return {};
+  AnyMap out;
+  out["own_hand"] = std::any(static_cast<int>(
+      s->data.hand[static_cast<size_t>(perspective)]));
+  // drawn_card is base all_hidden; rules `reveal_slot_to(starting_player)`
+  // toggles viz=1 for the seat that just drew. Ship it iff it's
+  // currently visible to `perspective` — at game start this means
+  // perspective is the starting player.
+  const auto& drawn_v = viz::viz_get(gt_state, "drawn_card");
+  const int n_viewers = drawn_v.viewer_count();
+  if (n_viewers > 0 && perspective < n_viewers) {
+    const std::size_t off = static_cast<std::size_t>(perspective);
+    if (off < drawn_v.data.size() && drawn_v.data[off] != 0) {
+      out["drawn_card"] = std::any(static_cast<int>(s->data.drawn_card));
+    }
+  }
+  return out;
 }
 
 template <int NPlayers>

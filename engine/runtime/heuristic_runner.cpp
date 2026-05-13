@@ -117,8 +117,7 @@ SelfplayEpisodeResult run_heuristic_episode(
     }
     for (int p = 0; p < num_players; ++p) {
       if (per_perspective_trackers[p]) {
-        auto bootstrap = make_masked_state(*state, state->schema_ref(), p);
-        per_perspective_trackers[p]->init(*bootstrap, p);
+        per_perspective_trackers[p]->init(*per_seat_states[p], p, AnyMap{});
       }
     }
   }

@@ -184,30 +184,40 @@ void SplendorFeatureEncoder<NPlayers>::encode_private(
 
 template <int NPlayers>
 void SplendorBeliefTracker<NPlayers>::init(
-    const MaskedState& bootstrap, int /*perspective*/) {
+    IGameState& state, int /*perspective*/, const AnyMap& /*payload*/) {
   // Perspective-agnostic: tracker holds only public card-multiset
   // aggregates. Per-perspective private knowledge (own reserved card
   // ids) is read from state.viz=1 slots in randomize_unseen, not here.
+  // No payload — Splendor's opening reveals nothing perspective-private
+  // (the actor's reserved slots all start empty).
   if (initialized_) return;
   seen_cards_.clear();
   initialized_ = true;
 
   // Tableau is schema field "tableau" with shape {3, 4} and base
-  // viz=all_public — every slot is visible to every perspective in the
-  // bootstrap MaskedState. Read each slot via read_field_slot. Empty
-  // slots return -1 (per write_field_slot: tableau slots beyond
-  // tableau_size carry -1).
+  // viz=all_public — every slot is visible to every perspective. Read
+  // each slot via read_field_slot. Empty slots return -1 (per
+  // write_field_slot: tableau slots beyond tableau_size carry -1).
   for (int t = 0; t < 3; ++t) {
     const int size = std::any_cast<int>(
-        bootstrap.read_field_slot("tableau_size", {t}));
+        state.read_field_slot("tableau_size", {t}));
     for (int slot = 0; slot < size; ++slot) {
       const int cid = std::any_cast<int>(
-          bootstrap.read_field_slot("tableau", {t, slot}));
+          state.read_field_slot("tableau", {t, slot}));
       if (cid >= 0) seen_cards_.insert(cid);
     }
   }
   // Nobles are public but aren't "cards" for the deck-pool belief.
   // Reserved slots at game start are all empty — nothing to add.
+}
+
+template <int NPlayers>
+AnyMap SplendorBeliefTracker<NPlayers>::pack_init_payload(
+    const IGameState& /*gt_state*/, int /*perspective*/) const {
+  // No perspective-private bootstrap — Splendor opens with empty
+  // reserves; tableau / bank / nobles all flow via the broadcast public
+  // snapshot. randomize_unseen handles the hidden deck contents.
+  return {};
 }
 
 template <int NPlayers>

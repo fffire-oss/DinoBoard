@@ -61,8 +61,7 @@ ArenaMatchResult run_arena_match(
     }
     for (int p = 0; p < num_players; ++p) {
       if (per_perspective_trackers[p]) {
-        auto bootstrap = make_masked_state(*state, state->schema_ref(), p);
-        per_perspective_trackers[p]->init(*bootstrap, p);
+        per_perspective_trackers[p]->init(*per_seat_states[p], p, AnyMap{});
       }
     }
   }
@@ -114,8 +113,7 @@ ArenaMatchResult run_arena_match(
         player < static_cast<int>(per_perspective_trackers.size())) {
       mcts_tracker = per_perspective_trackers[player];
     } else if (belief_tracker) {
-      auto bootstrap = make_masked_state(*state, state->schema_ref(), player);
-      belief_tracker->init(*bootstrap, player);
+      belief_tracker->init(ai_view, player, AnyMap{});
       mcts_tracker = belief_tracker;
     }
 

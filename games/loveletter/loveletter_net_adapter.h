@@ -47,7 +47,10 @@ class LoveLetterBeliefTracker final : public IBeliefTracker {
  public:
   using Cfg = LoveLetterConfig<NPlayers>;
 
-  void init(const MaskedState& bootstrap, int perspective) override;
+  void init(IGameState& state, int perspective,
+            const AnyMap& payload) override;
+  AnyMap pack_init_payload(const IGameState& gt_state,
+                           int perspective) const override;
   void observe_public_event(
       int actor,
       ActionId action,
