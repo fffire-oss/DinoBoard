@@ -93,9 +93,9 @@ Registered fields on `GameBundle`. None are required by the framework; opt in on
 
 | Component | Use when |
 |-----------|----------|
-| `belief_tracker` | Game has hidden info or physical randomness (root determinization needs it) |
-| `public_event_extractor` / `applier` / `public_state_applier` | Hidden-info game — diff truth into events for the message stream and rebuild observer-side state from them |
-| `initial_observation_extractor` / `applier` | Hidden-info game with information visible at game start |
+| `belief_tracker` | Game has **asymmetric hidden info** (Love Letter / Splendor / Coup) and therefore viz=0 slots that MCTS sim entry must determinize. Public physical randomness alone (Azul) does **not** need a tracker — sim_rng samples directly inside `do_action_fast`. |
+| `public_event_extractor` / `applier` / `public_state_applier` | Snapshot-path game (hidden-info **or** Azul) — diff truth into events for the message stream and rebuild observer-side public state from them |
+| `initial_observation_extractor` / `applier` | Snapshot-path game with perspective-private information visible at game start (e.g. own starting hand) |
 | `tail_solver` / `tail_solve_trigger` | Want exact endgame solving and a smart trigger for when to fire it |
 | `heuristic_picker` | Hand-written scorer to bootstrap selfplay (three-stage schedule: hold → linear decay → 0) |
 | `auxiliary_scorer` | Extra learning signal beyond win/loss (e.g. score margin) |
@@ -114,7 +114,9 @@ Full schema and per-field semantics: `docs/guide/CONFIG_REFERENCE.md` and `docs/
 
 To add a game's checklist: copy `tests/<closest-existing-game>/test_checklist.py`, change `GAME = "..."`, iterate against test failures.
 
-Hidden-info games additionally need green: `test_tracker_consistent_with_truth`, `test_ismcts_samples_respect_tracker`, `test_public_snapshot_round_trip`, `test_api_belief_matches_selfplay`, `test_api_mcts_policy_invariance`, `test_encoder_respects_hash_scope`, `test_public_hash_excludes_internal_rng`. These are framework-level and run automatically once the game is in `FRAMEWORK_GAMES`-equivalent matrices via game-specific carriers.
+Hidden-info games additionally need green: `test_tracker_consistent_with_truth`, `test_ismcts_samples_respect_tracker`, `test_public_snapshot_round_trip`, `test_api_belief_matches_selfplay`, `test_api_mcts_policy_invariance`, `test_encoder_respects_hash_scope`, `test_public_hash_excludes_internal_rng`.
+
+These framework tests are NOT all parametrized over `FRAMEWORK_GAMES = ["quoridor", "azul", "loveletter"]`. That constant is the **fixed three-game carrier** for invariants that need representatives of each category (deterministic / public-random / asymmetric-hidden) — you do not edit it when adding a game. **Capability-driven tests** (anything that requires a tracker, snapshot, or hidden info) build their own parametrize lists from `games/manifest.json` capabilities — `test_public_snapshot_round_trip` runs over all `"snapshot"`-capable games, `test_api_mcts_policy_invariance` is currently Love Letter only by `LEAK_SENSITIVE_GAMES = ["loveletter"]` (Splendor excluded for a known replay issue), `test_public_hash_excludes_internal_rng` runs over hidden-info games. Adding a game to the manifest with the right capabilities is what auto-enrolls it; touching `FRAMEWORK_GAMES` is not.
 
 ---
 

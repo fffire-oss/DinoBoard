@@ -1010,6 +1010,8 @@ AI 后续每一步就正常了（因为从 pipeline 结束开始，precompute �
 
 ## [BUG-024] GameSession MCTS 搜索在真实状态上跑，应隔离为 AI view
 
+> ⚠️ **历史归档**:本条目记录的修复路径(GameSessionWrapper 在 `bundle_->state` 上跑 MCTS,通过 NoPeek + sample-from-history 兜底)已在 [DEC-003] 与后续 per-seat session 重构中被替代。当前架构是:selfplay / arena / web / API 都给每个 perspective 持有独立的 `per_seat_states[p]`,MCTS root 永远是 `per_seat_states[acting_player]`,truth state 物理上不被传给 search;`IBeliefTracker` 接口签名里没有 truth 指针。本条目里"NoPeek 是事后挡板"等叙述属于演进过程,不再描述当前行为——结构性隔离已经直接消除了"在真实状态上跑 MCTS"的可能性。详见 CLAUDE.md "AI Pipeline Independence from Game State" 与 ALGORITHM_OVERVIEW §1。
+
 **状态**：已修复（架构重构）
 **文件**：`bindings/py_engine.cpp` GameSessionWrapper
 **严重程度**：严重（BUG-023 的根因）

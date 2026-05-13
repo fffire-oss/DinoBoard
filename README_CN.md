@@ -70,9 +70,10 @@ loss curve / policy entropy）正常但 AI 在第 7 回合明显送子，这种 
 
 ISMCTS over DAG：
 
-- **Root determinization**：每个 sim 从 belief tracker 采一个完整世
-  界，descent 完全 deterministic——物理随机和信息不对称在搜索里统
-  一处理
+- **Root determinization**：每个 sim 持独立 RNG；root 从 belief
+  tracker 采一个完整世界，descent 中同一个 sim_rng 还会被
+  `do_action_fast` 消费处理物理随机（如 Azul 工厂 refill）。无
+  chance 节点——物理随机和信息不对称在搜索里统一处理
 - **DAG 而非 tree**：`(state hash, current_player)` keying，同一 info
   set 从不同路径到达共享节点；UCT2（Childs 2008）多入边修正避免
   over-exploration
@@ -97,8 +98,10 @@ DELETE /ai/sessions/{id}           → 结束会话
 调用方不需要共享 game state 代码、不需要嵌入 C++ 引擎。把自己游戏
 的事件翻译成 action_id + 公开事件即可——GT 端可以是任意来源（外部
 API、物理桌游）。这是上面"GT/AI session 物理分离"架构的对外接口实
-例化，selfplay / web / API 三条路径在 MCTS 行为上完全等价
-（`test_api_mcts_policy_invariance` 守护）。
+例化。Love Letter 上的统计回归（`test_api_mcts_policy_invariance`）
+守护 API 路径的 MCTS 访问分布跟 selfplay 在同一观察轨迹上保持接近；
+Splendor 因 replay / `self_reserve_deck` 已知问题暂未纳入，Web 路径
+不被该测试直接覆盖。
 
 详见 [docs/guide/AI_API.md](docs/guide/AI_API.md)。
 
@@ -111,8 +114,10 @@ selfplay → 收集样本 → 训练网络 → gating eval → 更新 best model
 ```
 
 selfplay / arena / search / 求解全流程 C++，Python 只跑训练循环和网
-络训练。配置驱动——所有训练超参写在 `games/<game>/config/game.json`
-里，不改代码。
+络训练。配置驱动——训练循环超参写在 `games/<game>/config/game.json`；
+MCTS 强度被拆成六个命名 profile（selfplay / arena / eval 在
+`game.json`，web_expert / web_casual / analysis 在 `web.json`），不
+改代码。
 
 可选训练增强：启发式引导（三段式 schedule）、辅助分数信号、动作过
 滤、温度 schedule、Dirichlet 噪声、超时裁决。详见

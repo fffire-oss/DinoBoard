@@ -41,18 +41,21 @@ class CreateSessionRequest(BaseModel):
     game_id: str = Field(..., description="e.g. 'quoridor', 'splendor'")
     seed: Optional[int] = Field(
         None,
-        description="Optional RNG seed for internal belief sampling. If "
-                    "omitted, the server picks a fresh secrets.randbits(64) "
-                    "value. Independent from ground truth either way — the "
-                    "AI's hidden state is re-sampled each ply from the "
-                    "tracker's information set.",
+        description="Optional RNG seed for the AI session's internal RNG, used "
+                    "during MCTS sim-entry root determinization (sim_tracker."
+                    "randomize_unseen on a clone). Independent from ground "
+                    "truth — the session's own viz=0 slots are never freshened "
+                    "outside sim entry, so seed choice does not affect public "
+                    "state observed from snapshots. Omit to let the server "
+                    "pick a secrets.randbits(64) value.",
     )
     my_seat: int = Field(..., description="Which player the AI is playing as (0-indexed)")
     initial_observation: Optional[dict] = Field(
         None,
-        description="Hidden-info games only: perspective-specific facts known at "
-                    "game start (e.g. own starting hand). Required for hidden-info "
-                    "games; ignored for deterministic games.",
+        description="Snapshot-path games only: perspective-specific facts known "
+                    "at game start (e.g. own starting hand for hidden-info "
+                    "games). Required for snapshot-path games; ignored for "
+                    "fully-public no-snapshot games (TicTacToe, Quoridor).",
     )
 
 
@@ -78,12 +81,18 @@ class ObserveRequest(BaseModel):
     events: list[PublicEvent] = Field(
         default_factory=list,
         description="Public events emitted by this action (in producer order). "
-                    "Required for hidden-info games; ignored for deterministic games.",
+                    "Required for snapshot-path games with a registered tracker "
+                    "(Love Letter, Splendor, Coup); pass `[]` for snapshot-path "
+                    "games without a tracker (Azul) and for fully-public "
+                    "no-snapshot games (TicTacToe, Quoridor).",
     )
     public_snapshot: dict = Field(
         default_factory=dict,
-        description="Truth-side dump of the game's public fields. Required for "
-                    "hidden-info games; ignored for deterministic games.",
+        description="Truth-side dump of the game's public fields after this "
+                    "action. Required for snapshot-path games (Love Letter, "
+                    "Splendor, Coup, Azul); ignored for fully-public no-snapshot "
+                    "games (TicTacToe, Quoridor) which advance via do_action_fast "
+                    "on the AI-side seat state.",
     )
 
 

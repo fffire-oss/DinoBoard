@@ -76,10 +76,15 @@ class AISession:
         game server notifies the AI of every player's move and is the only
         path through which session state advances.
 
-        For hidden-info games (those with a registered public_state_applier),
-        the caller MUST pass `events` and `public_snapshot` — without them the
-        AI's belief tracker cannot stay consistent with truth and a ValueError
-        is raised. For deterministic games these arguments must be omitted/empty.
+        For snapshot-path games (those with a registered public_state_applier
+        — Splendor / Love Letter / Coup carry hidden info + tracker; Azul is
+        fully public but still travels the snapshot path), the caller MUST pass
+        `events` and `public_snapshot` — without them the session's public
+        state cannot be rebuilt from truth and (where a tracker exists) the
+        belief tracker cannot stay consistent. A ValueError is raised in that
+        case. For fully-public no-snapshot games (TicTacToe / Quoridor), these
+        arguments must be omitted/empty — the session advances by replaying
+        the action through `do_action_fast` on its seat state.
         """
         events = events or []
         public_snapshot = public_snapshot or {}
@@ -95,9 +100,11 @@ class AISession:
                 if not events and not public_snapshot:
                     raise ValueError(
                         f"AISession {self.session_id}: game {self.game_id!r} is a "
-                        f"hidden-info game; observe() requires events / "
+                        f"snapshot-path game; observe() requires events / "
                         f"public_snapshot. Caller passed action_id alone — the "
-                        f"AI cannot update belief state from that.")
+                        f"session cannot rebuild public state (and its belief "
+                        f"tracker, where present, cannot stay consistent) "
+                        f"from that.")
                 self._gs.apply_observation(
                     action_id,
                     events,
@@ -107,9 +114,10 @@ class AISession:
                 if events or public_snapshot:
                     raise ValueError(
                         f"AISession {self.session_id}: game {self.game_id!r} is a "
-                        f"deterministic game with no public_state_applier; "
-                        f"observe() must be called with action_id only "
-                        f"(no events / snapshot).")
+                        f"fully-public no-snapshot game; observe() must be "
+                        f"called with action_id only (no events / snapshot) — "
+                        f"the session advances via do_action_fast on its seat "
+                        f"state.")
                 legal = self._gs.get_legal_actions()
                 if action_id not in legal:
                     raise ValueError(
@@ -216,8 +224,8 @@ class SessionStore:
                 f"initial_observation_applier — REST AI flow needs both.")
         if not has_public_state_applier and initial_observation:
             raise ValueError(
-                f"game {game_id!r} is deterministic; initial_observation must "
-                f"not be provided.")
+                f"game {game_id!r} is a fully-public no-snapshot game; "
+                f"initial_observation must not be provided.")
 
         if model_path_override is not None:
             model_path = model_path_override

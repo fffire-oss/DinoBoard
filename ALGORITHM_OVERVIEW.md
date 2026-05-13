@@ -50,8 +50,8 @@
 
 | 名词 | 定位 | 一句话 |
 |------|------|--------|
-| **tracker** | belief 沙池 + (可选)网络特征源 | `IBeliefTracker` 一个类干两件事:`observe_public_event` 维护观察记忆——只从公开事件流推,不读 state 真值;`randomize_unseen` 按这份记忆把 viz=0 槽位填上具体值。同时记忆本身也可作为公开历史的派生聚合(Splendor 公开展示牌、Coup claim 历史)喂给网络。任何有物理随机或隐藏信息的游戏都必须注册;纯确定游戏不写 |
-| **belief** | 未知字段的一个采样世界 | `tracker.randomize_unseen(state, rng)` 的产物——viz=0 槽位被填成具体值的完整 state,sim 入口用。**最朴素的实现是从未见过的池子里 uniform 抽**(Splendor 就走这条);需要更精细的先验(如 Coup 的 claim-driven 加权)由 game 在 tracker 里写自定义采样 |
+| **tracker** | belief 沙池 + (可选)网络特征源 | `IBeliefTracker` 一个类干两件事:`observe_public_event` 维护观察记忆——只从公开事件流推,不读 state 真值;`randomize_unseen(state, observer, rng)` 按这份记忆把 viz=0 槽位填上具体值。同时记忆本身也可作为公开历史的派生聚合(Splendor 公开展示牌、Coup claim 历史)喂给网络。**注册与否取决于游戏需不需要 viz=0 sim 入口采样**:有非对称隐藏信息的游戏必须注册(Love Letter / Splendor / Coup);纯公开物理随机的 Azul 不注册——它的物理随机由 sim 入口的 sim_rng 在 `do_action_fast` 里直接消费;TicTacToe / Quoridor 没有任何 hidden 也不需要 |
+| **belief** | 未知字段的一个采样世界 | `tracker.randomize_unseen(state, observer, rng)` 的产物——viz=0 槽位被填成具体值的完整 state,sim 入口用。**最朴素的实现是从未见过的池子里 uniform 抽**(Splendor 就走这条);需要更精细的先验(如 Coup 的 claim-driven 加权)由 game 在 tracker 里写自定义采样 |
 
 **算法**
 
@@ -168,9 +168,18 @@ AI 端面对信息不全。收到
   端 `apply_public` 整张覆盖时直接落回对应槽位。schema 的 base viz 只决定
   "未发生任何 reveal 时谁能看",运行时翻面完全跟着 rules 跑(§4)
 
-**session 不跑 `do_action_fast`、不跑 `randomize_unseen`**——session 只
-负责"接 snapshot + 喂 tracker",viz=1 整张覆盖、viz=0 留着上次的旧值,等下
-一个 observe 就行。"采一个具体世界"是 sim 入口的事(§1.3),session 不重复做。
+**snapshot-path 游戏的 session 不跑 `do_action_fast`、不跑 `randomize_unseen`**
+——这一类(Splendor / Love Letter / Coup / Azul) session 只负责"接 snapshot + 喂
+tracker",viz=1 整张覆盖、viz=0 留着上次的旧值,等下一个 observe 就行。"采一个
+具体世界"是 sim 入口的事(§1.3),session 不重复做。
+
+> 例外:**fully-public no-snapshot 游戏**(TicTacToe / Quoridor)没注册
+> `public_state_applier`,这类游戏的 session 路径上**会**跑
+> `do_action_fast(seat, view_step_rng)`——它们没有 viz=0 槽位,也没有 snapshot
+> 协议,推进 state 的唯一办法就是替这一座位 replay 那个动作。但仍然不跑
+> `randomize_unseen`(没有 viz=0 槽位要填),也不读 truth 任何字段:输入只有
+> `(action_id, seat 自己的当前 state)`。这条例外不破坏"决策路径不读 truth"——
+> 它只是"snapshot 不存在时,怎么把公开转移做出来"的实作答案。
 
 **AI 端永远不在 observe 阶段重新算 viz**——viz 只在 GT 端算一次、协议
 传过来。运行时正确性 = 数据传输完整性。
@@ -975,9 +984,12 @@ TTT/Quoridor/Azul/Splendor/LoveLetter 都走 per-seat 路径。
   上(a) 同 seed 跑两次必须完全可重现 AI 决策,(b) 同一份 observation
   trace 喂给两个不同 seed 的 API session,各自 public state 必须收敛——
   session 公开视图不允许依赖 session 自身的 hidden RNG。
-- `test_encoder_only_reads_masked_state` 守护:encoder 输出永远不出现
-  `kPlaceholder*` sentinel——任何 game encoder 漏处理 hidden 槽位都会
-  让 INT32_MIN / INT8_MIN 漏到 feature 里被这条测试抓住。
+- `test_encoder_features_have_no_placeholder_sentinels` /
+  `test_encoder_invariant_across_selfplay_plies`(均在
+  `tests/framework/test_encoder_only_reads_masked_state.py`)守护:encoder
+  输出永远不出现 `kPlaceholder*` sentinel——任何 game encoder 漏处理
+  hidden 槽位都会让 INT32_MIN / INT8_MIN 漏到 feature 里被这两条测试抓住;
+  并且同一观察序列下两个不同 session_rng 的 encoding 必须 byte-equal。
 - session viz=0 槽位不再每 ply 重采:`apply_observation` / 各 runner
   `advance_per_seat_states` 末尾都不再调 `randomize_unseen`,session
   hidden 是上一次 observe 留下的 raw bytes。任何决策路径(hash / encoder
@@ -1080,7 +1092,7 @@ viz=1 还是 0,见 `docs/FRAMEWORK_DESIGN_RATIONALE.md` §3.3。
 | I4 | viz 不保证单调 | rules 在槽位换内容时主动 `reset_to_base`;AI 端 observe 替换 not merge |
 | I5 | viz 在 GT 端算一次,AI sim 内由 rules 顺手维护 | AI observe 阶段不重算 viz |
 | I6 | perspective 私人事实表达成 `viz[..., perspective]=1` 的 state 槽位 | rules 在历史 ply `reveal_slot_to`,不存在 state 之外的私人事实 |
-| I7 | tracker 公开 + 可选 + 不进 hash / 协议 / 决策 | tracker 不携带 perspective 私人信息;同 (MaskedState, perspective) 必 hash 相等 |
+| I7 | tracker 公开 + 可选 + 不进 hash / 协议 | tracker 不携带 perspective 私人信息(其内容是公开事件流的派生聚合);**不进 hash**——同 (MaskedState, perspective) 必 hash 相等,即使 tracker 内部 cache 不同;**不进协议**——tracker 不上线。决策路径**会读** tracker(encoder 取派生特征、`randomize_unseen` 在 sim 入口采样),这正是 tracker 存在的目的 |
 | I8 | tracker 不存 belief prior | belief sampling 在 `randomize_unseen` 现场算,不缓存 prior 字段 |
 | I9 | sim 入口 clone sim-local tracker | session 持有的 tracker 不被 sim 写入;sim_tracker 在 sim 结束时和 state 一起丢弃 |
 | I10 | belief sample 范围 = `viz[..., perspective]=0` 全部槽位 | 单点判断 |
