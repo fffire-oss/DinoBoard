@@ -9,7 +9,7 @@
 
 - **No state crosses the boundary.** API 只在 `action_id`（整数）和事件（`{kind, payload}` 字典）这两种形态上通信。第三方**从不**需要向 AI 传递游戏的完整 state——所有观察都以动作和事件的形式流入。
 - **AI 自己维护所看到的一切。** 每个 session 内部持有一份 "从 AI 视角观察到的" 游戏 state + belief tracker。接入方只负责把 ground truth 的动作和公开事件翻成 API 请求。
-- **Public state 完全由消息流重建**。每次 `observe` 之后，session 的所有公开字段（牌面、分数、棋盘等 schema 中 `viz[..., viewer]=1` 的 slot）都从 `public_snapshot` 反向覆写——AI 不会重放规则（observer 路径上没有 `do_action_fast`），所以即使 AI 的采样和 truth 不同，observer 看到的公开局面也跟 truth byte-equal（`test_public_snapshot_round_trip` 守护）。
+- **Snapshot-path 游戏的公开 state 完全由消息流重建**。对走 snapshot 协议的游戏(Splendor / Love Letter / Coup / Azul),每次 `observe` 之后,session 的所有公开字段(牌面、分数、棋盘等 schema 中 `viz[..., viewer]=1` 的 slot)都从 `public_snapshot` 反向覆写——这条路径上 observer 不重放规则,所以即使 AI 的采样和 truth 不同,observer 看到的公开局面也跟 truth byte-equal(`test_public_snapshot_round_trip` 守护)。**例外**:fully-public no-snapshot 游戏(TicTacToe / Quoridor)没有 snapshot 协议,session 通过 `do_action_fast(seat, view_step_rng)` 在自己的 seat state 上 replay 动作推进——它们没有 viz=0 槽位,truth 和 observer 视角天然 byte-equal。
 - **Session 的 viz=0 槽位永远不被 freshen**。session 在 `observe` 阶段不调用 `randomize_unseen`，hidden 字段就是上一次写下的旧字节——既不是 truth、也不是当前 belief 的采样，hash / encoder / 决策路径都读不到这些字节（`test_public_hash_excludes_internal_rng` 守护）。"采一个具体世界"是 MCTS sim 入口的事：`sim_tracker.randomize_unseen` 在每个 sim 的 clone 上把 viz=0 填具体值，sim 结束就丢。`seed` 只影响 sim 入口这次采样的 RNG，跟 truth 在数值上独立；接入方的 `seed` 选择不会让 AI 看到的公开局面和 truth 漂移。
 
 ---

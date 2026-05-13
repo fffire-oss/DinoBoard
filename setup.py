@@ -69,7 +69,7 @@ def _load_game_sources() -> list[str]:
     Entries with `enabled: false` are skipped — set the flag to drop a
     game from the build without removing its sources from the tree. The
     optional `framework_whitelist` and `capabilities` fields are ignored
-    here; they are consumed by tests/framework/conftest.py.
+    here; they are consumed by tests/conftest.py.
     """
     manifest_path = ROOT / "games" / "manifest.json"
     with open(manifest_path, encoding="utf-8") as f:

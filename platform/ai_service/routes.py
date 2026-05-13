@@ -76,8 +76,13 @@ class PublicEvent(BaseModel):
 
 class ObserveRequest(BaseModel):
     action_id: int = Field(..., description="The action that was just played by the "
-                                            "current player (NOT the AI's own moves — "
-                                            "those come from /decide).")
+                                            "current player. **Includes the AI's own "
+                                            "moves**: /decide is non-mutating — it only "
+                                            "returns the chosen action_id, it does not "
+                                            "advance the session. The caller must apply "
+                                            "the action to ground truth and then re-feed "
+                                            "it here so the session sees its own move "
+                                            "the same way it sees opponents'.")
     events: list[PublicEvent] = Field(
         default_factory=list,
         description="Public events emitted by this action (in producer order). "

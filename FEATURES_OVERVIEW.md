@@ -15,7 +15,7 @@
 | `<game>_state.cpp` | `IGameState` | 状态、当前玩家、终局；schema-driven `hash_field_slot` / `mask_field_slot` / `read_field_slot` / `write_field_slot` 分发器；`schema_ref()` 返回静态 schema |
 | `<game>_visibility.cpp` | `viz::VisibilitySchema` | 字段 declare（name + 数据 shape + base viz tensor），是 hash / encoder / snapshot scope 的单一事实源 |
 | `<game>_rules.cpp` | `IGameRules` | 合法动作、`do_action_fast`（含 viz 维护，`reveal_slot` / `reveal_slot_to` / `reset_to_base`；不支持 undo——MCTS / selfplay / arena / web 都丢弃用完的 state）；想接 tail solver 才额外实现 `do_action_deterministic` + `undo_action`（这两个配对工作） |
-| `<game>_net_adapter.cpp` | `IFeatureEncoder` + `IBeliefTracker` | encoder 入参锁 `const MaskedState&`（`encode_public` + `encode_private(p)` 拆分）；tracker（隐藏信息或对称随机游戏才需要） |
+| `<game>_net_adapter.cpp` | `IFeatureEncoder` + `IBeliefTracker` | encoder 入参锁 `const MaskedState&`（`encode_public` + `encode_private(p)` 拆分）；tracker(有非对称隐藏信息 / 需要 sim 入口对 viz=0 槽位 determinization 的游戏才需要;纯公开物理随机由 `do_action_fast` 中的 `sim_rng` 处理,不需要 tracker) |
 | `<game>_register.cpp` | `GameBundle` 工厂 + `GameRegistrar` | 组件打包注册，配变体（如 `splendor_3p`）和可选组件 |
 | `config/game.json` | — | 训练超参（simulations / lr / 网络结构等） |
 | `web/<game>.js` | `createApp(...)` | 玩家交互界面 |

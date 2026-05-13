@@ -1081,7 +1081,7 @@ std::vector<std::unique_ptr<OnnxPolicyValueEvaluator>> ai_evaluators_;
 **不变性层**：`tests/framework/test_api_mcts_policy_invariance.py::test_api_mcts_policy_matches_selfplay`——直击"selfplay 猛如虎 / API 变弱"的信息泄漏病症。流程：
 1. 用 seed_gt 跑 selfplay，记录观察历史 + 每个 ply 的 MCTS visit distribution（在 GameSession 真相驱动路径下计算）
 2. 用 seed_api（不同）起 API 会话，replay 同一观察历史
-3. 在 perspective 行动的 ply 上对比两条路径各自 `get_ai_action` 的 argmax：要求偏差率 ≤ 40%（MCTS tie-breaking RNG 下是可容忍噪声；真正的泄漏会让一条路径系统性选"凑巧好"的动作）
+3. 在 perspective 行动的 ply 上对比两条路径各自 `get_ai_action` 的 argmax 与完整 visit 分布:argmax 偏差率要求 ≤ 65%、平均 total-variation distance ≤ 0.40(两条路径用独立的 MCTS RNG,bit-exact 不可能;阈值留宽是为了在 RNG jitter 下不假阳,真正的泄漏会让其中一路系统性偏向"凑巧好"的动作、把数字推到远超阈值)
 
 两测合起来：统计层抓"作弊具体症状"（Guard 命中率），不变性层抓"两条路径是否真的走同一个信息"。
 

@@ -5,7 +5,7 @@ import pytest
 from conftest import FRAMEWORK_GAMES, get_test_model
 
 
-def test_available_games_contains_all_four():
+def test_available_games_contains_framework_carrier():
     games = dinoboard_engine.available_games()
     for g in FRAMEWORK_GAMES:
         assert g in games, f"{g} not in available_games: {games}"

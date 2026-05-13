@@ -6,11 +6,27 @@ are responsible for their own assertions and load their own config via
 the load_game_config helper. The framework layer never embeds rules,
 constants, or assertions for any specific game outside the matrix.
 
-Manifest-driven test-matrix helpers (`enabled_games`, `games_with_capability`,
-`hidden_info_games`, `games_with_snapshot`, `games_with_tracker`,
-`framework_whitelist_games`) read `games/manifest.json` so the framework
-test matrix self-extends when a game is enabled or a capability tag is
-added to a manifest entry. No hardcoded game lists in framework tests.
+Two coexisting test-matrix mechanisms:
+
+  1. **Manifest-driven helpers** (`enabled_games`, `games_with_capability`,
+     `hidden_info_games`, `games_with_snapshot`, `games_with_tracker`,
+     `framework_whitelist_games`) read `games/manifest.json`, so capability-
+     keyed framework tests (`test_public_snapshot_round_trip`,
+     `test_public_hash_excludes_internal_rng`, `test_encoder_respects_hash_scope`,
+     etc.) self-extend when a game is enabled or a capability tag is added.
+  2. **Fixed three-game carrier** `FRAMEWORK_GAMES = ["quoridor", "azul",
+     "loveletter"]` (deterministic / public-random / asymmetric-hidden, one
+     representative each) — used by tests that intentionally don't run on
+     every enabled game (`test_full_game_via_api`, the default `game_id`
+     fixture, etc.). Adding a game does NOT require touching this list.
+
+Some tests further use per-game checker maps or hand-written narrow lists
+(`test_tracker_consistent_with_truth._CHECKERS`,
+`test_api_belief_matches_selfplay.GAMES_WITH_EVENT_PROTOCOL`,
+`test_api_mcts_policy_invariance.LEAK_SENSITIVE_GAMES`) where capability-
+based parametrization isn't yet appropriate. So "no hardcoded game lists"
+is **not** a global property of framework tests — it's true of the
+manifest-helper-keyed subset and false of the fixed-carrier subset.
 """
 import json
 from functools import lru_cache

@@ -2,7 +2,7 @@
 
 > Read this **after** `README.md`. **This document already absorbs the necessary content from `../FEATURES_OVERVIEW.md`** (six-file game layout, ISMCTS properties, optional-component reference, two-layer testing, framework non-goals) — do not read that file, it is a human-facing capability tour that will burn context without telling you how to actually work in the repo. Everything an AI assistant needs to start working is below; deep-dive docs are linked per task.
 
-Repo root: `/Users/chihchi/claude/DinoBoard`
+All paths in this document are repo-relative. Treat the repo root as `$REPO`.
 
 ---
 

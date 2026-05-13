@@ -12,8 +12,10 @@ game state ever crosses the API boundary.
 What this validates:
 - The API contract: no game-state fields cross either direction (enforced by
   `test_api_responses_never_include_state_fields` scanning for known keys).
-- End-to-end playability: for every registered canonical game, a full game
-  can be driven through the HTTP API.
+- End-to-end playability: for the framework carrier (`FRAMEWORK_GAMES` =
+  quoridor + azul + loveletter — one representative per category), a full
+  game can be driven through the HTTP API. Per-game acceptance for games
+  outside the carrier lives in `tests/<game>/test_checklist.py`.
 - The AI session uses a seed independent from ground truth even for
   hidden-info games — belief consistency comes from the event stream, not
   from a shared seed.
@@ -182,10 +184,13 @@ def _play_full_game(
 
 @pytest.mark.parametrize("game_id", FRAMEWORK_GAMES)
 def test_full_game_via_api(client, game_id):
-    """Every registered game must be driveable end-to-end through the API.
+    """Framework-carrier games must be driveable end-to-end through the API.
 
-    Acceptance criterion for new games: drop your game_id into FRAMEWORK_GAMES
-    and this parameterized test must pass.
+    Parametrized over `FRAMEWORK_GAMES` (quoridor + azul + loveletter), the
+    fixed three-game carrier covering the deterministic / public-random /
+    asymmetric-hidden categories. New games do NOT need to be added to
+    `FRAMEWORK_GAMES`; their acceptance lives in `tests/<game>/test_checklist.py`,
+    which exercises the same API path under per-game assertions.
     """
     budget = _PLY_BUDGET[game_id]
     meta = engine.game_metadata(game_id)

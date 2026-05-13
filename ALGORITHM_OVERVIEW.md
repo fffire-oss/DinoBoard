@@ -1066,10 +1066,11 @@ LL 自己的开局手牌、Coup 自己的两张 influence cid),由
 
 ### 10.2 协议字段限制
 
-`CreateSessionRequest` 不接受 `seed` / `simulations` / `temperature` /
-`tail_solve` 入参——AI 强度 = web expert 难度，server-controlled，不可
-调（测试 / 调试场景显式传 seed 例外）。`seed` 内部
-`secrets.randbits(64)` 生成。
+`CreateSessionRequest` 不接受 `simulations` / `temperature` /
+`opponent_selection` / `tail_solve` 入参——AI 强度 = `web_expert` 难度,
+server-controlled,客户端无法上调或下调(pydantic 把这些字段直接丢弃)。
+`seed` 是**可选**字段:省略时服务端用 `secrets.randbits(64)` 自取(生产
+默认);测试 / 复现实验场景可显式传值,跟 GT 数值上独立。
 
 `decide()` **不改 session 状态**——只跑 search 返 action_id。GT 收到
 action_id 后在自己端 commit + 抽真随机 + 算 snapshot + 算 events，
