@@ -671,12 +671,13 @@ board_ai::HeuristicResult pick(
   result.scores.reserve(legal.size());
 
   // Score each action via lookahead: apply action → eval from player's
-  // perspective → undo. SplendorRules provides do_action_fast + undo_action.
-  auto& mut_rules = const_cast<board_ai::IGameRules&>(rules);
+  // perspective → undo. do_action_deterministic / undo_action are const
+  // on IGameRules (state-only mutation lives on the IGameState&), so no
+  // const_cast is needed even though `rules` is `const IGameRules&`.
   for (ActionId a : legal) {
-    auto tok = mut_rules.do_action_deterministic(state, a);
+    auto tok = rules.do_action_deterministic(state, a);
     double s_val = eval_position<NPlayers>(s.persistent.data(), player);
-    mut_rules.undo_action(state, tok);
+    rules.undo_action(state, tok);
     result.scores.push_back(s_val);
   }
   return result;
