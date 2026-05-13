@@ -184,7 +184,7 @@ void SplendorFeatureEncoder<NPlayers>::encode_private(
 
 template <int NPlayers>
 void SplendorBeliefTracker<NPlayers>::init(
-    const AnyMap& initial_observation) {
+    const MaskedState& bootstrap, int /*perspective*/) {
   // Perspective-agnostic: tracker holds only public card-multiset
   // aggregates. Per-perspective private knowledge (own reserved card
   // ids) is read from state.viz=1 slots in randomize_unseen, not here.
@@ -192,15 +192,18 @@ void SplendorBeliefTracker<NPlayers>::init(
   seen_cards_.clear();
   initialized_ = true;
 
-  // Initial observation carries public tableau (all cards face-up).
-  auto it_t = initial_observation.find("tableau");
-  if (it_t != initial_observation.end()) {
-    const auto& tableau_any = std::any_cast<const std::vector<std::any>&>(it_t->second);
-    for (const auto& tier_any : tableau_any) {
-      const auto& tier = std::any_cast<const std::vector<int>&>(tier_any);
-      for (int cid : tier) {
-        if (cid >= 0) seen_cards_.insert(cid);
-      }
+  // Tableau is schema field "tableau" with shape {3, 4} and base
+  // viz=all_public — every slot is visible to every perspective in the
+  // bootstrap MaskedState. Read each slot via read_field_slot. Empty
+  // slots return -1 (per write_field_slot: tableau slots beyond
+  // tableau_size carry -1).
+  for (int t = 0; t < 3; ++t) {
+    const int size = std::any_cast<int>(
+        bootstrap.read_field_slot("tableau_size", {t}));
+    for (int slot = 0; slot < size; ++slot) {
+      const int cid = std::any_cast<int>(
+          bootstrap.read_field_slot("tableau", {t, slot}));
+      if (cid >= 0) seen_cards_.insert(cid);
     }
   }
   // Nobles are public but aren't "cards" for the deck-pool belief.

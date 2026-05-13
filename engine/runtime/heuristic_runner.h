@@ -40,7 +40,6 @@ SelfplayEpisodeResult run_heuristic_episode(
     std::vector<IBeliefTracker*> per_perspective_trackers = {},
     std::vector<IGameState*> per_seat_states = {},
     PublicStateApplier public_state_applier = nullptr,
-    PublicEventExtractor public_event_extractor = nullptr,
-    InitialObservationExtractor initial_observation_extractor = nullptr);
+    PublicEventExtractor public_event_extractor = nullptr);
 
 }  // namespace board_ai::runtime

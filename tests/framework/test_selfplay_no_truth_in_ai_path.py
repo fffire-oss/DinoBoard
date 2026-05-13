@@ -130,12 +130,14 @@ def test_api_session_independent_of_truth_seed(game_id):
     secretly depends on truth's hidden-internal RNG path, which would
     mean public_state_applier or randomize_unseen is leaking.
 
-    For TicTacToe / Quoridor / Azul (no tracker — the latter has fully
-    public state including bag/box_lid as per-color counts) this is
-    public state equivalence under apply_action replay. For Splendor /
-    Love Letter (tracker registered, hidden info via deck composition or
-    private hands) the test is meaningful: their public state under the
-    per-seat session must ignore the API session's own seed.
+    For TicTacToe / Quoridor (no public_event_extractor, no hidden
+    randomness) this is public state equivalence under apply_action
+    replay. For Azul / Splendor / Love Letter (snapshot or tracker
+    registered — Azul has fully-public counts but resolves bag draws
+    via session_rng inside do_action_fast, so the session must be
+    driven by snapshot replay rather than apply_action replay) this
+    test verifies their public state under the per-seat session
+    ignores the API session's own seed.
     """
     perspective = 0
     seed_truth = 42
@@ -143,10 +145,11 @@ def test_api_session_independent_of_truth_seed(game_id):
     model_path = get_test_model(game_id)
 
     # Generate the canonical observation trace from a perspective.
-    if game_id in ("tictactoe", "quoridor", "azul"):
-        # Fully-public games: no belief tracker → no observation_trace
-        # extraction. Drive both API sessions via apply_action against the
-        # truth's action history instead.
+    if game_id in ("tictactoe", "quoridor"):
+        # Fully deterministic public games (no public_event_extractor):
+        # drive both API sessions via apply_action against the truth's
+        # action history. Both must reach byte-equal public state since
+        # do_action_fast on these games is deterministic.
         ep = engine.run_selfplay_episode(
             game_id=game_id, seed=seed_truth, model_path=model_path,
             simulations=10, max_game_plies=30,
@@ -182,10 +185,16 @@ def test_api_session_independent_of_truth_seed(game_id):
 
     # Public fields these games expose via get_state_dict.
     PUBLIC_KEYS = {
+        # Azul: bag/box_lid are per-color counts (all_public). Two
+        # snapshot-driven sessions with different session_rng seeds must
+        # arrive at byte-equal public state, including bag_counts and
+        # box_counts — those flow through the snapshot, not through
+        # session_rng.
         "azul": [
             "current_player", "is_terminal", "winner", "num_players",
             "round_index", "first_player_token_in_center", "scores",
             "factories", "center", "players",
+            "bag_counts", "bag_total", "box_counts",
         ],
         "splendor": [
             "current_player", "is_terminal", "winner", "num_players",

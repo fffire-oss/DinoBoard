@@ -7,6 +7,7 @@
 #include <random>
 #include <stdexcept>
 
+#include "../core/masked_state.h"
 #include "../core/rng_salt.h"
 
 namespace board_ai::runtime {
@@ -74,8 +75,7 @@ SelfplayEpisodeResult run_heuristic_episode(
     std::vector<IBeliefTracker*> per_perspective_trackers,
     std::vector<IGameState*> per_seat_states,
     PublicStateApplier public_state_applier,
-    PublicEventExtractor public_event_extractor,
-    InitialObservationExtractor initial_observation_extractor) {
+    PublicEventExtractor public_event_extractor) {
   SelfplayEpisodeResult result{};
 
   auto state = initial_state.clone_state();
@@ -116,10 +116,9 @@ SelfplayEpisodeResult run_heuristic_episode(
           "run_heuristic_episode: per_perspective_trackers size != num_players");
     }
     for (int p = 0; p < num_players; ++p) {
-      if (per_perspective_trackers[p] && initial_observation_extractor) {
-        AnyMap p_init_obs = initial_observation_extractor(*state, p);
-        p_init_obs["__perspective_player"] = p;
-        per_perspective_trackers[p]->init(p_init_obs);
+      if (per_perspective_trackers[p]) {
+        auto bootstrap = make_masked_state(*state, state->schema_ref(), p);
+        per_perspective_trackers[p]->init(*bootstrap, p);
       }
     }
   }

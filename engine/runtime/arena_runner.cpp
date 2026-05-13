@@ -6,6 +6,7 @@
 #include <random>
 #include <stdexcept>
 
+#include "../core/masked_state.h"
 #include "../core/rng_salt.h"
 
 namespace board_ai::runtime {
@@ -21,7 +22,6 @@ ArenaMatchResult run_arena_match(
     IBeliefTracker* belief_tracker,
     GameAdjudicator adjudicator,
     PublicEventExtractor public_event_extractor,
-    InitialObservationExtractor initial_observation_extractor,
     std::vector<IBeliefTracker*> per_perspective_trackers,
     std::vector<IGameState*> per_seat_states,
     PublicStateApplier public_state_applier) {
@@ -60,10 +60,9 @@ ArenaMatchResult run_arena_match(
           "run_arena_match: per_perspective_trackers size != num_players");
     }
     for (int p = 0; p < num_players; ++p) {
-      if (per_perspective_trackers[p] && initial_observation_extractor) {
-        AnyMap p_init_obs = initial_observation_extractor(*state, p);
-        p_init_obs["__perspective_player"] = p;
-        per_perspective_trackers[p]->init(p_init_obs);
+      if (per_perspective_trackers[p]) {
+        auto bootstrap = make_masked_state(*state, state->schema_ref(), p);
+        per_perspective_trackers[p]->init(*bootstrap, p);
       }
     }
   }
@@ -115,12 +114,8 @@ ArenaMatchResult run_arena_match(
         player < static_cast<int>(per_perspective_trackers.size())) {
       mcts_tracker = per_perspective_trackers[player];
     } else if (belief_tracker) {
-      AnyMap init_obs;
-      if (initial_observation_extractor) {
-        init_obs = initial_observation_extractor(*state, player);
-      }
-      init_obs["__perspective_player"] = player;
-      belief_tracker->init(init_obs);
+      auto bootstrap = make_masked_state(*state, state->schema_ref(), player);
+      belief_tracker->init(*bootstrap, player);
       mcts_tracker = belief_tracker;
     }
 

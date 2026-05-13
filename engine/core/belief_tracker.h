@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "game_interfaces.h"
+#include "masked_state.h"
 
 namespace board_ai {
 
@@ -45,12 +46,21 @@ class IBeliefTracker {
  public:
   virtual ~IBeliefTracker() = default;
 
-  // Initialize at game start from the public initial observation.
-  // `initial_observation` carries observer-visible setup (seat count,
-  // public board layout, …). Trackers that need the observer's seat
-  // index for randomize_unseen receive it via the `observer` argument
-  // there, not at init time — `init` is perspective-agnostic.
-  virtual void init(const AnyMap& initial_observation) = 0;
+  // Initialize at game start from the bootstrap MaskedState (the
+  // walker-produced "nature action 0" snapshot for `perspective`).
+  //
+  // The MaskedState is a clone of the GT-side starting state with every
+  // viz=0 slot for `perspective` overwritten with kPlaceholder — the
+  // tracker structurally cannot read truth that wasn't visible to the
+  // observer at game start. perspective-agnostic by convention: the same
+  // walker output (per `perspective`) feeds tracker.init and
+  // session.apply_initial_snapshot, but the tracker must not store
+  // anything that would diverge if fed a different perspective's view.
+  //
+  // Trackers that need to read public initial facts (e.g. Splendor's
+  // tableau card IDs, Love Letter's face_up_count) read them via
+  // `bootstrap.read_field_slot(name, idx)` keyed by schema field name.
+  virtual void init(const MaskedState& bootstrap, int perspective) = 0;
 
   // Update after each action using ONLY the public event stream.
   //

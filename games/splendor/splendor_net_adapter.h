@@ -43,7 +43,7 @@ template <int NPlayers>
 class SplendorBeliefTracker final : public IBeliefTracker {
  public:
   using Cfg = SplendorConfig<NPlayers>;
-  void init(const AnyMap& initial_observation) override;
+  void init(const MaskedState& bootstrap, int perspective) override;
   void observe_public_event(
       int actor,
       ActionId action,

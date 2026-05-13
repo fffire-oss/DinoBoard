@@ -51,12 +51,11 @@ ArenaMatchResult run_arena_match(
     std::uint64_t match_seed = 0,
     IBeliefTracker* belief_tracker = nullptr,
     GameAdjudicator adjudicator = nullptr,
-    // Tracker input adapters: needed when belief_tracker is set. The
-    // tracker receives events from public_event_extractor and its init
-    // input from initial_observation_extractor — state reads never pass
-    // through the tracker interface.
+    // Tracker input adapter: needed when belief_tracker is set. The
+    // tracker receives events from public_event_extractor and its
+    // bootstrap MaskedState from `make_masked_state(state, schema, p)` —
+    // state reads never pass through the tracker interface.
     PublicEventExtractor public_event_extractor = nullptr,
-    InitialObservationExtractor initial_observation_extractor = nullptr,
     // Per-seat trackers for hidden-info games. Size == num_players for
     // games with belief_tracker registered; empty for fully-public games.
     // When non-empty, each seat's tracker is init'd once at match start

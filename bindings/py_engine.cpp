@@ -14,6 +14,8 @@
 #include "../engine/core/schema_hash.h"
 #include "../engine/core/game_registry.h"
 #include "../engine/core/feature_encoder.h"
+#include "../engine/core/masked_state.h"
+#include "../engine/core/snapshot_io.h"
 #include "../engine/infer/onnx_policy_value_evaluator.h"
 #include "../engine/runtime/selfplay_runner.h"
 #include "../engine/runtime/arena_runner.h"
@@ -46,17 +48,15 @@ inline search::OpponentSelection parse_opponent_selection(
 // public_event_extractor produce the event stream; games without one pass
 // empty vectors (tracker becomes effectively a no-op for those games, which
 // matches their pre-migration behavior since they had no hidden info).
-inline void tracker_init(IBeliefTracker& bt, const GameBundle& bundle,
+inline void tracker_init(IBeliefTracker& bt, const GameBundle& /*bundle*/,
                          const IGameState& state, int perspective) {
-  AnyMap obs;
-  if (bundle.initial_observation_extractor) {
-    obs = bundle.initial_observation_extractor(state, perspective);
-  }
-  // Pre-§G transitional: stash perspective in init obs for trackers
-  // that still branch on own_self vs opp seat. Removed once §G migrates
-  // perspective-private knowledge to state.viz.
-  obs["__perspective_player"] = perspective;
-  bt.init(obs);
+  // Bootstrap MaskedState — walker-produced "nature action 0" snapshot
+  // for `perspective`. The tracker can read schema fields via
+  // bootstrap.read_field_slot(name, idx); viz=0 slots structurally
+  // contain kPlaceholder so the tracker physically cannot read truth
+  // that wasn't visible to the observer at game start.
+  auto bootstrap = make_masked_state(state, state.schema_ref(), perspective);
+  bt.init(*bootstrap, perspective);
 }
 
 inline void tracker_observe(IBeliefTracker& bt, const GameBundle& bundle,
@@ -268,33 +268,35 @@ py::dict run_selfplay_episode_py(
   py::gil_scoped_release release;
 
   auto bundle = GameRegistry::instance().create_game(game_id, seed);
-  // Extractors are used by two consumers:
-  //   - per-perspective trackers (pp_trackers below) — init each seat + feed
-  //     public events to every seat.
-  //   - trace_belief_tracker — records a specific perspective's snapshot
-  //     for regression tests.
-  // Must be populated whenever the game registers them, regardless of
-  // trace_perspective. (Forgetting this leaves pp_trackers at
-  // perspective_player_=-1 and randomize_unseen clobbers the current player's
-  // own hand, producing DAG hash collisions at root. See BUG-032.)
+  // Public-event extractor feeds two consumers:
+  //   - per-perspective trackers (pp_trackers below) — observe events
+  //     each ply for every seat.
+  //   - trace_belief_tracker — records a specific perspective's
+  //     snapshot for regression tests.
+  // Must be populated whenever the game registers it, regardless of
+  // trace_perspective. The tracker bootstrap snapshot is now produced
+  // by the framework walker (make_masked_state) — no per-game extractor.
   runtime::PublicEventExtractor trace_extractor = bundle.public_event_extractor;
-  runtime::InitialObservationExtractor trace_obs_extractor =
-      bundle.initial_observation_extractor;
   // For tracing we need a SECOND bundle (and its belief_tracker) dedicated
   // to the traced perspective, separate from both the main tracker and the
   // pp_trackers.
+  // Tracing only requires public_event_extractor — that's the source
+  // of the per-ply event stream + public_snapshot. trace_belief_tracker
+  // is optional: tracker-bearing games (Splendor / LL) get one for
+  // belief_snapshot_after; snapshot-only games (Azul) trace without a
+  // tracker (belief_snapshot_after stays empty).
   std::unique_ptr<GameBundle> trace_bundle;
   IBeliefTracker* trace_bt = nullptr;
   if (trace_perspective >= 0) {
-    trace_bundle = std::make_unique<GameBundle>(
-        GameRegistry::instance().create_game(game_id, seed));
-    trace_bt = trace_bundle->belief_tracker.get();
-    if (!trace_bt || !trace_extractor) {
+    if (!trace_extractor) {
       py::gil_scoped_acquire acquire;
       throw std::runtime_error(
           "run_selfplay_episode: trace_perspective >= 0 but game '" + game_id +
-          "' did not register a belief_tracker + public_event_extractor");
+          "' did not register a public_event_extractor");
     }
+    trace_bundle = std::make_unique<GameBundle>(
+        GameRegistry::instance().create_game(game_id, seed));
+    trace_bt = trace_bundle->belief_tracker.get();  // may be nullptr
   }
 
   if (model_path.empty()) {
@@ -375,7 +377,7 @@ py::dict run_selfplay_episode_py(
       trace_perspective,
       trace_bt,
       trace_extractor,
-      trace_obs_extractor);
+      bundle.initial_observation_extractor);
 
   py::gil_scoped_acquire acquire;
   return result_to_py(result);
@@ -492,7 +494,6 @@ py::dict run_arena_match_py(
       player_configs, max_game_plies, seed,
       arena_bt, bundle.adjudicator,
       bundle.public_event_extractor,
-      bundle.initial_observation_extractor,
       pp_trackers,
       per_seat_states,
       bundle.public_state_applier);
@@ -687,8 +688,7 @@ py::dict run_heuristic_episode_py(
       pp_trackers,
       per_seat_states,
       bundle.public_state_applier,
-      bundle.public_event_extractor,
-      bundle.initial_observation_extractor);
+      bundle.public_event_extractor);
 
   py::gil_scoped_acquire acquire;
   return result_to_py(result);
@@ -719,11 +719,8 @@ py::dict encode_state_for_perspective_py(
   // known_hand from real public events (e.g. Priest reveals) without us
   // synthesizing event payloads by hand.
   bool tracker_init_done = false;
-  if (bundle.belief_tracker && tracker_perspective >= 0 &&
-      bundle.initial_observation_extractor) {
-    auto obs = bundle.initial_observation_extractor(*bundle.state, tracker_perspective);
-    obs["__perspective_player"] = tracker_perspective;
-    bundle.belief_tracker->init(obs);
+  if (bundle.belief_tracker && tracker_perspective >= 0) {
+    tracker_init(*bundle.belief_tracker, bundle, *bundle.state, tracker_perspective);
     tracker_init_done = true;
   }
 
@@ -880,12 +877,11 @@ class GameSessionWrapper {
       ai_trackers_[p] = std::move(extra.belief_tracker);
       ai_encoders_[p] = std::move(extra.encoder);
 
-      ai_views_[p] = bundle_->state->clone_state();
-      if (bundle_->initial_observation_extractor &&
-          bundle_->initial_observation_applier) {
-        AnyMap obs = bundle_->initial_observation_extractor(*bundle_->state, p);
-        bundle_->initial_observation_applier(*ai_views_[p], p, obs);
-      }
+      // Bootstrap each AI view from the truth state via the walker:
+      // viz=1 slots flow through; viz=0 slots are placeholder. This is
+      // the cleanest "nature action 0" snapshot — game-agnostic.
+      ai_views_[p] = make_masked_state(*bundle_->state,
+                                       bundle_->state->schema_ref(), p);
       if (ai_trackers_[p]) {
         tracker_init(*ai_trackers_[p], *bundle_, *ai_views_[p], p);
       }
@@ -1149,7 +1145,7 @@ class GameSessionWrapper {
   // Test/integration helper: extract the initial observation for a given
   // perspective from the truth state, the way the partner-side server would
   // before sending it to the AI. Returns empty dict for games without an
-  // initial_observation_extractor.
+  // initial_observation_extractor (fully-public games).
   py::dict extract_initial_observation(int perspective) {
     py::dict out;
     if (!bundle_->initial_observation_extractor) return out;
@@ -1162,6 +1158,12 @@ class GameSessionWrapper {
   // would know at game start (e.g. own starting hand). Overrides the
   // session's seed-generated hidden initial state for the perspective
   // player. Throws if the game registered no applier.
+  //
+  // Tracker init is independent of this AnyMap — it bootstraps from a
+  // walker-produced MaskedState, structurally placeholder-only on viz=0
+  // slots. Even a malicious wire payload that smuggled extra fields
+  // could not reach the tracker; at worst it sets viz=0 state slots
+  // which decision-side reads cannot reach.
   void apply_initial_observation(int perspective_player, py::dict initial_obs) {
     if (!bundle_->initial_observation_applier) {
       throw std::runtime_error(
@@ -1174,8 +1176,7 @@ class GameSessionWrapper {
     api_perspective_ = perspective_player;
     bundle_->initial_observation_applier(*bundle_->state, perspective_player, obs_map);
     if (bt_) {
-      obs_map["__perspective_player"] = perspective_player;
-      bt_->init(obs_map);
+      tracker_init(*bt_, *bundle_, *bundle_->state, perspective_player);
     }
   }
 

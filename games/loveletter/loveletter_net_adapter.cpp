@@ -103,7 +103,7 @@ void LoveLetterFeatureEncoder<NPlayers>::encode_private(
 
 template <int NPlayers>
 void LoveLetterBeliefTracker<NPlayers>::init(
-    const AnyMap& /*initial_observation*/) {
+    const MaskedState& /*bootstrap*/, int /*perspective*/) {
   // Tracker is perspective-agnostic and stateless. All per-perspective
   // hand/drawn knowledge lives on state.viz_ (rules-driven reveals).
   // No private fields to seed; randomize_unseen reads everything it

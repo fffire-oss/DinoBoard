@@ -5,7 +5,9 @@
 #include <numeric>
 #include <random>
 
+#include "../core/masked_state.h"
 #include "../core/rng_salt.h"
+#include "../core/snapshot_io.h"
 
 namespace board_ai::runtime {
 
@@ -30,7 +32,7 @@ SelfplayEpisodeResult run_selfplay_episode(
     int trace_perspective,
     IBeliefTracker* trace_belief_tracker,
     PublicEventExtractor public_event_extractor,
-    InitialObservationExtractor initial_observation_extractor) {
+    board_ai::InitialObservationExtractor initial_observation_extractor) {
   SelfplayEpisodeResult result{};
 
   if (config.tail_solve_enabled && (!tail_solver || !tail_solve_trigger)) {
@@ -39,8 +41,14 @@ SelfplayEpisodeResult run_selfplay_episode(
         "registered ITailSolver and a TailSolveTrigger; one or both are missing.");
   }
 
+  // Tracing works on any game with a public_event_extractor. Tracker
+  // is optional: for games without one (Azul: fully-public counts +
+  // snapshot, no tracker registered) the trace still records actions /
+  // events / public_snapshot for round-trip / replay tests, only
+  // belief_snapshot_after is left empty. Tracker bootstrap and
+  // observe_public_event below are guarded individually.
   const bool tracing =
-      trace_perspective >= 0 && public_event_extractor && trace_belief_tracker;
+      trace_perspective >= 0 && public_event_extractor;
   if (tracing) {
     result.trace_enabled = true;
     result.trace_perspective = trace_perspective;
@@ -84,13 +92,13 @@ SelfplayEpisodeResult run_selfplay_episode(
           "run_selfplay_episode: per_perspective_trackers size != num_players");
     }
     for (int p = 0; p < num_players; ++p) {
-      if (per_perspective_trackers[p] && initial_observation_extractor) {
-        AnyMap p_init_obs = initial_observation_extractor(*state, p);
-        // Pre-§G.2 transitional: stash perspective in init obs so trackers
-        // that still need own_self vs opp seat can read it. Goes away once
-        // Coup migrates per-perspective knowledge to state.viz.
-        p_init_obs["__perspective_player"] = p;
-        per_perspective_trackers[p]->init(p_init_obs);
+      if (per_perspective_trackers[p]) {
+        // Bootstrap each tracker from a walker-produced MaskedState —
+        // viz=1 slots carry truth, viz=0 slots are kPlaceholder. The
+        // tracker physically cannot read truth that wasn't visible to
+        // the observer at game start.
+        auto bootstrap = make_masked_state(*state, state->schema_ref(), p);
+        per_perspective_trackers[p]->init(*bootstrap, p);
       }
     }
   }
@@ -104,16 +112,27 @@ SelfplayEpisodeResult run_selfplay_episode(
   // not silently paper over with a session-side resample.
 
   // Tracing uses its own separate tracker instance so trace output stays
-  // reproducible across refactors of MCTS tracker routing.
+  // reproducible across refactors of MCTS tracker routing. The bootstrap
+  // is a walker-produced MaskedState for the trace perspective; on the
+  // wire it is serialized as an AnyMap of viz=1 slot values keyed by
+  // schema field name (see viz::serialize_public_for_perspective).
   if (tracing) {
-    AnyMap trace_init_obs;
-    if (initial_observation_extractor) {
-      trace_init_obs = initial_observation_extractor(*state, trace_perspective);
+    if (trace_belief_tracker) {
+      auto trace_bootstrap = make_masked_state(
+          *state, state->schema_ref(), trace_perspective);
+      trace_belief_tracker->init(*trace_bootstrap, trace_perspective);
+      result.initial_belief_snapshot = trace_belief_tracker->serialize();
     }
-    trace_init_obs["__perspective_player"] = trace_perspective;
-    trace_belief_tracker->init(trace_init_obs);
-    result.initial_belief_snapshot = trace_belief_tracker->serialize();
-    result.initial_observation = trace_init_obs;
+    // Wire-shape bootstrap snapshot for trace consumers. Produced by
+    // the per-game initial_observation_extractor (the same AnyMap shape
+    // GameSession::apply_initial_observation expects). The tracker
+    // bootstrap above does NOT use this — tracker.init reads only the
+    // walker MaskedState, so even if the wire AnyMap carried extra
+    // fields the tracker physically cannot peek at them.
+    if (initial_observation_extractor) {
+      result.initial_observation =
+          initial_observation_extractor(*state, trace_perspective);
+    }
   }
 
   std::mt19937_64 heuristic_rng(
@@ -286,9 +305,11 @@ SelfplayEpisodeResult run_selfplay_episode(
             *state_before, chosen, *state, trace_perspective);
         t.events = evt.events;
         t.public_snapshot = evt.public_snapshot;
-        trace_belief_tracker->observe_public_event(
-            player, chosen, evt.events);
-        t.belief_snapshot_after = trace_belief_tracker->serialize();
+        if (trace_belief_tracker) {
+          trace_belief_tracker->observe_public_event(
+              player, chosen, evt.events);
+          t.belief_snapshot_after = trace_belief_tracker->serialize();
+        }
         result.observation_trace.push_back(std::move(t));
       }
       ply += 1;
@@ -408,9 +429,11 @@ SelfplayEpisodeResult run_selfplay_episode(
           *state_before, chosen, *state, trace_perspective);
       t.events = evt.events;
       t.public_snapshot = evt.public_snapshot;
-      trace_belief_tracker->observe_public_event(
-          player, chosen, evt.events);
-      t.belief_snapshot_after = trace_belief_tracker->serialize();
+      if (trace_belief_tracker) {
+        trace_belief_tracker->observe_public_event(
+            player, chosen, evt.events);
+        t.belief_snapshot_after = trace_belief_tracker->serialize();
+      }
       result.observation_trace.push_back(std::move(t));
     }
     ply += 1;
