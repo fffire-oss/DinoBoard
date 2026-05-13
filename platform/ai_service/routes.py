@@ -52,10 +52,16 @@ class CreateSessionRequest(BaseModel):
     my_seat: int = Field(..., description="Which player the AI is playing as (0-indexed)")
     initial_observation: Optional[dict] = Field(
         None,
-        description="Snapshot-path games only: perspective-specific facts known "
-                    "at game start (e.g. own starting hand for hidden-info "
-                    "games). Required for snapshot-path games; ignored for "
-                    "fully-public no-snapshot games (TicTacToe, Quoridor).",
+        description="Perspective-specific facts known at game start. "
+                    "**REQUIRED** for snapshot-path games (Azul, Splendor, "
+                    "Love Letter, Coup) — without it the AI session's own "
+                    "seed-generated hidden state would silently diverge from "
+                    "truth and the AI's first decision on its starting turn "
+                    "would be made off the wrong starting hand / tableau. "
+                    "Caller obtains it via `GameSession.extract_initial_"
+                    "observation(seat)`. **Must be omitted** for fully-public "
+                    "no-snapshot games (TicTacToe, Quoridor). The server "
+                    "rejects mismatches with HTTP 400.",
     )
 
 

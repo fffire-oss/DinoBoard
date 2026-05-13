@@ -246,6 +246,38 @@ def test_create_session_rejects_out_of_range_seat(client):
     assert resp.status_code == 400
 
 
+@pytest.mark.parametrize("game_id", ["loveletter", "azul"])
+def test_create_session_rejects_snapshot_path_without_initial_observation(client, game_id):
+    """Snapshot-path games (LL / Azul / Splendor / Coup) MUST receive
+    `initial_observation` at create — the AI session's own seed-generated
+    hidden state would otherwise silently diverge from truth (own starting
+    hand for hidden-info, factories for Azul). The server rejects with 400.
+    """
+    resp = client.post("/ai/sessions", json={
+        "game_id": game_id,
+        "seed": 42,
+        "my_seat": 0,
+        # initial_observation deliberately omitted
+    })
+    assert resp.status_code == 400, resp.text
+    assert "initial_observation" in resp.text
+
+
+def test_create_session_rejects_initial_observation_for_fully_public(client):
+    """Fully-public no-snapshot games (TTT / Quoridor) must NOT receive
+    `initial_observation` — they have no perspective-private starting facts,
+    so passing one is a contract violation.
+    """
+    resp = client.post("/ai/sessions", json={
+        "game_id": "tictactoe",
+        "seed": 42,
+        "my_seat": 0,
+        "initial_observation": {"some_field": 1},
+    })
+    assert resp.status_code == 400, resp.text
+    assert "fully-public" in resp.text or "no-snapshot" in resp.text
+
+
 def test_observe_rejects_illegal_action(client):
     resp = client.post("/ai/sessions", json={
         "game_id": "tictactoe", "seed": 42, "my_seat": 1,
@@ -345,15 +377,46 @@ def test_session_not_found(client):
 # ---------- Response surface never includes state fields ----------------
 
 
+# Any of these would indicate the API leaked internal state. Scanned
+# recursively over every API response body. The list is intentionally broad
+# — when adding a new game with a new private-data field, add the field name
+# here so the regression catches a future leak.
 _FORBIDDEN_STATE_KEYS = {
-    # Any of these would indicate the API leaked internal state.
+    # Generic board/component state
     "board", "tiles", "factories", "deck", "hand", "hands", "cards",
     "tokens", "gems", "center", "walls", "coins", "nobles",
     "points", "score", "reserved", "face_down", "pieces",
-    # Encoded tensors
+    # Hidden-info per-game private fields (Love Letter / Coup / Splendor)
+    "p0_hand", "p1_hand", "p2_hand", "p3_hand",
+    "face_down_id", "claimed_role", "claimed_roles",
+    "owner_overlay", "self_reserve_deck", "private_reserves",
+    "influence", "remaining_deck", "discard_private",
+    # Encoded tensors that should never be sent to clients
     "features", "legal_mask", "legal_actions",
     # Raw state serialization
     "state", "state_dict", "current_state",
+    # Echoed wire-protocol payloads — observe takes these as INPUT but the
+    # response must not echo them back (they belong only to the caller-side
+    # ground truth; echoing would be a 'safe' leak that becomes load-bearing).
+    "events", "public_snapshot",
+}
+
+# Per-endpoint top-level key whitelists. New fields must be added here
+# explicitly so an accidental addition surfaces as a test failure.
+_CREATE_TOP_LEVEL = {
+    "session_id", "game_id", "num_players", "my_seat",
+    "current_player", "is_terminal",
+}
+_STATUS_TOP_LEVEL = {
+    "session_id", "closed", "game_id", "num_players", "my_seat",
+    "is_terminal", "current_player", "winner", "actions_observed",
+}
+_OBSERVE_TOP_LEVEL = {
+    "actions_observed", "current_player", "is_terminal",
+}
+_DECIDE_TOP_LEVEL = {
+    "action_id", "action_info", "stats",
+    "current_player", "is_terminal",
 }
 
 
@@ -368,40 +431,96 @@ def _assert_no_state_keys(obj, path="$"):
             _assert_no_state_keys(v, f"{path}[{i}]")
 
 
-def test_api_responses_never_include_state_fields(client):
-    """Inspect every API response body for keys that would indicate state leakage."""
-    # create
-    resp = client.post("/ai/sessions", json={
-        "game_id": "tictactoe", "seed": 42, "my_seat": 1,
-    })
-    assert resp.status_code == 200
+def _assert_response_clean(body: dict, whitelist: set[str], endpoint: str, game_id: str):
+    """Check both top-level whitelist and recursive forbidden-key scan."""
+    extra = set(body.keys()) - whitelist
+    assert not extra, (
+        f"[{game_id}/{endpoint}] unexpected top-level keys: {extra}; "
+        f"allowed: {whitelist}")
+    _assert_no_state_keys(body, path=f"$<{endpoint}>")
+
+
+# Carrier for the response-leak scan. Picks one game per category so a leak
+# in any game's adapter (deterministic / public-snapshot / hidden-info-snapshot)
+# surfaces immediately. TTT covers fully-public no-snapshot deterministic;
+# Quoridor covers the same category at higher branching; Azul covers
+# snapshot-without-tracker; LoveLetter covers snapshot-with-tracker.
+_RESPONSE_LEAK_GAMES = ["tictactoe", "quoridor", "azul", "loveletter"]
+
+
+@pytest.mark.parametrize("game_id", _RESPONSE_LEAK_GAMES)
+def test_api_responses_never_include_state_fields(client, game_id):
+    """Drive create / status / observe / decide for each carrier game and scan
+    every response body for forbidden state keys + unexpected top-level keys.
+
+    For snapshot-path games we drive a few real plies through the API so the
+    observe/decide responses are exercised on a non-trivial session — a leak
+    that only manifests after the first observation must still be caught.
+    """
+    meta = engine.game_metadata(game_id)
+    has_events = bool(meta["has_public_state_applier"])
+    ai_seat = min(1, meta["num_players"] - 1)
+
+    gt = engine.GameSession(game_id, 42, "", False)
+
+    create_payload: dict = {"game_id": game_id, "seed": 42, "my_seat": ai_seat}
+    if has_events:
+        create_payload["initial_observation"] = gt.extract_initial_observation(ai_seat)
+
+    resp = client.post("/ai/sessions", json=create_payload)
+    assert resp.status_code == 200, resp.text
     body = resp.json()
-    _assert_no_state_keys(body)
+    _assert_response_clean(body, _CREATE_TOP_LEVEL, "create", game_id)
     session_id = body["session_id"]
 
     try:
-        # status
+        # status (initial)
         resp = client.get(f"/ai/sessions/{session_id}")
-        _assert_no_state_keys(resp.json())
+        assert resp.status_code == 200, resp.text
+        _assert_response_clean(resp.json(), _STATUS_TOP_LEVEL, "status", game_id)
 
-        # observe (player 0 plays center)
-        resp = client.post(
-            f"/ai/sessions/{session_id}/observe",
-            json={"action_id": 4},
-        )
-        _assert_no_state_keys(resp.json())
+        # Drive up to 6 plies. Random-legal opponents, API for the AI seat —
+        # the goal is just to exercise observe/decide on real session state.
+        rng = random.Random(0xBEEF ^ hash(game_id) & 0xFFFF)
+        for _ in range(6):
+            if gt.is_terminal:
+                break
+            current = gt.current_player
+            legal = gt.get_legal_actions()
+            if not legal:
+                break
 
-        # decide — action_info is game-specific descriptor, not state.
-        # We accept it but verify it's bounded in type (dict with simple values).
-        resp = client.post(f"/ai/sessions/{session_id}/decide")
-        body = resp.json()
-        # Top-level contract keys
-        assert set(body.keys()) <= {
-            "action_id", "action_info", "stats",
-            "current_player", "is_terminal",
-        }, f"Unexpected keys in decide response: {set(body.keys())}"
-        # action_info is a short descriptor dict — verify no state-ish keys
-        _assert_no_state_keys({"action_info_nested": body["action_info"]})
+            if current == ai_seat:
+                resp = client.post(f"/ai/sessions/{session_id}/decide")
+                assert resp.status_code == 200, resp.text
+                body = resp.json()
+                _assert_response_clean(body, _DECIDE_TOP_LEVEL, "decide", game_id)
+                action_id = body["action_id"]
+            else:
+                action_id = _random_legal(rng, legal)
+
+            if has_events:
+                trace = gt.apply_action_with_trace(action_id, ai_seat)
+                obs_payload = {
+                    "action_id": action_id,
+                    "events": trace["events"],
+                    "public_snapshot": trace["public_snapshot"],
+                }
+            else:
+                gt.apply_action(action_id)
+                obs_payload = {"action_id": action_id}
+
+            resp = client.post(
+                f"/ai/sessions/{session_id}/observe",
+                json=obs_payload,
+            )
+            assert resp.status_code == 200, resp.text
+            _assert_response_clean(resp.json(), _OBSERVE_TOP_LEVEL, "observe", game_id)
+
+        # status (mid-game) — different code path than initial status.
+        resp = client.get(f"/ai/sessions/{session_id}")
+        assert resp.status_code == 200, resp.text
+        _assert_response_clean(resp.json(), _STATUS_TOP_LEVEL, "status-mid", game_id)
     finally:
         client.delete(f"/ai/sessions/{session_id}")
 

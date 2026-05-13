@@ -222,6 +222,19 @@ class SessionStore:
             raise RuntimeError(
                 f"game {game_id!r} registered public_state_applier without "
                 f"initial_observation_applier — REST AI flow needs both.")
+        if has_public_state_applier and initial_observation is None:
+            # Snapshot-path games (Azul, Splendor, Love Letter, Coup) carry
+            # perspective-private starting facts that the AI session cannot
+            # reconstruct from action_id alone. Without initial_observation
+            # the session's own seed-generated hidden state would diverge
+            # from truth — and would silently bias the AI's first decision
+            # on its starting turn (e.g. Love Letter seat 0 deciding off the
+            # wrong starting hand). Required, not optional.
+            raise ValueError(
+                f"game {game_id!r} is a snapshot-path game; "
+                f"initial_observation is required (carries perspective's "
+                f"starting facts — own hand for hidden-info games, "
+                f"shared starting tableau for public-snapshot games).")
         if not has_public_state_applier and initial_observation:
             raise ValueError(
                 f"game {game_id!r} is a fully-public no-snapshot game; "

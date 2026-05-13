@@ -35,13 +35,26 @@
 
 ### `POST /ai/sessions` — 创建
 
-**请求**：
+**请求**（quoridor / tictactoe — 完全公开无 snapshot 游戏）：
 ```json
 {
   "game_id": "quoridor",
   "seed": 12345,
+  "my_seat": 0
+}
+```
+
+**请求**（loveletter / splendor / azul / coup — snapshot-path 游戏，`initial_observation` **必填**）：
+```json
+{
+  "game_id": "loveletter",
+  "seed": 12345,
   "my_seat": 0,
-  "initial_observation": {}
+  "initial_observation": {
+    "my_hand": 5,
+    "my_drawn_card": 3,
+    "face_up_count": [0, 0, 1, 0, 0, 1, 0, 0, 1]
+  }
 }
 ```
 
@@ -50,7 +63,9 @@
 | `game_id` | 注册的游戏 ID（见 `docs/games/`）。多人变体用 `{game}_3p` / `{game}_4p` |
 | `seed` | 可选。AI 内部 RNG seed。**对有隐藏信息的游戏可以任意选**，不需要等于 ground truth 的 seed——AI 的内部世界本来就是采样的；省略则服务端用 `secrets.randbits(64)` 自取 |
 | `my_seat` | AI 扮演的座位（0-indexed） |
-| `initial_observation` | 隐藏信息游戏开局时这个 perspective 才能看到的事实（如自己的初始手牌）。隐藏信息游戏必填；完全公开的游戏忽略此字段 |
+| `initial_observation` | **snapshot-path 游戏（Azul / Splendor / LoveLetter / Coup）必填**。perspective 在游戏开局时能看到的事实（隐藏信息游戏：自己的初始手牌；公开 snapshot 游戏：起始 tableau / factories 等）。**fully-public no-snapshot 游戏（TicTacToe / Quoridor）必须省略**——服务端会按 `engine.game_metadata(game_id).has_public_state_applier` 校验，不匹配返回 HTTP 400。Caller 通过 `GameSession.extract_initial_observation(seat)` 拿到此字段的内容 |
+
+> ⚠ 不传 `initial_observation` 给 snapshot-path 游戏，AI session 会用自己 seed 生成的随机隐藏状态，**自首发位的第一次 `decide` 会基于错误的起始手牌做决策**。这是 AI-Pipeline-Independence 的硬契约，不是软性建议——服务端拒绝创建。
 
 > AI 强度（`simulations` / `temperature` / `opponent_selection`）由服务端从 `web.json mcts_profiles.web_expert` 解析（`platform/ai_service/sessions.py:_resolve_strength`），**客户端不可指定**——pydantic 会丢弃 body 里塞进来的 `simulations` / `temperature`。
 
