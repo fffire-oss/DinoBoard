@@ -214,5 +214,13 @@ setup(
     ext_modules=[ext],
     cmdclass={"build_ext": BuildExt},
     python_requires=">=3.9",
-    install_requires=["pybind11>=2.10"],
+    install_requires=[
+        "pybind11>=2.10",
+        "fastapi>=0.100",
+        "uvicorn[standard]>=0.20",
+        "onnxruntime>=1.16",
+        "torch>=2.0",
+        "numpy>=1.24",
+        "onnx>=1.14",
+    ],
 )

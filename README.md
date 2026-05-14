@@ -155,11 +155,14 @@ force-fit the following (see
 ### Build (Mac / Linux)
 
 ```bash
-pip install pybind11 torch
 pip install -e .
 
 python -c "import dinoboard_engine; print(dinoboard_engine.available_games())"
 ```
+
+`pip install -e .` pulls all runtime deps (pybind11, torch, numpy,
+onnx, onnxruntime, fastapi, uvicorn) — one command covers training
+and web.
 
 ### Build (Windows)
 
@@ -168,7 +171,6 @@ installer creates this Start-Menu shortcut — it's just a `cmd`
 session pre-loaded with MSVC environment vars), `cd` to the repo:
 
 ```bat
-pip install pybind11 torch
 pip install -e .
 python -c "import dinoboard_engine; print(dinoboard_engine.available_games())"
 ```
@@ -187,7 +189,6 @@ python -m training.cli --game quoridor  --output runs/quoridor_001 \
 ### Web play
 
 ```bash
-pip install -r requirements.txt
 cd platform && python -m uvicorn app:app --host 0.0.0.0 --port 8000
 open http://localhost:8000
 ```

@@ -125,11 +125,13 @@ DinoBoard 基于 AlphaZero / ISMCTS 范式，撞上以下场景**不要硬接**
 ### 构建（Mac / Linux）
 
 ```bash
-pip install pybind11 torch
 pip install -e .
 
 python -c "import dinoboard_engine; print(dinoboard_engine.available_games())"
 ```
+
+`pip install -e .` 会拉齐所有运行依赖（pybind11、torch、numpy、
+onnx、onnxruntime、fastapi、uvicorn），训练和网页一条命令搞定。
 
 ### 构建（Windows）
 
@@ -138,7 +140,6 @@ python -c "import dinoboard_engine; print(dinoboard_engine.available_games())"
 库目录：
 
 ```bat
-pip install pybind11 torch
 pip install -e .
 python -c "import dinoboard_engine; print(dinoboard_engine.available_games())"
 ```
@@ -157,7 +158,6 @@ python -m training.cli --game quoridor  --output runs/quoridor_001 \
 ### Web 对战
 
 ```bash
-pip install -r requirements.txt
 cd platform && python -m uvicorn app:app --host 0.0.0.0 --port 8000
 open http://localhost:8000
 ```
