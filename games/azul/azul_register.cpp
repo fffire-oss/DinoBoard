@@ -234,296 +234,6 @@ void recompute_bag_from_visible(AzulState<NPlayers>& s) {
   }
 }
 
-// Per-field emitter/applier table for the public_snapshot. Schema's
-// declaration order in azul_state.cpp drives `viz::emit_snapshot` /
-// `viz::apply_snapshot`; entries here translate one schema all_public
-// field to AnyMap key. Every all_public field except `game_first_player`
-// (fixed at game start, omitted by hash_public_fields too — passed in
-// the `skip` set) must have an entry in BOTH maps; emit/apply throw if
-// not. Variable-length hidden multisets (bag, box_lid) are NOT schema
-// fields — they're handled directly alongside this call.
-template <int NPlayers>
-const board_ai::viz::SnapshotIO& azul_snapshot_io() {
-  using AzulS = AzulState<NPlayers>;
-  static const board_ai::viz::SnapshotIO io = []() {
-    using namespace board_ai;
-    viz::SnapshotIO t;
-
-    // Helper lambdas for less-verbose entries below.
-    auto put_int = [](AnyMap& m, const char* key, int v) {
-      m[key] = std::any(v);
-    };
-    auto put_bool = [](AnyMap& m, const char* key, bool v) {
-      m[key] = std::any(v);
-    };
-    auto put_vec = [](AnyMap& m, const char* key, std::vector<int> v) {
-      m[key] = std::any(std::move(v));
-    };
-
-    // ---- emitters ----
-    t.emitters["current_player"] = [put_int](const IGameState& s, AnyMap& m) {
-      const auto& sa = checked_cast<AzulS>(s);
-      put_int(m, "current_player", static_cast<int>(sa.current_player_));
-    };
-    t.emitters["first_player_next_round"] = [put_int](const IGameState& s, AnyMap& m) {
-      const auto& sa = checked_cast<AzulS>(s);
-      put_int(m, "first_player_next_round", static_cast<int>(sa.first_player_next_round));
-    };
-    t.emitters["winner"] = [put_int](const IGameState& s, AnyMap& m) {
-      const auto& sa = checked_cast<AzulS>(s);
-      put_int(m, "winner", static_cast<int>(sa.winner_));
-    };
-    t.emitters["round_index"] = [put_int](const IGameState& s, AnyMap& m) {
-      const auto& sa = checked_cast<AzulS>(s);
-      put_int(m, "round_index", static_cast<int>(sa.round_index));
-    };
-    t.emitters["terminal"] = [put_bool](const IGameState& s, AnyMap& m) {
-      const auto& sa = checked_cast<AzulS>(s);
-      put_bool(m, "terminal", static_cast<bool>(sa.terminal));
-    };
-    t.emitters["first_player_token_in_center"] = [put_bool](const IGameState& s, AnyMap& m) {
-      const auto& sa = checked_cast<AzulS>(s);
-      put_bool(m, "first_player_token_in_center",
-               static_cast<bool>(sa.first_player_token_in_center));
-    };
-    t.emitters["shared_victory"] = [put_bool](const IGameState& s, AnyMap& m) {
-      const auto& sa = checked_cast<AzulS>(s);
-      put_bool(m, "shared_victory", static_cast<bool>(sa.shared_victory));
-    };
-    t.emitters["scores"] = [put_vec](const IGameState& s, AnyMap& m) {
-      const auto& sa = checked_cast<AzulS>(s);
-      put_vec(m, "scores",
-              std::vector<int>(sa.scores.begin(), sa.scores.end()));
-    };
-    t.emitters["factories"] = [put_vec](const IGameState& s, AnyMap& m) {
-      const auto& sa = checked_cast<AzulS>(s);
-      std::vector<int> flat;
-      flat.reserve(sa.factories.size() * board_ai::azul::kColors);
-      for (const auto& fac : sa.factories) {
-        for (std::uint8_t c : fac) flat.push_back(static_cast<int>(c));
-      }
-      put_vec(m, "factories_flat", std::move(flat));
-    };
-    t.emitters["center"] = [put_vec](const IGameState& s, AnyMap& m) {
-      const auto& sa = checked_cast<AzulS>(s);
-      std::vector<int> v;
-      v.reserve(sa.center.size());
-      for (std::uint8_t c : sa.center) v.push_back(static_cast<int>(c));
-      put_vec(m, "center", std::move(v));
-    };
-    t.emitters["player_line_len"] = [put_vec](const IGameState& s, AnyMap& m) {
-      const auto& sa = checked_cast<AzulS>(s);
-      std::vector<int> flat(NPlayers * board_ai::azul::kRows);
-      for (int p = 0; p < NPlayers; ++p) {
-        for (int r = 0; r < board_ai::azul::kRows; ++r) {
-          flat[p * board_ai::azul::kRows + r] = static_cast<int>(sa.players[p].line_len[r]);
-        }
-      }
-      put_vec(m, "player_line_len_flat", std::move(flat));
-    };
-    t.emitters["player_line_color"] = [put_vec](const IGameState& s, AnyMap& m) {
-      const auto& sa = checked_cast<AzulS>(s);
-      std::vector<int> flat(NPlayers * board_ai::azul::kRows);
-      for (int p = 0; p < NPlayers; ++p) {
-        for (int r = 0; r < board_ai::azul::kRows; ++r) {
-          flat[p * board_ai::azul::kRows + r] = static_cast<int>(sa.players[p].line_color[r]);
-        }
-      }
-      put_vec(m, "player_line_color_flat", std::move(flat));
-    };
-    t.emitters["player_wall_mask"] = [put_vec](const IGameState& s, AnyMap& m) {
-      const auto& sa = checked_cast<AzulS>(s);
-      std::vector<int> flat(NPlayers * board_ai::azul::kRows);
-      for (int p = 0; p < NPlayers; ++p) {
-        for (int r = 0; r < board_ai::azul::kRows; ++r) {
-          flat[p * board_ai::azul::kRows + r] = static_cast<int>(sa.players[p].wall_mask[r]);
-        }
-      }
-      put_vec(m, "player_wall_mask_flat", std::move(flat));
-    };
-    t.emitters["player_floor"] = [put_vec](const IGameState& s, AnyMap& m) {
-      const auto& sa = checked_cast<AzulS>(s);
-      std::vector<int> flat(NPlayers * 7);
-      for (int p = 0; p < NPlayers; ++p) {
-        for (int f = 0; f < 7; ++f) flat[p * 7 + f] = static_cast<int>(sa.players[p].floor[f]);
-      }
-      put_vec(m, "player_floor_flat", std::move(flat));
-    };
-    t.emitters["player_floor_count"] = [put_vec](const IGameState& s, AnyMap& m) {
-      const auto& sa = checked_cast<AzulS>(s);
-      std::vector<int> v(NPlayers);
-      for (int p = 0; p < NPlayers; ++p) v[p] = static_cast<int>(sa.players[p].floor_count);
-      put_vec(m, "player_floor_count", std::move(v));
-    };
-    t.emitters["player_score"] = [put_vec](const IGameState& s, AnyMap& m) {
-      const auto& sa = checked_cast<AzulS>(s);
-      std::vector<int> v(NPlayers);
-      for (int p = 0; p < NPlayers; ++p) v[p] = sa.players[p].score;
-      put_vec(m, "player_score", std::move(v));
-    };
-    t.emitters["bag_counts"] = [put_vec](const IGameState& s, AnyMap& m) {
-      const auto& sa = checked_cast<AzulS>(s);
-      put_vec(m, "bag_counts",
-              std::vector<int>(sa.bag_counts.begin(), sa.bag_counts.end()));
-    };
-    t.emitters["box_lid_counts"] = [put_vec](const IGameState& s, AnyMap& m) {
-      const auto& sa = checked_cast<AzulS>(s);
-      put_vec(m, "box_lid_counts",
-              std::vector<int>(sa.box_lid_counts.begin(), sa.box_lid_counts.end()));
-    };
-
-    // ---- appliers ----
-    auto get_int = [](const AnyMap& m, const char* key) -> int {
-      auto it = m.find(key);
-      return (it != m.end()) ? std::any_cast<int>(it->second) : 0;
-    };
-    auto get_bool = [](const AnyMap& m, const char* key) -> bool {
-      auto it = m.find(key);
-      return (it != m.end()) ? std::any_cast<bool>(it->second) : false;
-    };
-    auto get_iv = [](const AnyMap& m, const char* key) -> std::vector<int> {
-      auto it = m.find(key);
-      if (it == m.end()) return {};
-      if (it->second.type() == typeid(std::vector<int>)) {
-        return std::any_cast<std::vector<int>>(it->second);
-      }
-      if (it->second.type() == typeid(std::vector<std::any>)) {
-        const auto& av = std::any_cast<const std::vector<std::any>&>(it->second);
-        std::vector<int> out;
-        out.reserve(av.size());
-        for (const auto& x : av) {
-          if (x.type() == typeid(int)) out.push_back(std::any_cast<int>(x));
-        }
-        return out;
-      }
-      return {};
-    };
-
-    t.appliers["current_player"] = [get_int](IGameState& s, const AnyMap& m) {
-      checked_cast<AzulS>(s).current_player_ = get_int(m, "current_player");
-    };
-    t.appliers["first_player_next_round"] = [get_int](IGameState& s, const AnyMap& m) {
-      checked_cast<AzulS>(s).first_player_next_round = get_int(m, "first_player_next_round");
-    };
-    t.appliers["winner"] = [get_int](IGameState& s, const AnyMap& m) {
-      checked_cast<AzulS>(s).winner_ = get_int(m, "winner");
-    };
-    t.appliers["round_index"] = [get_int](IGameState& s, const AnyMap& m) {
-      checked_cast<AzulS>(s).round_index = get_int(m, "round_index");
-    };
-    t.appliers["terminal"] = [get_bool](IGameState& s, const AnyMap& m) {
-      checked_cast<AzulS>(s).terminal = get_bool(m, "terminal");
-    };
-    t.appliers["first_player_token_in_center"] = [get_bool](IGameState& s, const AnyMap& m) {
-      checked_cast<AzulS>(s).first_player_token_in_center =
-          get_bool(m, "first_player_token_in_center");
-    };
-    t.appliers["shared_victory"] = [get_bool](IGameState& s, const AnyMap& m) {
-      checked_cast<AzulS>(s).shared_victory = get_bool(m, "shared_victory");
-    };
-    t.appliers["scores"] = [get_iv](IGameState& s, const AnyMap& m) {
-      auto v = get_iv(m, "scores");
-      auto& sa = checked_cast<AzulS>(s);
-      for (int p = 0; p < NPlayers && p < static_cast<int>(v.size()); ++p) sa.scores[p] = v[p];
-    };
-    t.appliers["factories"] = [get_iv](IGameState& s, const AnyMap& m) {
-      auto v = get_iv(m, "factories_flat");
-      auto& sa = checked_cast<AzulS>(s);
-      for (size_t f = 0; f < sa.factories.size(); ++f) {
-        for (size_t c = 0; c < sa.factories[f].size(); ++c) {
-          const size_t idx = f * sa.factories[f].size() + c;
-          sa.factories[f][c] = (idx < v.size()) ? static_cast<std::uint8_t>(v[idx]) : 0;
-        }
-      }
-    };
-    t.appliers["center"] = [get_iv](IGameState& s, const AnyMap& m) {
-      auto v = get_iv(m, "center");
-      auto& sa = checked_cast<AzulS>(s);
-      for (size_t c = 0; c < sa.center.size(); ++c) {
-        sa.center[c] = (c < v.size()) ? static_cast<std::uint8_t>(v[c]) : 0;
-      }
-    };
-    t.appliers["player_line_len"] = [get_iv](IGameState& s, const AnyMap& m) {
-      auto v = get_iv(m, "player_line_len_flat");
-      auto& sa = checked_cast<AzulS>(s);
-      for (int p = 0; p < NPlayers; ++p) {
-        for (int r = 0; r < board_ai::azul::kRows; ++r) {
-          const int idx = p * board_ai::azul::kRows + r;
-          if (idx < static_cast<int>(v.size())) {
-            sa.players[p].line_len[r] = static_cast<std::uint8_t>(v[idx]);
-          }
-        }
-      }
-    };
-    t.appliers["player_line_color"] = [get_iv](IGameState& s, const AnyMap& m) {
-      auto v = get_iv(m, "player_line_color_flat");
-      auto& sa = checked_cast<AzulS>(s);
-      for (int p = 0; p < NPlayers; ++p) {
-        for (int r = 0; r < board_ai::azul::kRows; ++r) {
-          const int idx = p * board_ai::azul::kRows + r;
-          if (idx < static_cast<int>(v.size())) {
-            sa.players[p].line_color[r] = static_cast<std::int8_t>(v[idx]);
-          }
-        }
-      }
-    };
-    t.appliers["player_wall_mask"] = [get_iv](IGameState& s, const AnyMap& m) {
-      auto v = get_iv(m, "player_wall_mask_flat");
-      auto& sa = checked_cast<AzulS>(s);
-      for (int p = 0; p < NPlayers; ++p) {
-        for (int r = 0; r < board_ai::azul::kRows; ++r) {
-          const int idx = p * board_ai::azul::kRows + r;
-          if (idx < static_cast<int>(v.size())) {
-            sa.players[p].wall_mask[r] = static_cast<std::uint8_t>(v[idx]);
-          }
-        }
-      }
-    };
-    t.appliers["player_floor"] = [get_iv](IGameState& s, const AnyMap& m) {
-      auto v = get_iv(m, "player_floor_flat");
-      auto& sa = checked_cast<AzulS>(s);
-      for (int p = 0; p < NPlayers; ++p) {
-        for (int f = 0; f < 7; ++f) {
-          const int idx = p * 7 + f;
-          if (idx < static_cast<int>(v.size())) {
-            sa.players[p].floor[f] = static_cast<std::int8_t>(v[idx]);
-          }
-        }
-      }
-    };
-    t.appliers["player_floor_count"] = [get_iv](IGameState& s, const AnyMap& m) {
-      auto v = get_iv(m, "player_floor_count");
-      auto& sa = checked_cast<AzulS>(s);
-      for (int p = 0; p < NPlayers && p < static_cast<int>(v.size()); ++p) {
-        sa.players[p].floor_count = static_cast<std::uint8_t>(v[p]);
-      }
-    };
-    t.appliers["player_score"] = [get_iv](IGameState& s, const AnyMap& m) {
-      auto v = get_iv(m, "player_score");
-      auto& sa = checked_cast<AzulS>(s);
-      for (int p = 0; p < NPlayers && p < static_cast<int>(v.size()); ++p) {
-        sa.players[p].score = v[p];
-      }
-    };
-    t.appliers["bag_counts"] = [get_iv](IGameState& s, const AnyMap& m) {
-      auto v = get_iv(m, "bag_counts");
-      auto& sa = checked_cast<AzulS>(s);
-      for (int c = 0; c < kColors; ++c) {
-        sa.bag_counts[c] = (c < static_cast<int>(v.size())) ? v[c] : 0;
-      }
-    };
-    t.appliers["box_lid_counts"] = [get_iv](IGameState& s, const AnyMap& m) {
-      auto v = get_iv(m, "box_lid_counts");
-      auto& sa = checked_cast<AzulS>(s);
-      for (int c = 0; c < kColors; ++c) {
-        sa.box_lid_counts[c] = (c < static_cast<int>(v.size())) ? v[c] : 0;
-      }
-    };
-
-    return t;
-  }();
-  return io;
-}
 
 template <int NPlayers>
 PublicEventTrace extract_events(
@@ -543,33 +253,28 @@ PublicEventTrace extract_events(
     out.events.emplace_back("factory_refill", std::move(payload));
   }
 
-  // Public snapshot mirrors AzulState::hash_public_fields. Azul has no
-  // per-perspective private info, so the snapshot is literally the whole
-  // public state. The schema's declaration order drives
-  // `viz::emit_snapshot`; the SnapshotIO table below provides one
-  // emitter per all_public field — including `bag_counts` and
-  // `box_lid_counts`, which are now first-class public fields (only
-  // counts matter; tiles within a color are interchangeable).
+  // Public snapshot — walker-driven `viz::serialize_public` walks every
+  // all_public schema slot via `state.read_field_slot`. Azul has no
+  // per-perspective hidden info, so no partial-reveal sidecar is needed.
+  // `game_first_player` is fixed at game start, omitted from the hash,
+  // and skipped here.
   {
     AnyMap snap;
-    board_ai::viz::emit_snapshot(after, AzulState<NPlayers>::schema(),
-                                 azul_snapshot_io<NPlayers>(), snap,
-                                 /*skip=*/{"game_first_player"});
+    board_ai::viz::serialize_public(after, AzulState<NPlayers>::schema(), snap,
+                                    /*skip=*/{"game_first_player"});
     out.public_snapshot = std::move(snap);
   }
 
   return out;
 }
 
-// applier — writes public fields from truth snapshot. Schema-driven via
-// `viz::apply_snapshot`; per-field appliers live in `azul_snapshot_io`.
-// `bag_counts` and `box_lid_counts` are first-class schema fields and
-// flow through the same path.
+// applier — writes public fields from truth snapshot via walker-driven
+// `viz::apply_public` → `state.write_field_slot`.
 template <int NPlayers>
-void apply_public_state(IGameState& state, const AnyMap& snap) {
-  board_ai::viz::apply_snapshot(state, AzulState<NPlayers>::schema(),
-                                azul_snapshot_io<NPlayers>(), snap,
-                                /*skip=*/{"game_first_player"});
+void apply_public_state(IGameState& state, const AnyMap& snap,
+                        int /*receiver_seat*/) {
+  board_ai::viz::apply_public(state, AzulState<NPlayers>::schema(), snap,
+                              /*skip=*/{"game_first_player"});
 }
 
 }  // namespace azul_events

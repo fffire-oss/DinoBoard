@@ -15,7 +15,7 @@
 6. [GameRegistrar — 注册模式](#6-gameregistrar--注册模式)
 7. 配置文件已抽到独立文档：[CONFIG_REFERENCE.md](CONFIG_REFERENCE.md)（game.json + web.json）
 8. [构建集成](#8-构建集成)
-9. [训练可选特性](#9-训练可选特性)（Heuristic、TailSolver、Filter、AuxScorer、Adjudicator、Stats、Peek）
+9. [训练可选特性](#9-训练可选特性)（Heuristic、TailSolver、Filter、AuxScorer、Adjudicator、Stats、OpponentPool）
 10. [隐藏信息与 Belief Tracker（含物理随机性）](#10-隐藏信息与-belief-tracker含物理随机性)（ISMCTS 根采样、Encoder 信息屏障、物理随机性）
 11. Web 前端开发已独立成章，详见 [WEB_DEVELOPMENT_GUIDE.md](WEB_DEVELOPMENT_GUIDE.md)
 12. [测试](#12-测试)（自动化测试套件、运行方式、接入新游戏）
@@ -926,6 +926,34 @@ b.episode_stats_extractor = [](const IGameState&,
 
 这会在训练日志中产生 `turns=7.4` 这样的条目。
 
+### 9.7 Opponent Pool — 对手池（Frozen-pool fictitious self-play）
+
+**用途**：缓解 mirror selfplay 的策略坍缩 / 对最近自己过拟合，特别是在多人隐藏信息游戏（LL / Coup）上策略博弈容易收敛到 latest 互相能 exploit 的窄解。
+
+**这是纯训练循环参数，不是 GameBundle 字段**——所有游戏共享同一份 Python pipeline 实现（`training/pipeline.py::run_selfplay_batch`），不需要在 `<g>_register.cpp` 注册任何东西。开关写在 `game.json::training`：
+
+```json
+"training": {
+  "opponent_pool_enabled": true,        // 不写 / false → 全 mirror（默认）
+  "opponent_pool_self_ratio": 0.5       // self worker 比例 ∈ [0, 1]
+}
+```
+
+**机制**：每步 W = `episodes_per_step` 个 worker 切两堆：
+
+- `n_self = ceil(W * self_ratio)`：双方都用 `model_latest.onnx`，**所有样本入 buffer**（旧行为）。
+- `n_pool = W - n_self`：N 人游戏里随机抽 `latest_seat ∈ [0, N)`，那一座位用 latest，**其他 N-1 个座位都用同一个 `model_step_*.onnx`**（每步重新 `glob` 池）；**只保留 `sample.player == latest_seat` 的样本**——其他座位被 frozen 旧网络驱动，留下来训练等于"对手训练自己"。
+
+**池为空**（步 1 第一份保存点还没存）→ 自动退化全 mirror，**不报错**（按设计：池真的空，mirror 是唯一正确选择）。
+
+**消融建议**：
+
+- 默认关掉，跟旧训练完全等价。
+- 怀疑某个游戏在 mirror 下策略坍缩 → 打开 `enabled=true, self_ratio=0.5` 重训，对比 gating-vs-best 曲线和 vs heuristic_free 平台值。
+- `self_ratio=0.0` 全 pool / `1.0` 全 mirror 是两个极端，平时不用。
+
+详细字段语义见 [CONFIG_REFERENCE §opponent-pool对手池](CONFIG_REFERENCE.md#opponent-pool对手池)。
+
 ## 10. 隐藏信息与 Belief Tracker（含物理随机性）
 
 > **算法深入**：DAG 节点共享、UCT2、完整 search_root 流程、debug 指标——独立文档 [`ALGORITHM_OVERVIEW.md`](../../ALGORITHM_OVERVIEW.md)。本节讲开发者接口。
@@ -1265,7 +1293,7 @@ ISMCTS 根采样 + encoder 信息屏障在双人游戏中完全自洽；多人�
 3. Encoder 接受 `MaskedState`——viz=0 槽位由 framework 替换为 `kPlaceholder`，encoder 必须分支处理 placeholder（§10.7），不要查询 viz、不要绕过 mask 读 truth
 4. **在 `<game>_state.cpp` 用 `viz::declare_field` 声明每个 state 字段的 name + data shape + base viz tensor**（`all_public` / `owner_only_first_axis` / `all_hidden`），实现 `hash_field_slot` / `read_field_slot` / `write_field_slot` / `mask_field_slot` 四个 per-slot dispatcher（§10.3b）。框架的 walker 按 schema 顺序遍历每个 slot——`viz[..., perspective]=1` 时调 `hash_field_slot` 把 truth mix 进 hash，`viz[..., perspective]=0` 时 mix `kPlaceholder` 哨兵——自动得到 `state_hash_for_perspective(p)` 作 DAG 节点键
 5. **`reset_with_seed` 第一行调 `reset_step_count_base()` 把 step_count_ 归零**。step_count_ 由框架的 `IGameRules` wrapper 在 `do_action_fast_impl` / `do_action_deterministic_impl` 前自动 +1，在 `undo_action_impl` 后自动 -1，**作者既看不到 step_count_ 也无法忘记 / 双 bump**（字段 protected + IGameRules friend）。step_count_ 单调递增保证 DAG 结构性 acyclic（回归测试见 `tests/framework/test_step_count_strict_increase.py`）
-6. **实现 message-driven snapshot 路径**：要么用 walker（`viz::serialize_public` / `viz::apply_public`，全 schema 字段自动同步），要么用 SnapshotIO（`emit_snapshot` / `apply_snapshot` 手写），把 GT 端的公开 state 序列化为 `AnyMap public_snapshot`，AI session 端 wholesale 替换。tracker 需要的私有/对手知识增量通过 `events` 列表（`PublicEventTrace.events`）增量传递——一份 list、按 producer 顺序、不区分动作前后。详见 §14 事件协议章节（或直接参考 `games/splendor/splendor_register.cpp` walker 路径，`games/loveletter/loveletter_register.cpp` SnapshotIO 路径）
+6. **实现 message-driven snapshot 路径**：统一用 walker——`viz::serialize_public` 走全部 all_public schema 字段，`viz::serialize_partial_reveals` 走那些 base viz 不是 all_public、但 runtime viz 对 perspective 为 1 的 slot（owner-only hand、reveal_slot_to 翻给某个 viewer 的牌、被 reveal_slot 翻给所有人的影响牌等）。session 侧 `viz::apply_public` + `viz::apply_partial_reveals` 反向写回，partial-reveal applier 先把 receiver 的 viz 在每个 non-all_public 字段上 reset 回 schema base，再按 sidecar 重新 reveal——这样 truth 端的 `reset_to_base`（轮间洗牌、Prince 弃牌等）在 observer 侧自动同步。tracker 需要的私有/对手知识增量通过 `events` 列表（`PublicEventTrace.events`）增量传递。详见 §14 事件协议章节（参考 `games/splendor/splendor_register.cpp` 纯 all_public 形态、`games/loveletter/loveletter_register.cpp` 加 partial-reveal 形态、`games/azul/azul_register.cpp` 全 all_public 但需要 `skip` 参数的形态）
 7. 在 `make_<game>` 里注册 `belief_tracker` + `public_event_extractor` + `public_state_applier`(开局观察由框架 walker 自动处理,不再需要 per-game extractor/applier)
 8. **验证测试**：
    - `tests/framework/test_ai_api_separation.py::test_full_game_via_api[<game>]` 必须过（API 契约）

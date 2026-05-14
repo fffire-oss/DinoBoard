@@ -120,7 +120,7 @@ def test_snapshot_applier_round_trip_at_each_ply(game_id):
             step["action"], events=step["events"],
             public_snapshot=step["public_snapshot"])
         snap = step["public_snapshot"]
-        obs_gs.apply_public_snapshot(snap)
+        obs_gs.apply_public_snapshot(snap, perspective)
 
         obs_hash = obs_gs.state_hash_for_perspective(perspective)
         assert obs_hash == truth_snapshots[i][perspective], (

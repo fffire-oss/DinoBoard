@@ -20,49 +20,38 @@ AI 决策 + Web 对战"做成端到端闭环、并在 LLM 协助开发下保持�
 三条 mechanism 服务一条动机：**让规则引擎和 AI 决策路径在 LLM 协助
 开发下也对人类玩家可信**。
 
-### 1. Per-field viz tensor
+### 1. State 字段级可见性标记
 
-每个游戏在 `<game>_visibility.cpp` 声明字段名 + 数据 shape + base viz
-tensor。`viz[..., p] = 1` 表示玩家 p 现在能看见这个槽位的真值。
-rules 是 viz 唯一 writer——`do_action_fast` 里改业务字段的同时调
-`reveal_slot` / `reveal_slot_to` / `reset_to_base` 维护 viz。
+每个游戏在可见性声明文件里把所有数据按字段拆开，逐字段写明：字段
+名、形状、以及一份和字段同形状的"谁能看见"标记（每个槽位对每
+个玩家一个比特）。规则代码是这份标记的**唯一**写入者——推进游
+戏状态时同步翻面、揭示给特定玩家、或重置回初始可见性。
 
-`make_masked_state(state, schema, perspective)` 走
-schema 派一份 MaskedState，三家消费者（snapshot / hash / encoder
-tensor）共享同一对象——viz=0 槽位结构性读到 placeholder。"对哪个
-玩家可见"这件事变成 **state 字段**，不是 observer 实现内部的代码逻
-辑。
+框架按这份声明走一遍，对每个槽位决定"对当前观察者该露还是该藏"，
+得到一份**遮罩后的观察视图**，由三家消费者共用：发给客户端的公开
+快照、MCTS 节点哈希、神经网络输入张量。藏起来的槽位结构性读到占
+位哨兵——三家都不可能编入真值。"哪个槽位对哪个玩家可见"这件事
+变成 **state 字段**，不是 observer 实现内部的代码逻辑。这条形状被
+强制成所有游戏共享的基类设施，可以集中跑一组 CI 测试覆盖所有游戏：
+作者写错的 round-trip / hash scope / 公开快照对齐立即被抓住。
 
-跟 OpenSpiel Observer API 比，这条不是 OpenSpiel 做不到的事——他们
-真实游戏（Gin Rummy 等）也用 visibility bitmap——只是 OpenSpiel 不
-强制这种形状，作者写错了 round-trip 测试才会抓到；DinoBoard 把它
-强制成所有游戏共享的基类设施，可以集中跑一组 CI 测试覆盖所有游戏。
+### 2. Ground truth 与 AI 物理分离
 
-### 2. GT 与 AI session 物理分离
-
-selfplay / arena / web / API 都持一份 truth 状态用来推进游戏，**额
-外**给每个 perspective 一份 session state。AI 决策路径（belief
-tracker / encoder / MCTS）只读 session，物理上没把 truth 指针递进
-去。`IBeliefTracker::randomize_unseen(state, observer, rng)` 接口签
-名里没有 truth；MCTS root state 是 `per_seat_states[acting_player]`，
-不是 truth。
-
-OpenSpiel 上做 per-seat runner 也完全可行——只是 `ResampleFromInfostate`
-是 `State` 成员，作者**有能力**读 truth，是 contractual safety；
-DinoBoard 的接口里不传，是 structural safety。差别在 LLM / 经验不
-足的作者身上才显现，对自觉作者接近 0。
+Ground truth持一份完整真相状态用来推进游戏，**额
+外**给每个玩家视角一份独立的会话状态。AI 决策路径（belief 追踪、
+特征编码、MCTS 搜索）只读会话状态，物理上没有任何接口能拿到真相
+指针。belief 追踪器的"按观察记忆采一个完整世界"接口只接受观察者
+身份和随机源、不接受真相状态；MCTS 的根节点状态是当前行动玩家自
+己的会话状态，不是真相。这是 structural safety，不是 contractual safety：作者**没有能力**
+读真相，不是"被规劝不要读"。差别在 LLM / 经验不足的作者身上才显
+现，对自觉作者接近 0。
 
 ### 3. 强制 Web 前端
 
 每款游戏接进来必须有可玩 web 前端、可视化 AI 决策、回放工具。这不
 是 UI 美学，是 AI 行为可信度的最终判据——training metric（win rate /
-loss curve / policy entropy）正常但 AI 在第 7 回合明显送子，这种 bug
+loss curve / policy entropy）正常但 AI 在某个回合明显送子，这种 bug
 命令行看不出来，**人类对战 30 秒能感觉到**。
-
-研究路线用 exploitability / NashConv 做 AI 验证比 web 对战更严格更
-可复现——这是 OpenSpiel 的路线；DinoBoard 的目标用户不发 paper、需
-要"做出来给真人玩、看 AI 行为对不对劲"，所以选 web 闭环作为最后一
-道防线。
 
 ---
 
@@ -70,40 +59,19 @@ loss curve / policy entropy）正常但 AI 在第 7 回合明显送子，这种 
 
 ISMCTS over DAG：
 
-- **Root determinization**：每个 sim 持独立 RNG；root 从 belief
-  tracker 采一个完整世界，descent 中同一个 sim_rng 还会被
-  `do_action_fast` 消费处理物理随机（如 Azul 工厂 refill）。无
-  chance 节点——物理随机和信息不对称在搜索里统一处理
-- **DAG 而非 tree**：`(state hash, current_player)` keying，同一 info
-  set 从不同路径到达共享节点；UCT2（Childs 2008）多入边修正避免
-  over-exploration
-- **PUCT 选择**：AlphaZero 风格 prior 引导，神经网络策略头作为初始
+- **根节点确定化**：每次仿真持一份独立的随机源；根节点从 belief 追
+  踪器采一个完整世界，往下推进时同一份随机源继续驱动规则代码处理
+  物理随机（如 Azul 工厂补抽）。无机会节点——物理随机和信息不对
+  称在搜索里统一处理
+- **DAG 而非 tree**：节点键是「状态哈希 + 当前行动玩家」，同一信
+  息集从不同路径到达共享节点；用 UCT2（Childs 2008）的多入边修正
+  避免过度探索
+- **PUCT 选择**：AlphaZero 风格的先验引导，神经网络策略头作为初始
   动作权重
-- **残局 tail solver**：MCTS 前用 alpha-beta 尝试精确求解，proven
-  win 时跳过 MCTS
+- **残局求解器**：MCTS 之前先用 alpha-beta 尝试精确求解，已证明必
+  胜时直接跳过 MCTS
 
 详见 [ALGORITHM_OVERVIEW.md](ALGORITHM_OVERVIEW.md)。
-
----
-
-## Observation-only AI API
-
-```
-POST /ai/sessions                  → 创建 AI 会话
-POST /ai/sessions/{id}/observe     → 告诉 AI 发生了什么(action_id + 公开事件)
-POST /ai/sessions/{id}/decide      → 返回最优动作
-DELETE /ai/sessions/{id}           → 结束会话
-```
-
-调用方不需要共享 game state 代码、不需要嵌入 C++ 引擎。把自己游戏
-的事件翻译成 action_id + 公开事件即可——GT 端可以是任意来源（外部
-API、物理桌游）。这是上面"GT/AI session 物理分离"架构的对外接口实
-例化。Love Letter 上的统计回归（`test_api_mcts_policy_invariance`）
-守护 API 路径的 MCTS 访问分布跟 selfplay 在同一观察轨迹上保持接近；
-Splendor 因 replay / `self_reserve_deck` 已知问题暂未纳入，Web 路径
-不被该测试直接覆盖。
-
-详见 [docs/guide/AI_API.md](docs/guide/AI_API.md)。
 
 ---
 
@@ -119,8 +87,8 @@ MCTS 强度被拆成六个命名 profile（selfplay / arena / eval 在
 `game.json`，web_expert / web_casual / analysis 在 `web.json`），不
 改代码。
 
-可选训练增强：启发式引导（三段式 schedule）、辅助分数信号、动作过
-滤、温度 schedule、Dirichlet 噪声、超时裁决。详见
+可选训练增强：启发式引导、辅助分数信号、动作过
+滤、温度 schedule、Dirichlet 噪声。详见
 [FEATURES_OVERVIEW.md](FEATURES_OVERVIEW.md) §训练。
 
 ---
@@ -197,6 +165,20 @@ open http://localhost:8000
 6 款游戏、三档难度、多人座位选择、悔棋、智能提示、录像回放 + 掉分
 分析。
 
+### 仅观察的 AI API
+
+```
+POST /ai/sessions                  → 创建 AI 会话
+POST /ai/sessions/{id}/observe     → 告诉 AI 发生了什么（动作 id + 公开事件）
+POST /ai/sessions/{id}/decide      → 返回最优动作
+DELETE /ai/sessions/{id}           → 结束会话
+```
+
+调用方不需要共享游戏状态代码、不需要嵌入 C++ 引擎。把自己游戏的事
+件翻译成动作 id + 公开事件即可——真相端可以是任意来源（外部 API、
+物理桌游）。这是上面"Ground truth 与 AI 物理分离"架构的对外接口实
+例化。详见 [docs/guide/AI_API.md](docs/guide/AI_API.md)。
+
 ---
 
 ## 新游戏接入
@@ -222,12 +204,10 @@ scope / belief 等价 / 公开快照 round-trip）—— LLM 写错了立刻被�
 
 ## 文档
 
-- [FEATURES_OVERVIEW.md](FEATURES_OVERVIEW.md) —— 框架能力速查
-- [ALGORITHM_OVERVIEW.md](ALGORITHM_OVERVIEW.md) —— schema / walker /
-  MaskedState / RNG / encoder / tracker / belief / ISMCTS DAG 数据流
-  契约
+- [FEATURES_OVERVIEW.md](FEATURES_OVERVIEW.md) —— 框架能力概览
+- [ALGORITHM_OVERVIEW.md](ALGORITHM_OVERVIEW.md) —— 核心算法概览
 - [docs/FRAMEWORK_DESIGN_RATIONALE.md](docs/FRAMEWORK_DESIGN_RATIONALE.md) ——
-  立项动机 / 不适合谁 / 与 OpenSpiel 的取舍对比
+  立项动机 / 与 OpenSpiel 的取舍对比
 - [docs/guide/GAME_DEVELOPMENT_GUIDE.md](docs/guide/GAME_DEVELOPMENT_GUIDE.md) ——
   添加新游戏的单一权威来源
 - [docs/guide/NEW_GAME_TEST_GUIDE.md](docs/guide/NEW_GAME_TEST_GUIDE.md) ——
@@ -244,7 +224,7 @@ scope / belief 等价 / 公开快照 round-trip）—— LLM 写错了立刻被�
 | 游戏 | 2p | 3p | 4p |
 |------|----|----|----|
 | 井字棋 | 已训练 | — | — |
-| Quoridor | 已训练 | — | — |
+| 步步为营 | 已训练 | — | — |
 | 璀璨宝石 | 已训练 | **未训练（随机初始化）** | **未训练（随机初始化）** |
 | 花砖物语 | 已训练 | **未训练（随机初始化）** | **未训练（随机初始化）** |
 | 情书 | 已训练 | 已训练 | **未训练（随机初始化）** |

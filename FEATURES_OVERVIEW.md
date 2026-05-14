@@ -186,6 +186,7 @@ evaluator 在加载到 2p 标量 value head 时自动按零和展开为 2 维；
 | 动作过滤 | `training_action_filter` 裁剪垃圾动作，概率衰减到 0；`legal_mask` 始终为完整集 |
 | 温度 schedule | 分段线性衰减 |
 | Dirichlet 噪声 | 根节点注入，可限制前 N 步 |
+| 对手池 | `opponent_pool_enabled` + `opponent_pool_self_ratio`：每步一部分 worker 把对手换成历史 `model_step_*.onnx`，仅保留 latest 座位的样本，缓解 mirror selfplay 的策略坍缩。默认关闭，详见 [CONFIG_REFERENCE](docs/guide/CONFIG_REFERENCE.md#opponent-pool对手池) |
 | 超时裁决 | `adjudicator` 在 `max_game_plies` 后判胜负 |
 
 **评估**：每 `--eval-every` 步触发，含 benchmark eval

@@ -1,6 +1,6 @@
 {
   "game_id": "azul",
-  "display_name": "花砖物语",
+  "display_name": "\u82b1\u7816\u7269\u8bed",
   "display_name_en": "Azul",
   "has_web": true,
   "players": {
@@ -15,7 +15,12 @@
       "simulations": 400,
       "c_puct": 1.4,
       "temperature": 1.0,
-      "temperature_schedule": {"enabled": false, "initial": 1.0, "final": 0.1, "decay_plies": 0},
+      "temperature_schedule": {
+        "enabled": false,
+        "initial": 1.0,
+        "final": 0.1,
+        "decay_plies": 0
+      },
       "dirichlet_alpha": 0.15,
       "dirichlet_epsilon": 0.25,
       "dirichlet_on_first_n_plies": 30,

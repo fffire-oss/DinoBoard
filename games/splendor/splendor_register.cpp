@@ -365,7 +365,8 @@ PublicEventTrace extract_events(
 // mutate_persistent block. Hidden fields (face-down reserved ids, deck
 // contents) are left for randomize_unseen to fill.
 template <int NPlayers>
-void apply_public_state(IGameState& state, const AnyMap& snap) {
+void apply_public_state(IGameState& state, const AnyMap& snap,
+                        int /*receiver_seat*/) {
   auto& s = board_ai::checked_cast<SplendorState<NPlayers>>(state);
 
   // Schema-driven public fields.

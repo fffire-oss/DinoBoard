@@ -1,6 +1,6 @@
 {
   "game_id": "loveletter",
-  "display_name": "情书",
+  "display_name": "\u60c5\u4e66",
   "display_name_en": "Love Letter",
   "has_web": true,
   "players": {
@@ -15,9 +15,14 @@
       "simulations": 200,
       "c_puct": 1.4,
       "temperature": 1.0,
-      "temperature_schedule": {"enabled": true, "initial": 1.0, "final": 0.1, "decay_plies": 10},
+      "temperature_schedule": {
+        "enabled": true,
+        "initial": 1.0,
+        "final": 0.1,
+        "decay_plies": 10
+      },
       "dirichlet_alpha": 0.5,
-      "dirichlet_epsilon": 0.10,
+      "dirichlet_epsilon": 0.1,
       "dirichlet_on_first_n_plies": 5,
       "opponent_selection": "prior",
       "tail_solve_enabled": false,
@@ -30,7 +35,12 @@
     "arena": {
       "inherits": "selfplay",
       "temperature": 0.0,
-      "temperature_schedule": {"enabled": false, "initial": 0.0, "final": 0.0, "decay_plies": 0},
+      "temperature_schedule": {
+        "enabled": false,
+        "initial": 0.0,
+        "final": 0.0,
+        "decay_plies": 0
+      },
       "dirichlet_epsilon": 0.0,
       "dirichlet_on_first_n_plies": 0
     },
@@ -48,7 +58,9 @@
     "heuristic_guidance_steps": 200,
     "heuristic_guidance_initial_ratio": 1.0,
     "heuristic_guidance_temperature": 1.5,
-    "eval_benchmarks": ["heuristic_free"]
+    "eval_benchmarks": [
+      "heuristic_free"
+    ]
   },
   "network": {
     "type": "mlp",

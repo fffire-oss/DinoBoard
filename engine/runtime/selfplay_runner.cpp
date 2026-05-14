@@ -15,7 +15,7 @@ SelfplayEpisodeResult run_selfplay_episode(
     IGameState& initial_state,
     const IGameRules& rules,
     const IStateValueModel& value_model,
-    const search::IPolicyValueEvaluator& evaluator,
+    PolicyEvaluatorFactory evaluator_for_player,
     const SelfplayConfig& config,
     std::uint64_t episode_seed,
     std::vector<IBeliefTracker*> per_perspective_trackers,
@@ -188,7 +188,7 @@ SelfplayEpisodeResult run_selfplay_episode(
           truth_before, chosen, truth_after, p);
       seat.begin_step_for_session_observe();
       if (public_state_applier && !evt_p.public_snapshot.empty()) {
-        public_state_applier(seat, evt_p.public_snapshot);
+        public_state_applier(seat, evt_p.public_snapshot, p);
       }
       // tracker.observe_public_event is called in the per_perspective loop
       // immediately below. No hidden-slot freshening — sim entry will
@@ -368,7 +368,10 @@ SelfplayEpisodeResult run_selfplay_episode(
     search::NetMctsStats stats{};
     const std::uint64_t mcts_seed = board_ai::rng::derive_subseed(
         episode_seed, "selfplay.mcts", static_cast<std::uint64_t>(ply));
-    mcts.search_root(ai_view, effective_rules, value_model, evaluator, &stats, mcts_seed);
+    const search::IPolicyValueEvaluator& seat_evaluator =
+        evaluator_for_player(player);
+    mcts.search_root(ai_view, effective_rules, value_model, seat_evaluator,
+                     &stats, mcts_seed);
 
     if (stats.tail_solve_attempted) {
       result.tail_solve_attempts += 1;

@@ -51,6 +51,7 @@ register({
     'sidebar.btn_load_replay': '加载录像',
     'sidebar.toggle_show_replay': '对局中显示录像栏',
     'sidebar.toggle_show_winrate': '显示胜率预估',
+    'sidebar.toggle_reveal_hidden_replay': '录像中显示对手隐藏信息',
     'sidebar.replay_no_frames': '录像文件中没有 frames 或 action_history',
     'sidebar.replay_parse_error': '无法解析 JSON: {msg}',
 
@@ -182,6 +183,7 @@ register({
     'sidebar.btn_load_replay': 'Load replay',
     'sidebar.toggle_show_replay': 'Show replay panel during play',
     'sidebar.toggle_show_winrate': 'Show win-rate estimate',
+    'sidebar.toggle_reveal_hidden_replay': 'Reveal opponent hidden info in replay',
     'sidebar.replay_no_frames': 'Replay file has no frames or action_history',
     'sidebar.replay_parse_error': 'Cannot parse JSON: {msg}',
 

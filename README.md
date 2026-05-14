@@ -24,45 +24,39 @@ that stays trustworthy under LLM-assisted development.
 Three mechanisms serve one motivation: **make the rules engine and
 AI decision path trustworthy to human players even under vibe coding**.
 
-### 1. Per-field viz tensor
+### 1. Per-field visibility tagging on state
 
-Each game declares its fields in `<game>_visibility.cpp` — name +
-data shape + base viz tensor. `viz[..., p] = 1` means player `p` can
-currently see the slot's truth. Rules are the sole writer of viz —
-`do_action_fast` updates business fields and calls `reveal_slot` /
-`reveal_slot_to` / `reset_to_base` alongside.
+Each game declares its data field by field in a visibility manifest:
+field name, shape, and a same-shape "who can see this" tag (one bit
+per slot per player). The rules code is the **sole** writer of these
+tags — when it advances state it also flips slots face-up, reveals
+specific slots to specific players, or resets a slot back to its
+base visibility.
 
-`make_masked_state(state, schema, perspective)` walks
-the schema once and emits a MaskedState shared by three consumers
-(snapshot serialization / hash / encoder tensor) — viz=0 slots
-structurally read as `kPlaceholder`. "Which slot is visible to whom"
-becomes a **state field**, not logic buried inside an observer
-implementation.
+The framework walks this manifest once and, for each slot, decides
+"hide or show, given who's looking," producing a **masked observation
+view** shared by three consumers: the public snapshot sent to the
+client, the MCTS node hash, and the neural-network input tensor.
+Hidden slots structurally read as a placeholder sentinel — none of
+the three can ever encode the true value. "Which slot is visible to
+whom" becomes a **field of state**, not logic hiding inside some
+observer implementation. Forcing every game through this same
+base-class facility means one CI suite covers all of them at once:
+authors who break round-trip / hash scope / public-snapshot
+alignment are caught immediately.
 
-Compared with OpenSpiel's Observer API: this isn't something
-OpenSpiel can't do — its real games (Gin Rummy and others) also use
-visibility bitmaps — only that OpenSpiel doesn't enforce this shape;
-authors who get it wrong are caught by round-trip tests in their own
-repo. DinoBoard pushes it down to a base-class facility shared by
-every game; a small carrier set of games (currently
-`quoridor / azul / loveletter`, see `tests/conftest.py
-::FRAMEWORK_GAMES`) is matrix-driven through the framework
-invariants in CI, while per-game behavioural assertions live in
-`tests/<game>/test_checklist.py`.
+### 2. Physical separation between ground truth and AI
 
-### 2. Physical separation between GT and AI session
-
-selfplay / arena / web / API all hold one truth state to advance the
-game, **plus** one session state per perspective. The AI decision
-path (belief tracker / encoder / MCTS) reads only the session — the
-truth pointer is never handed to it. `IBeliefTracker::randomize_unseen(state, observer, rng)`
-has no `truth` parameter; the MCTS root state is
-`per_seat_states[acting_player]`, never truth.
-
-OpenSpiel can do per-seat runners too — only that
-`ResampleFromInfostate` is a member of `State`, where the author
-**has the ability** to read truth (contractual safety). DinoBoard's
-interface signature doesn't pass truth in (structural safety). The
+Ground truth holds one full truth state for advancing the game,
+**plus** one independent session state per player perspective. The
+AI decision path (belief tracking, feature encoding, MCTS search)
+reads only the session state — there is physically no interface
+through which it can obtain a truth pointer. The belief tracker's
+"sample a complete world from observation memory" entry point takes
+only an observer identity and a randomness source — no truth state;
+the MCTS root state is the acting player's own session state, never
+truth. This is **structural** safety, not contractual: the author
+**has no ability** to read truth, not "is asked nicely not to." The
 gap shows up under LLM / inexperienced-author conditions; for
 careful authors it's near zero.
 
@@ -70,16 +64,10 @@ careful authors it's near zero.
 
 Every game must ship with a playable web frontend, AI-decision
 visualization, and replay tools. This isn't UI polish — it's the
-final yardstick for AI behavior. Training metrics (win rate / loss /
-policy entropy) can look fine while the AI throws a winning card on
-turn 7 — that bug is invisible on the command line, **but a human
-spots it within 30 seconds of play**.
-
-Research-track validation uses exploitability / NashConv, which is
-more rigorous and reproducible than human play — that's OpenSpiel's
-route. DinoBoard's target users don't publish papers and need to
-"actually play it and see whether the AI feels off," so the web loop
-is the last line of defense.
+final yardstick for AI behavior. Training metrics (win rate, loss
+curves, policy entropy) can look fine while the AI obviously throws
+a winning move at some point — that bug is invisible on the command
+line, **but a human spots it within 30 seconds of play**.
 
 ---
 
@@ -87,47 +75,22 @@ is the last line of defense.
 
 ISMCTS over a DAG:
 
-- **Root determinization**: each sim holds an independent RNG; root
-  draws a complete world from the belief tracker, and descent
-  continues to consume that same RNG only for `do_action_fast`
-  physical draws (e.g. Azul factory refill). No chance nodes —
-  physical randomness and information asymmetry are handled
-  uniformly inside search
-- **DAG, not tree**: keyed by `(state hash, current_player)` — the
-  same info set reached through different paths shares a node;
-  UCT2 (Childs 2008) corrects the multi-incoming-edge
-  over-exploration bias
+- **Root determinization**: each simulation holds an independent
+  randomness source; at the root, the belief tracker samples a
+  complete world, and as the simulation descends, that same source
+  continues to drive the rules code through any physical randomness
+  (e.g. Azul factory refill). No chance nodes — physical randomness
+  and information asymmetry are handled uniformly inside search
+- **DAG, not a tree**: nodes are keyed by "state hash + acting
+  player," so the same information set reached through different
+  paths shares a node; UCT2 (Childs 2008) corrects the
+  multi-incoming-edge over-exploration bias
 - **PUCT selection**: AlphaZero-style prior guidance, with the
   policy head supplying initial action weights
-- **Endgame tail solver**: alpha-beta tries to solve before MCTS;
-  proven wins skip MCTS
+- **Endgame solver**: alpha-beta tries to solve before MCTS;
+  proven wins skip MCTS entirely
 
 See [ALGORITHM_OVERVIEW.md](ALGORITHM_OVERVIEW.md).
-
----
-
-## Observation-only AI API
-
-```
-POST /ai/sessions                  → create an AI session
-POST /ai/sessions/{id}/observe     → tell the AI what happened (action_id + public events)
-POST /ai/sessions/{id}/decide      → return the chosen action
-DELETE /ai/sessions/{id}           → end the session
-```
-
-Callers don't need to share game-state code or embed the C++ engine
-— translating their own events into action_id + public events is
-enough. The GT side can be anything (an external API, a physical
-tabletop). This is the public-interface instantiation of the "GT/AI
-session physical separation" architecture above. A statistical
-regression on Love Letter
-(`test_api_mcts_policy_invariance`) checks that the API path's MCTS
-visit distribution stays close to selfplay over the same observation
-trace; Splendor is currently excluded due to a known
-replay/`self_reserve_deck` interleave issue, and the Web path is not
-directly covered by that test.
-
-See [docs/guide/AI_API.md](docs/guide/AI_API.md).
 
 ---
 
@@ -137,16 +100,15 @@ See [docs/guide/AI_API.md](docs/guide/AI_API.md).
 selfplay → collect samples → train net → gating eval → update best model → loop
 ```
 
-selfplay / arena / search / solver run entirely in C++; Python only
-runs the training loop and the network update. Config-driven — training
-loop hyperparameters live in `games/<game>/config/game.json`; MCTS
-strength is split across six named profiles (selfplay / arena / eval in
-`game.json`, web_expert / web_casual / analysis in `web.json`). No code
-edits per training run.
+Selfplay, arena, search, and the solver run entirely in C++; Python
+only runs the training loop and the network update. Config-driven —
+training-loop hyperparameters live in `games/<game>/config/game.json`,
+and MCTS strength is split across six named profiles (selfplay /
+arena / eval in `game.json`, web_expert / web_casual / analysis in
+`web.json`). No code edits per training run.
 
-Optional training boosts: heuristic guidance (three-stage schedule),
-auxiliary score signal, action filtering, temperature schedule,
-Dirichlet noise, timeout adjudication. See
+Optional training boosts: heuristic guidance, auxiliary score signal,
+action filtering, temperature schedule, Dirichlet noise. See
 [FEATURES_OVERVIEW.md](FEATURES_OVERVIEW.md) § Training.
 
 ---
@@ -167,10 +129,10 @@ force-fit the following (see
    OpenSpiel `hanabi` / `bargaining`
 5. Single-player games (Solitaire, 2048) — use intrinsic-motivation
    algorithms
-6. Closed-eye phases (Werewolf nights, secret-write actions) — viz
-   nested on top of hidden state is a higher-order uncertainty that
-   collides head-on with this framework's "viz is a public rule"
-   assumption
+6. Closed-eye phases (Werewolf nights, secret-write actions) —
+   visibility nested on top of hidden state is a higher-order
+   uncertainty that collides head-on with this framework's
+   "visibility is a public rule" assumption
 
 ---
 
@@ -233,6 +195,22 @@ open http://localhost:8000
 Six games, three difficulty tiers, multi-player seat selection,
 undo, smart hints, replay with per-move loss analysis.
 
+### Observation-only AI API
+
+```
+POST /ai/sessions                  → create an AI session
+POST /ai/sessions/{id}/observe     → tell the AI what happened (action id + public events)
+POST /ai/sessions/{id}/decide      → return the chosen action
+DELETE /ai/sessions/{id}           → end the session
+```
+
+Callers don't need to share game-state code or embed the C++ engine
+— translating their own events into action id + public events is
+enough. The ground-truth side can be anything (an external API, a
+physical tabletop). This is the public-interface instantiation of
+the "ground truth and AI physically separated" architecture above.
+See [docs/guide/AI_API.md](docs/guide/AI_API.md).
+
 ---
 
 ## Adding a new game
@@ -250,10 +228,10 @@ Typical workflow:
 5. Sign off in the web UI
 
 The flow works because every integration point has a **mechanically
-verifiable contract** (schema enforcement, signatures locked to
-`const MaskedState&`, CI covering viz misplacement / hash scope /
-belief equivalence / public-snapshot round-trip) — when the LLM
-gets something wrong the test catches it immediately and the loop
+verifiable contract** (schema enforcement, signatures locked to a
+masked observation view, CI covering visibility misplacement / hash
+scope / belief equivalence / public-snapshot round-trip) — when the
+LLM gets something wrong the test catches it immediately and the loop
 self-repairs. Azul was integrated this way: drop the rulebook, kick
 off the LLM, run one round of iteration, end up with a trainable
 and playable implementation.
@@ -264,9 +242,8 @@ and playable implementation.
 
 - [FEATURES_OVERVIEW.md](FEATURES_OVERVIEW.md) — framework
   capabilities at a glance
-- [ALGORITHM_OVERVIEW.md](ALGORITHM_OVERVIEW.md) — schema / walker
-  / MaskedState / RNG / encoder / tracker / belief / ISMCTS DAG
-  data-flow contract
+- [ALGORITHM_OVERVIEW.md](ALGORITHM_OVERVIEW.md) — core algorithm
+  walkthrough
 - [docs/FRAMEWORK_DESIGN_RATIONALE.md](docs/FRAMEWORK_DESIGN_RATIONALE.md) —
   motivation, who DinoBoard isn't for, and the trade-off comparison
   with OpenSpiel

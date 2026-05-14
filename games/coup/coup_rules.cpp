@@ -1,22 +1,43 @@
 #include "coup_rules.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <random>
+#include <stdexcept>
+
+#include "../../engine/core/viz_runtime.h"
 
 namespace board_ai::coup {
 
 namespace {
 
-CharId draw_from_deck(std::vector<CharId>& deck, std::mt19937_64& rng) {
-  if (deck.empty()) return -1;
-  std::uniform_int_distribution<size_t> dist(0, deck.size() - 1);
-  const size_t idx = dist(rng);
-  const CharId card = deck[idx];
-  if (idx + 1 < deck.size()) {
-    deck[idx] = deck.back();
+// Weighted draw from `deck_count[]` multiset; decrements both the
+// chosen entry and `deck_size`. Mirrors LL's draw_from_count.
+CharId draw_from_count(std::array<std::int8_t, kCharacterCount>& count,
+                       std::int8_t& deck_size,
+                       std::mt19937_64& rng) {
+  int total = 0;
+  for (std::size_t i = 0; i < kCharacterCount; ++i) total += count[i];
+  if (total <= 0) return -1;
+  std::uint64_t r = rng();
+  int pick = static_cast<int>(r % static_cast<std::uint64_t>(total));
+  for (std::size_t i = 0; i < kCharacterCount; ++i) {
+    int n = count[i];
+    if (pick < n) {
+      count[i] = static_cast<std::int8_t>(n - 1);
+      deck_size = static_cast<std::int8_t>(deck_size - 1);
+      return static_cast<CharId>(i);
+    }
+    pick -= n;
   }
-  deck.pop_back();
-  return card;
+  return -1;
+}
+
+template <int NPlayers>
+void return_to_deck(CoupData<NPlayers>& d, CharId c) {
+  d.deck_count[static_cast<size_t>(c)] =
+      static_cast<std::int8_t>(d.deck_count[static_cast<size_t>(c)] + 1);
+  d.deck_size = static_cast<std::int8_t>(d.deck_size + 1);
 }
 
 template <int NPlayers>
@@ -43,8 +64,12 @@ void eliminate_check(CoupData<NPlayers>& d, int p) {
 }
 
 template <int NPlayers>
-void lose_influence_at_slot(CoupData<NPlayers>& d, int p, int slot) {
+void lose_influence_at_slot(CoupState<NPlayers>& s, int p, int slot) {
+  auto& d = s.data;
   d.revealed[p][slot] = true;
+  // Public face-up: every viewer now knows the truth of influence[p,s].
+  // Walker / hash / encoder consume viz directly; no revealed[] gate.
+  viz::reveal_slot(s, "influence", {p, slot});
   eliminate_check(d, p);
 }
 
@@ -163,7 +188,8 @@ int alive_excluding_count(const CoupData<NPlayers>& d, int exclude) {
 }
 
 template <int NPlayers>
-void resolve_action_effects(CoupData<NPlayers>& d, std::mt19937_64& rng) {
+void resolve_action_effects(CoupState<NPlayers>& s, std::mt19937_64& rng) {
+  auto& d = s.data;
   const ActionId action = d.declared_action;
   const int actor = d.active_player;
   const int target = d.action_target;
@@ -189,8 +215,15 @@ void resolve_action_effects(CoupData<NPlayers>& d, std::mt19937_64& rng) {
       advance_turn(d);
     }
   } else if (action == kExchangeAction) {
-    d.exchange_drawn[0] = draw_from_deck(d.court_deck, rng);
-    d.exchange_drawn[1] = draw_from_deck(d.court_deck, rng);
+    d.exchange_drawn[0] = draw_from_count(d.deck_count, d.deck_size, rng);
+    d.exchange_drawn[1] = draw_from_count(d.deck_count, d.deck_size, rng);
+    // Drawn cards are private to the active player only — every other
+    // viewer sees an all_hidden slot.
+    for (int i = 0; i < kExchangeDrawSlots; ++i) {
+      if (d.exchange_drawn[i] >= 0) {
+        viz::reveal_slot_to(s, "exchange_drawn", {i}, actor);
+      }
+    }
     d.exchange_held_count = influence_count(d, actor) + 2;
     d.stage = CoupStage::kExchangeReturn1;
     d.current_player = actor;
@@ -200,7 +233,8 @@ void resolve_action_effects(CoupData<NPlayers>& d, std::mt19937_64& rng) {
 }
 
 template <int NPlayers>
-void enter_counter_or_resolve(CoupData<NPlayers>& d, std::mt19937_64& rng) {
+void enter_counter_or_resolve(CoupState<NPlayers>& s, std::mt19937_64& rng) {
+  auto& d = s.data;
   const ActionId action = d.declared_action;
 
   if (action == kForeignAidAction) {
@@ -210,7 +244,7 @@ void enter_counter_or_resolve(CoupData<NPlayers>& d, std::mt19937_64& rng) {
     if (first >= 0) {
       d.current_player = first;
     } else {
-      resolve_action_effects(d, rng);
+      resolve_action_effects(s, rng);
     }
   } else if (is_blockable_after_challenge(action)) {
     if (d.action_target >= 0 && d.action_target < NPlayers && d.alive[d.action_target] &&
@@ -218,10 +252,10 @@ void enter_counter_or_resolve(CoupData<NPlayers>& d, std::mt19937_64& rng) {
       d.stage = CoupStage::kCounterAction;
       d.current_player = d.action_target;
     } else {
-      resolve_action_effects(d, rng);
+      resolve_action_effects(s, rng);
     }
   } else {
-    resolve_action_effects(d, rng);
+    resolve_action_effects(s, rng);
   }
 }
 
@@ -365,7 +399,6 @@ void CoupRules<NPlayers>::do_action_fast_impl(IGameState& state, ActionId action
                                               std::mt19937_64& rng) const {
   auto& s = checked_cast<CoupState<NPlayers>>(state);
   auto& d = s.data;
-  s.undo_stack.push_back(d);
   d.ply++;
 
   switch (d.stage) {
@@ -376,7 +409,7 @@ void CoupRules<NPlayers>::do_action_fast_impl(IGameState& state, ActionId action
         d.coins[d.active_player] += 1;
         advance_turn(d);
       } else if (action == kForeignAidAction) {
-        enter_counter_or_resolve(d, rng);
+        enter_counter_or_resolve(s, rng);
       } else if (action >= kCoupOffset && action < kCoupOffset + kCoupCount) {
         int target = action - kCoupOffset;
         d.action_target = target;
@@ -400,7 +433,7 @@ void CoupRules<NPlayers>::do_action_fast_impl(IGameState& state, ActionId action
         if (first >= 0) {
           d.current_player = first;
         } else {
-          enter_counter_or_resolve(d, rng);
+          enter_counter_or_resolve(s, rng);
         }
       }
       break;
@@ -418,7 +451,7 @@ void CoupRules<NPlayers>::do_action_fast_impl(IGameState& state, ActionId action
         if (next >= 0) {
           d.current_player = next;
         } else {
-          enter_counter_or_resolve(d, rng);
+          enter_counter_or_resolve(s, rng);
         }
       }
       break;
@@ -428,8 +461,16 @@ void CoupRules<NPlayers>::do_action_fast_impl(IGameState& state, ActionId action
       int slot = (action == kRevealSlot0) ? 0 : 1;
       CharId card = d.influence[d.active_player][slot];
       if (card == d.claimed_character) {
-        d.court_deck.push_back(card);
-        d.influence[d.active_player][slot] = draw_from_deck(d.court_deck, rng);
+        // Reveal-and-redraw: the shown card goes back into the deck,
+        // a new one comes out. Reveal first so observers see the truth
+        // of the slot before the swap, then reset to base before the
+        // new (private) card is written and flagged owner-only again.
+        viz::reveal_slot(s, "influence", {d.active_player, slot});
+        return_to_deck(d, card);
+        viz::reset_to_base(s, "influence", CoupState<NPlayers>::schema(),
+                           {d.active_player, slot});
+        d.influence[d.active_player][slot] =
+            draw_from_count(d.deck_count, d.deck_size, rng);
         d.action_challenge_succeeded = false;
         d.challenge_loser = d.challenger;
         if (influence_count(d, d.challenger) > 0) {
@@ -437,10 +478,10 @@ void CoupRules<NPlayers>::do_action_fast_impl(IGameState& state, ActionId action
           d.current_player = d.challenger;
         } else {
           check_game_end(d);
-          if (!d.terminal) enter_counter_or_resolve(d, rng);
+          if (!d.terminal) enter_counter_or_resolve(s, rng);
         }
       } else {
-        lose_influence_at_slot(d, d.active_player, slot);
+        lose_influence_at_slot(s, d.active_player, slot);
         d.action_challenge_succeeded = true;
         if (check_game_end(d)) break;
         advance_turn(d);
@@ -450,9 +491,9 @@ void CoupRules<NPlayers>::do_action_fast_impl(IGameState& state, ActionId action
 
     case CoupStage::kChooseLoseInfluence: {
       int slot = (action == kLoseSlot0) ? 0 : 1;
-      lose_influence_at_slot(d, d.challenge_loser, slot);
+      lose_influence_at_slot(s, d.challenge_loser, slot);
       if (check_game_end(d)) break;
-      enter_counter_or_resolve(d, rng);
+      enter_counter_or_resolve(s, rng);
       break;
     }
 
@@ -464,10 +505,10 @@ void CoupRules<NPlayers>::do_action_fast_impl(IGameState& state, ActionId action
           if (next >= 0) {
             d.current_player = next;
           } else {
-            resolve_action_effects(d, rng);
+            resolve_action_effects(s, rng);
           }
         } else {
-          resolve_action_effects(d, rng);
+          resolve_action_effects(s, rng);
         }
       } else {
         d.blocker = d.current_player;
@@ -506,8 +547,12 @@ void CoupRules<NPlayers>::do_action_fast_impl(IGameState& state, ActionId action
       int slot = (action == kRevealSlot0) ? 0 : 1;
       CharId card = d.influence[d.blocker][slot];
       if (card == d.block_character) {
-        d.court_deck.push_back(card);
-        d.influence[d.blocker][slot] = draw_from_deck(d.court_deck, rng);
+        viz::reveal_slot(s, "influence", {d.blocker, slot});
+        return_to_deck(d, card);
+        viz::reset_to_base(s, "influence", CoupState<NPlayers>::schema(),
+                           {d.blocker, slot});
+        d.influence[d.blocker][slot] =
+            draw_from_count(d.deck_count, d.deck_size, rng);
         d.counter_challenge_succeeded = false;
         d.challenge_loser = d.challenger;
         if (influence_count(d, d.challenger) > 0) {
@@ -517,17 +562,17 @@ void CoupRules<NPlayers>::do_action_fast_impl(IGameState& state, ActionId action
           if (!check_game_end(d)) advance_turn(d);
         }
       } else {
-        lose_influence_at_slot(d, d.blocker, slot);
+        lose_influence_at_slot(s, d.blocker, slot);
         d.counter_challenge_succeeded = true;
         if (check_game_end(d)) break;
-        resolve_action_effects(d, rng);
+        resolve_action_effects(s, rng);
       }
       break;
     }
 
     case CoupStage::kChooseLoseInfluenceCounter: {
       int slot = (action == kLoseSlot0) ? 0 : 1;
-      lose_influence_at_slot(d, d.challenge_loser, slot);
+      lose_influence_at_slot(s, d.challenge_loser, slot);
       if (check_game_end(d)) break;
       advance_turn(d);
       break;
@@ -539,20 +584,24 @@ void CoupRules<NPlayers>::do_action_fast_impl(IGameState& state, ActionId action
       for (int i = 0; i < 2; ++i) {
         if (d.exchange_drawn[i] == return_card && !removed) {
           d.exchange_drawn[i] = -1;
+          // Slot is now empty; viz returns to the schema base
+          // (all_hidden) — no observer should ever see it again.
+          viz::reset_to_base(s, "exchange_drawn",
+                             CoupState<NPlayers>::schema(), {i});
           removed = true;
         }
       }
       if (!removed) {
         int actor = d.active_player;
-        for (int s = 0; s < 2; ++s) {
-          if (!d.revealed[actor][s] && d.influence[actor][s] == return_card && !removed) {
-            d.influence[actor][s] = -1;
+        for (int sl = 0; sl < 2; ++sl) {
+          if (!d.revealed[actor][sl] && d.influence[actor][sl] == return_card && !removed) {
+            d.influence[actor][sl] = -1;
             removed = true;
           }
         }
       }
       if (removed) {
-        d.court_deck.push_back(return_card);
+        return_to_deck(d, return_card);
       }
       d.exchange_held_count--;
       d.stage = CoupStage::kExchangeReturn2;
@@ -565,27 +614,29 @@ void CoupRules<NPlayers>::do_action_fast_impl(IGameState& state, ActionId action
       for (int i = 0; i < 2; ++i) {
         if (d.exchange_drawn[i] == return_card && !removed) {
           d.exchange_drawn[i] = -1;
+          viz::reset_to_base(s, "exchange_drawn",
+                             CoupState<NPlayers>::schema(), {i});
           removed = true;
         }
       }
       if (!removed) {
         int actor = d.active_player;
-        for (int s = 0; s < 2; ++s) {
-          if (!d.revealed[actor][s] && d.influence[actor][s] == return_card && !removed) {
-            d.influence[actor][s] = -1;
+        for (int sl = 0; sl < 2; ++sl) {
+          if (!d.revealed[actor][sl] && d.influence[actor][sl] == return_card && !removed) {
+            d.influence[actor][sl] = -1;
             removed = true;
           }
         }
       }
       if (removed) {
-        d.court_deck.push_back(return_card);
+        return_to_deck(d, return_card);
       }
 
       int actor = d.active_player;
       std::vector<CharId> remaining;
-      for (int s = 0; s < 2; ++s) {
-        if (!d.revealed[actor][s] && d.influence[actor][s] >= 0) {
-          remaining.push_back(d.influence[actor][s]);
+      for (int sl = 0; sl < 2; ++sl) {
+        if (!d.revealed[actor][sl] && d.influence[actor][sl] >= 0) {
+          remaining.push_back(d.influence[actor][sl]);
         }
       }
       for (int i = 0; i < 2; ++i) {
@@ -595,10 +646,18 @@ void CoupRules<NPlayers>::do_action_fast_impl(IGameState& state, ActionId action
       }
 
       int ri = 0;
-      for (int s = 0; s < 2; ++s) {
-        if (!d.revealed[actor][s]) {
-          d.influence[actor][s] = (ri < static_cast<int>(remaining.size()))
+      for (int sl = 0; sl < 2; ++sl) {
+        if (!d.revealed[actor][sl]) {
+          d.influence[actor][sl] = (ri < static_cast<int>(remaining.size()))
               ? remaining[static_cast<size_t>(ri++)] : -1;
+        }
+      }
+      // Any leftover drawn slots — clear and reset viz back to all_hidden.
+      for (int i = 0; i < 2; ++i) {
+        if (d.exchange_drawn[i] >= 0) {
+          d.exchange_drawn[i] = -1;
+          viz::reset_to_base(s, "exchange_drawn",
+                             CoupState<NPlayers>::schema(), {i});
         }
       }
       d.exchange_drawn = {-1, -1};
@@ -610,7 +669,7 @@ void CoupRules<NPlayers>::do_action_fast_impl(IGameState& state, ActionId action
     case CoupStage::kLoseInfluenceFromAction: {
       int slot = (action == kLoseSlot0) ? 0 : 1;
       int target = d.current_player;
-      lose_influence_at_slot(d, target, slot);
+      lose_influence_at_slot(s, target, slot);
       if (check_game_end(d)) break;
       advance_turn(d);
       break;
@@ -620,11 +679,16 @@ void CoupRules<NPlayers>::do_action_fast_impl(IGameState& state, ActionId action
 }
 
 template <int NPlayers>
-void CoupRules<NPlayers>::undo_action_impl(IGameState& state, const UndoToken& /*token*/) const {
-  auto& s = checked_cast<CoupState<NPlayers>>(state);
-  if (s.undo_stack.empty()) return;
-  s.data = std::move(s.undo_stack.back());
-  s.undo_stack.pop_back();
+void CoupRules<NPlayers>::undo_action_impl(IGameState& /*state*/,
+                                            const UndoToken& /*token*/) const {
+  // Coup runs strictly through do_action_fast (selfplay / arena / API /
+  // sim-descent); none of those callers ever invoke undo_action.
+  // do_action_deterministic / tail solver are not wired for Coup.
+  // Reaching here is a contract violation — surface it loudly.
+  throw std::logic_error(
+      "CoupRules::undo_action_impl: Coup does not support undo. "
+      "do_action_fast is the only supported entry point; tail-solver "
+      "support would require do_action_deterministic + paired undo.");
 }
 
 template class CoupRules<2>;

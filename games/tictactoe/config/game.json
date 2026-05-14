@@ -1,6 +1,6 @@
 {
   "game_id": "tictactoe",
-  "display_name": "井字棋",
+  "display_name": "\u4e95\u5b57\u68cb",
   "display_name_en": "Tic-Tac-Toe",
   "players": {
     "min": 2,
@@ -14,7 +14,12 @@
       "simulations": 100,
       "c_puct": 1.4,
       "temperature": 1.0,
-      "temperature_schedule": {"enabled": true, "initial": 1.0, "final": 0.1, "decay_plies": 6},
+      "temperature_schedule": {
+        "enabled": true,
+        "initial": 1.0,
+        "final": 0.1,
+        "decay_plies": 6
+      },
       "dirichlet_alpha": 1.0,
       "dirichlet_epsilon": 0.25,
       "dirichlet_on_first_n_plies": 9,
@@ -29,7 +34,12 @@
     "arena": {
       "inherits": "selfplay",
       "temperature": 0.0,
-      "temperature_schedule": {"enabled": false, "initial": 0.0, "final": 0.0, "decay_plies": 0},
+      "temperature_schedule": {
+        "enabled": false,
+        "initial": 0.0,
+        "final": 0.0,
+        "decay_plies": 0
+      },
       "dirichlet_epsilon": 0.0,
       "dirichlet_on_first_n_plies": 0
     },

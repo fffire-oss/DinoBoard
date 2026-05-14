@@ -75,7 +75,7 @@ def test_game_config_matches_engine(game_id):
 def test_selfplay_batch_returns_correct_count():
     """run_selfplay_batch should return exactly num_episodes results."""
     cfg = _selfplay_cfg("tictactoe", simulations=10, max_game_plies=9)
-    results = run_selfplay_batch(
+    results, _ = run_selfplay_batch(
         "tictactoe", get_test_model("tictactoe"), num_episodes=5, base_seed=42,
         train_cfg=cfg, max_workers=1,
     )
@@ -91,7 +91,7 @@ def test_selfplay_batch_different_seeds():
         "tictactoe", simulations=10, max_game_plies=50,
         dirichlet_alpha=0.0, dirichlet_epsilon=0.0,
     )
-    results = run_selfplay_batch(
+    results, _ = run_selfplay_batch(
         "tictactoe", get_test_model("tictactoe"), num_episodes=10, base_seed=42,
         train_cfg=cfg, max_workers=1,
     )
@@ -111,7 +111,7 @@ def test_selfplay_batch_passes_tail_solve_config():
         tail_solve_depth_limit=3,
         tail_solve_node_budget=500,
     )
-    results = run_selfplay_batch(
+    results, _ = run_selfplay_batch(
         "quoridor", get_test_model("quoridor"), num_episodes=3, base_seed=42,
         train_cfg=cfg, max_workers=1,
     )
@@ -130,11 +130,11 @@ def test_selfplay_batch_passes_heuristic_guidance():
         heuristic_guidance_ratio=1.0,
         heuristic_temperature=0.0,
     )
-    ep_no = run_selfplay_batch(
+    ep_no, _ = run_selfplay_batch(
         "quoridor", get_test_model("quoridor"), num_episodes=3, base_seed=42,
         train_cfg=cfg_no_h, max_workers=1,
     )
-    ep_yes = run_selfplay_batch(
+    ep_yes, _ = run_selfplay_batch(
         "quoridor", get_test_model("quoridor"), num_episodes=3, base_seed=42,
         train_cfg=cfg_full_h, max_workers=1,
     )
@@ -152,7 +152,7 @@ def test_selfplay_batch_passes_temperature_schedule():
         temperature_final=0.01,
         temperature_decay_plies=10,
     )
-    results = run_selfplay_batch(
+    results, _ = run_selfplay_batch(
         "tictactoe", get_test_model("tictactoe"), num_episodes=3, base_seed=42,
         train_cfg=cfg, max_workers=1,
     )
@@ -344,7 +344,7 @@ def test_mini_training_loop(tmp_path):
     train_cfg = _selfplay_cfg("tictactoe", simulations=10, max_game_plies=9)
 
     # Step 1: selfplay
-    episodes = run_selfplay_batch(
+    episodes, _ = run_selfplay_batch(
         "tictactoe", get_test_model("tictactoe"), num_episodes=5, base_seed=42,
         train_cfg=train_cfg, max_workers=1,
     )

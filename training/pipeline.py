@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import random
 import shutil
 import time
 from collections import deque
@@ -79,6 +80,76 @@ def _worker_selfplay(args: tuple) -> dict[str, Any]:
         training_filter_ratio=cfg["training_filter_ratio"],
         opponent_selection=cfg["opponent_selection"],
     )
+
+
+def _worker_selfplay_pool(args: tuple) -> dict[str, Any]:
+    """Run a single opponent-pool selfplay episode.
+
+    args:
+        (game_id, seed, model_paths_per_seat, latest_seat, cfg)
+
+    The C++ binding builds one ONNX evaluator per seat and routes MCTS at
+    each ply to evaluators[acting_seat]. Sample filtering by latest_seat
+    happens caller-side; the worker just returns the full episode dict
+    with `latest_seat` tagged on so the caller knows which seat to keep.
+    """
+    import dinoboard_engine
+    game_id, seed, model_paths_per_seat, latest_seat, cfg = args
+    if cfg["temperature_schedule_enabled"]:
+        t_initial = cfg["temperature_initial"]
+        t_final = cfg["temperature_final"]
+        t_decay = cfg["temperature_decay_plies"]
+    else:
+        t_initial = -1.0
+        t_final = -1.0
+        t_decay = 0
+    result = dinoboard_engine.run_selfplay_episode_pool(
+        game_id=game_id,
+        seed=seed,
+        model_paths=model_paths_per_seat,
+        simulations=cfg["simulations"],
+        c_puct=cfg["c_puct"],
+        temperature=cfg["temperature"],
+        dirichlet_alpha=cfg["dirichlet_alpha"],
+        dirichlet_epsilon=cfg["dirichlet_epsilon"],
+        dirichlet_on_first_n_plies=cfg["dirichlet_on_first_n_plies"],
+        max_game_plies=cfg["max_game_plies"],
+        tail_solve_enabled=cfg["tail_solve_enabled"],
+        tail_solve_depth_limit=cfg["tail_solve_depth_limit"],
+        tail_solve_node_budget=cfg["tail_solve_node_budget"],
+        tail_solve_margin_weight=cfg["tail_solve_margin_weight"],
+        temperature_initial=t_initial,
+        temperature_final=t_final,
+        temperature_decay_plies=t_decay,
+        heuristic_guidance_ratio=cfg["heuristic_guidance_ratio"],
+        heuristic_temperature=cfg["heuristic_temperature"],
+        training_filter_ratio=cfg["training_filter_ratio"],
+        opponent_selection=cfg["opponent_selection"],
+    )
+    result["latest_seat"] = latest_seat
+    return result
+
+
+def _dispatch_worker(task: tuple) -> dict[str, Any]:
+    """Top-level (picklable) dispatcher for the mixed self/pool task list."""
+    kind, args = task
+    if kind == "self":
+        out = _worker_selfplay(args)
+        out["latest_seat"] = None  # tag so caller filter can branch
+        return out
+    if kind == "pool":
+        return _worker_selfplay_pool(args)
+    raise ValueError(f"_dispatch_worker: unknown task kind {kind!r}")
+
+
+def _collect_pool_paths(models_dir: Path) -> list[str]:
+    """All `model_step_*.onnx` checkpoints in models_dir, sorted.
+
+    Excludes `model_latest.onnx`, `model_init.onnx`, `model_best.onnx`
+    by glob pattern. Returns [] before the first checkpoint is saved.
+    """
+    paths = sorted(models_dir.glob("model_step_*.onnx"))
+    return [str(p) for p in paths]
 
 
 def _worker_arena(args: tuple) -> dict[str, Any]:
@@ -178,16 +249,88 @@ def run_selfplay_batch(
     base_seed: int,
     train_cfg: dict,
     max_workers: int,
-) -> list[dict[str, Any]]:
-    tasks = [
-        (game_id, base_seed + i, model_path, train_cfg)
-        for i in range(num_episodes)
-    ]
-    results = []
+    pool_paths: list[str] | None = None,
+    num_players: int = 1,
+    pool_enabled: bool = True,
+    self_ratio: float = 0.5,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Run a step's worth of selfplay, split between mirror and pool modes.
+
+    Per the opponent-pool design (frozen-pool fictitious self-play):
+    - `n_self = ceil(N * self_ratio)` workers run normal mirror selfplay
+      (latest vs latest) and contribute every sample.
+    - `n_pool = N - n_self` workers run latest vs a random historical
+      checkpoint; the caller filters samples to the latest seat only.
+
+    `pool_enabled=False` (training cfg `opponent_pool_enabled: false`)
+    forces full mirror regardless of the pool — the feature is fully
+    opt-out via game.json.
+
+    `self_ratio` ∈ [0, 1] is read from training cfg
+    `opponent_pool_self_ratio`. 0.5 = the original ceil/floor split.
+    1.0 ⇒ all mirror; 0.0 ⇒ all pool (only meaningful if pool is non-empty).
+
+    If `pool_paths` is empty (early steps before any checkpoint is saved
+    OR pool disabled), n_pool is forced to 0 and every episode runs in
+    mirror mode.
+
+    Returns (episodes, stats) where stats = {"n_self": ..., "n_pool": ...,
+    "pool_size": ..., "pool_enabled": ...}. Each episode dict carries
+    `latest_seat: int | None` (None for mirror episodes).
+    """
+    if pool_paths is None:
+        pool_paths = []
+    if not pool_enabled:
+        pool_paths = []
+    pool_size = len(pool_paths)
+
+    if not (0.0 <= self_ratio <= 1.0):
+        raise ValueError(
+            f"run_selfplay_batch: opponent_pool_self_ratio must be in [0, 1], "
+            f"got {self_ratio}"
+        )
+
+    if pool_size == 0:
+        n_self = num_episodes
+        n_pool = 0
+    else:
+        n_self = math.ceil(num_episodes * self_ratio)
+        n_self = max(0, min(num_episodes, n_self))
+        n_pool = num_episodes - n_self
+
+    tasks: list[tuple[str, tuple]] = []
+    for i in range(n_self):
+        args = (game_id, base_seed + i, model_path, train_cfg)
+        tasks.append(("self", args))
+    if n_pool > 0:
+        rng = random.Random(base_seed)
+        for i in range(n_pool):
+            ep_idx = n_self + i
+            ep_seed = base_seed + ep_idx
+            latest_seat = rng.randrange(num_players)
+            pool_path = rng.choice(pool_paths)
+            model_paths_per_seat = [
+                model_path if s == latest_seat else pool_path
+                for s in range(num_players)
+            ]
+            args = (
+                game_id, ep_seed, model_paths_per_seat,
+                latest_seat, train_cfg,
+            )
+            tasks.append(("pool", args))
+
+    results: list[dict[str, Any]] = []
     with ProcessPoolExecutor(max_workers=max_workers) as pool:
-        for r in pool.map(_worker_selfplay, tasks):
+        for r in pool.map(_dispatch_worker, tasks):
             results.append(r)
-    return results
+
+    stats = {
+        "n_self": n_self,
+        "n_pool": n_pool,
+        "pool_size": pool_size,
+        "pool_enabled": pool_enabled,
+    }
+    return results, stats
 
 
 def run_eval_vs_heuristic(
@@ -386,6 +529,16 @@ def run_training_loop(
     simulations_start = train_cfg.get("simulations_start", selfplay_profile.simulations)
     simulations_full = selfplay_profile.simulations
 
+    # Opponent pool — opt-in via game.json. Default off (mirror selfplay) so
+    # adding the feature didn't change any existing game's training behavior.
+    # If `opponent_pool_enabled` is set without `opponent_pool_self_ratio`
+    # we still throw — partial config is a bug.
+    opponent_pool_enabled = train_cfg.get("opponent_pool_enabled", False)
+    if opponent_pool_enabled:
+        opponent_pool_self_ratio = train_cfg["opponent_pool_self_ratio"]
+    else:
+        opponent_pool_self_ratio = 1.0  # unused; full mirror
+
     replay_buffer_size = episodes_per_step * 50 * 20
     replay_buffer: deque[tuple[list, list, list, list, float]] = deque(maxlen=replay_buffer_size)
 
@@ -401,6 +554,10 @@ def run_training_loop(
     logger.info(f"  simulations: start={simulations_start}, full={simulations_full}")
     logger.info(f"  tail_solve (selfplay): enabled={selfplay_profile.tail_solve_enabled}")
     logger.info(f"  opponent_selection (selfplay): {selfplay_profile.opponent_selection}")
+    logger.info(
+        f"  opponent_pool: enabled={opponent_pool_enabled}, "
+        f"self_ratio={opponent_pool_self_ratio}"
+    )
     logger.info(f"  replay_buffer: maxlen={replay_buffer_size}")
 
     for step in range(1, steps + 1):
@@ -442,12 +599,33 @@ def run_training_loop(
             "heuristic_guidance_temperature", 0.0)
         selfplay_cfg["training_filter_ratio"] = effective_filter_ratio
 
-        episodes = run_selfplay_batch(
+        # Recompute the pool every step — newly saved checkpoints automatically
+        # enrol the step after they land. Empty pool ⇒ all episodes mirror.
+        # Disabled via game.json `opponent_pool_enabled: false` ⇒ same.
+        pool_paths = _collect_pool_paths(models_dir)
+        episodes, sp_stats = run_selfplay_batch(
             game_id, current_model_path, episodes_per_step,
-            seed + step * 10000, selfplay_cfg, max_workers)
+            seed + step * 10000, selfplay_cfg, max_workers,
+            pool_paths=pool_paths, num_players=num_players,
+            pool_enabled=opponent_pool_enabled,
+            self_ratio=opponent_pool_self_ratio)
+        logger.info(
+            f"  pool: enabled={sp_stats['pool_enabled']}, "
+            f"|P|={sp_stats['pool_size']}, "
+            f"self={sp_stats['n_self']}, pool={sp_stats['n_pool']}"
+        )
 
+        # `step_samples` counts what actually entered the replay buffer
+        # (after pool-mode filtering), not the raw episode-output count.
+        step_samples = 0
         for ep in episodes:
+            latest_seat = ep["latest_seat"]  # int for pool, None for mirror
             for sample in ep["samples"]:
+                # Pool-mode: keep only the latest model's seat samples — the
+                # opp's seat was driven by a frozen historical net and would
+                # train against itself if we kept it.
+                if latest_seat is not None and sample["player"] != latest_seat:
+                    continue
                 feats = sample["features"]
                 if len(feats) != feature_dim:
                     raise ValueError(
@@ -463,12 +641,11 @@ def run_training_loop(
                 mask = sample["legal_mask"]
                 aux = float(sample["auxiliary_score"])
                 replay_buffer.append((feats, policy, z_rotated, mask, aux))
+                step_samples += 1
 
         winners = [ep["winner"] for ep in episodes]
         per_player_wins = [sum(1 for w in winners if w == p) for p in range(num_players)]
         draws_count = sum(1 for w in winners if w < 0)
-
-        step_samples = sum(len(ep["samples"]) for ep in episodes)
 
         ts_attempts = sum(ep["tail_solve_attempts"] for ep in episodes)
         ts_completed = sum(ep["tail_solve_completed"] for ep in episodes)

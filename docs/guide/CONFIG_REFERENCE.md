@@ -109,6 +109,7 @@ JSON 中**强制嵌套**：
 | `free_heuristic_temperature` | float | 0.0 | eval `heuristic_free` 模式的温度 |
 | `heuristic_guidance_*` | — | — | heuristic guidance schedule（见下） |
 | `training_filter_*` | — | — | training action filter schedule（见下） |
+| `opponent_pool_*` | — | — | 对手池（frozen-pool fictitious self-play，见下） |
 | `auxiliary_score` | bool | false | 启用辅助训练头 |
 | `auxiliary_score_weight` | float | 0.5 | 辅助损失权重 |
 
@@ -135,6 +136,47 @@ JSON 中**强制嵌套**：
 | `training_filter_hold_steps` | int | 0 | hold 期 |
 
 每句 effective filter ratio = `schedule_ratio if profile.ai_use_action_filter else 0.0`。把 `selfplay.ai_use_action_filter` 关掉就能整体禁用 filter（保留 schedule 配置，便于 ablation）。
+
+#### Opponent Pool（对手池）
+
+Frozen-pool fictitious self-play：每步把一部分 worker 的对手换成历史保存点（`models/model_step_*.onnx`），缓解 mirror selfplay 的策略坍缩 / 过拟合最近自己（在多人隐藏信息游戏 LL/Coup 上尤其明显）。
+
+**两个字段都是可选；不写就退化成 100% mirror selfplay（也就是把这个特性关掉，原训练行为完全不变）**。`enabled=true` 时 `self_ratio` 必须存在，否则在启动期抛 `KeyError`（不静默兜默认值）。
+
+| 字段 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `opponent_pool_enabled` | bool | false | 启用对手池。`false` 时强制全 mirror，跟未配置等效 |
+| `opponent_pool_self_ratio` | float | — | self（mirror）worker 比例 ∈ [0, 1]；超界抛 `ValueError`。仅当 `enabled=true` 时必填 |
+
+**每步分组**（`W = episodes_per_step`）：
+
+- `n_self = ceil(W * self_ratio)` 个 episode 双方都用 latest，跟原 mirror 一样**全部样本入 replay buffer**。
+- `n_pool = W - n_self` 个 episode 在 N 人游戏里随机挑一个 `latest_seat ∈ [0, N)`，那一座位用 latest，**其他 N-1 个座位都用同一个池里随机抽的 `model_step_*.onnx`**；**只保留 `sample.player == latest_seat` 的样本**入 buffer，其余被 frozen 旧网络驱动的样本丢弃（避免训练对手自己）。
+- 池为空（步 1，第一份保存点还没存）→ 自动退化成 `n_pool = 0` 全 mirror，按设计**不报错**（池真的空，mirror 是唯一正确选择）。
+
+**池组成**：每步重新 `glob("models/model_step_*.onnx")`，新保存点落地下一步自动入池；`model_init.onnx` / `model_latest.onnx` / `model_best.onnx` 不入池（不匹配 `model_step_` 前缀）。
+
+**`self_ratio` 的极值**：
+
+- `1.0` → 全 mirror（等价于 `enabled=false`，但保留池构建的 logging）
+- `0.0` → 全 pool（仅在池非空时生效；池为空仍退化成全 mirror）
+- 一般推荐 `0.5`（一半 mirror、一半 pool）
+
+**日志**：每步打 `pool: enabled=…, |P|=…, self=…, pool=…`，便于事后回看池规模随训练演化。
+
+**与已有 schedule 的关系**：完全正交。`heuristic_guidance` / `training_filter` 在两类 worker 上一样应用；`tail_solve` / `opponent_selection` 也一样。区别只在"哪几个座位用历史模型"和"采样过滤"。
+
+**示例（在 LL_2p 上启用）**：
+
+```json
+"training": {
+  ...
+  "opponent_pool_enabled": true,
+  "opponent_pool_self_ratio": 0.5
+}
+```
+
+**消融**：`opponent_pool_enabled=false` 一刀切回旧行为；`self_ratio=0.25 / 0.75` 比较曲线就能确认对手池对收敛/平台值的影响。
 
 ### `network` 字段
 

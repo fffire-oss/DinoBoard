@@ -68,8 +68,8 @@
     },
     {
       "id": "coup",
-      "enabled": false,
-      "framework_whitelist": false,
+      "enabled": true,
+      "framework_whitelist": true,
       "capabilities": ["hidden_info", "snapshot", "tracker"],
       "sources": [
         "coup_state.cpp",

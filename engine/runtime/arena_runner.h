@@ -38,8 +38,8 @@ struct ArenaMatchResult {
   std::vector<ArenaPlyStats> ply_stats;
 };
 
-using PolicyEvaluatorFactory = std::function<
-    const search::IPolicyValueEvaluator&(int player_index)>;
+// `PolicyEvaluatorFactory` lives in selfplay_runner.h (shared across selfplay's
+// opponent-pool path and arena).
 
 ArenaMatchResult run_arena_match(
     IGameState& initial_state,

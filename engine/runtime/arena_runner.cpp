@@ -88,7 +88,7 @@ ArenaMatchResult run_arena_match(
           truth_before, chosen, truth_after, p);
       seat.begin_step_for_session_observe();
       if (public_state_applier && !evt_p.public_snapshot.empty()) {
-        public_state_applier(seat, evt_p.public_snapshot);
+        public_state_applier(seat, evt_p.public_snapshot, p);
       }
     }
   };

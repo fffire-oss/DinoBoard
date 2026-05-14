@@ -357,12 +357,11 @@ using board_ai::loveletter::kKingCount;
 using board_ai::loveletter::kCountessAction;
 using board_ai::loveletter::kPrincessAction;
 
-// Public-event extractor. Every per-perspective hand reveal travels via
-// `state.viz_` (rules call `reveal_slot` / `reveal_slot_to`). All-public
-// slots ride the schema walker (`viz::serialize_public`); per-perspective
-// reveals (owner-visible `hand[p]`, current-player-visible `drawn_card`,
-// Priest/Baron peeks) ride the `owner_overlay` sidecar below — same pattern
-// Splendor uses for face-up reserved cards. LL emits no public events;
+// Public-event extractor. All-public schema slots ride
+// `viz::serialize_public`. Per-perspective reveals (owner-visible
+// `hand[p]`, current-player-visible `drawn_card`, Priest/Baron peeks)
+// ride the framework partial-reveal sidecar
+// `viz::serialize_partial_reveals`. LL emits no public events;
 // `out.events` stays empty.
 template <int NPlayers>
 PublicEventTrace extract_events(
@@ -370,182 +369,26 @@ PublicEventTrace extract_events(
     ActionId /*action*/,
     const IGameState& after,
     int perspective) {
-  const auto& sa = board_ai::checked_cast<LoveLetterState<NPlayers>>(after);
-  const auto& da = sa.data;
   PublicEventTrace out;
-
-  // Schema-driven public snapshot. Walks every all_public slot via
-  // read_field_slot. hand[p] / drawn_card never enter here (they're
-  // not all_public-base); they ride the owner_overlay sidecar.
   AnyMap snap;
   board_ai::viz::serialize_public(after, LoveLetterState<NPlayers>::schema(),
                                   snap);
-
-  // Per-perspective overlay: for each schema slot whose runtime viz=1
-  // to `perspective` but whose base viz wasn't all_public, ship the
-  // truth value so the receiver's session can mirror it. Encoded as
-  // a flat int vector in a fixed slot order:
-  //   [hand[0], hand[1], ..., hand[N-1], drawn_card]
-  // Each entry is the truth value when viz[..., perspective]=1, else
-  // -1 (meaning "still hidden to this perspective"). The receiver
-  // applies it slot-by-slot.
-  // Stash receiver perspective so `apply_public_state` knows whose
-  // viewer-axis bits to toggle when applying owner_overlay.
-  snap["__recv_perspective"] = std::any(static_cast<int>(perspective));
-
-  std::vector<int> owner_overlay(NPlayers + 1, -1);
-  if (perspective >= 0 && perspective < NPlayers) {
-    const auto& hand_v = board_ai::viz::viz_get(after, "hand");
-    if (!hand_v.empty()) {
-      // shape = {NPlayers, n_viewers}. viewer is last axis.
-      const int n_viewers = hand_v.viewer_count();
-      for (int p = 0; p < NPlayers; ++p) {
-        const std::size_t off =
-            static_cast<std::size_t>(p) * static_cast<std::size_t>(n_viewers) +
-            static_cast<std::size_t>(perspective);
-        if (off < hand_v.data.size() && hand_v.data[off] != 0) {
-          owner_overlay[static_cast<size_t>(p)] = static_cast<int>(da.hand[p]);
-        }
-      }
-    }
-    const auto& drawn_v = board_ai::viz::viz_get(after, "drawn_card");
-    if (!drawn_v.empty()) {
-      const std::size_t off = static_cast<std::size_t>(perspective);
-      if (off < drawn_v.data.size() && drawn_v.data[off] != 0) {
-        owner_overlay[static_cast<size_t>(NPlayers)] =
-            static_cast<int>(da.drawn_card);
-      }
-    }
-  }
-  snap["owner_overlay"] = std::any(owner_overlay);
-
-  // No more variable-length sidecar keys: discard_count / face_up_count
-  // / deck_size are all_public schema slots, walked into `snap` above
-  // by `viz::serialize_public`. deck_count is all_hidden (per-type
-  // contents not knowable to non-actor) and reconstructed by
-  // randomize_unseen.
-
+  board_ai::viz::serialize_partial_reveals(
+      after, LoveLetterState<NPlayers>::schema(), perspective, snap);
   out.public_snapshot = std::move(snap);
   return out;
 }
 
 // Inverse of `extract_events`'s snapshot population. Walker-driven
-// `viz::apply_public` writes every all_public slot back; per-field
-// dispatch lives in `LoveLetterState::write_field_slot`. The variable-
-// length side-channel keys (deck_size / discard_piles / face_up_removed)
-// have no schema counterpart and are applied directly here.
+// `viz::apply_public` writes every all_public slot back;
+// `viz::apply_partial_reveals` resets per-perspective reveals to schema
+// base and re-applies the sidecar entries.
 template <int NPlayers>
-void apply_public_state(IGameState& state, const AnyMap& snap) {
-  auto& s = board_ai::checked_cast<LoveLetterState<NPlayers>>(state);
-  auto& d = s.data;
-
+void apply_public_state(IGameState& state, const AnyMap& snap,
+                        int receiver_seat) {
   board_ai::viz::apply_public(state, LoveLetterState<NPlayers>::schema(), snap);
-
-  // Per-perspective overlay sidecar: for each entry where the producer
-  // marked the slot as visible to this receiver (value != -1), write
-  // the truth value into the local hand / drawn_card and toggle viz to
-  // 1 so future hashes / encodes treat it as known. Entries with -1
-  // mean "still hidden — leave at whatever placeholder is already
-  // there"; randomize_unseen runs trailing on apply_observation and
-  // refreshes those slots from the tracker's information set.
-  auto it_ov = snap.find("owner_overlay");
-  if (it_ov != snap.end()) {
-    auto extract_iv = [&]() -> std::vector<int> {
-      const std::any& a = it_ov->second;
-      if (a.type() == typeid(std::vector<int>)) {
-        return std::any_cast<std::vector<int>>(a);
-      }
-      if (a.type() == typeid(std::vector<std::any>)) {
-        const auto& av = std::any_cast<const std::vector<std::any>&>(a);
-        std::vector<int> out;
-        out.reserve(av.size());
-        for (const auto& x : av) {
-          if (x.type() == typeid(int)) out.push_back(std::any_cast<int>(x));
-          else out.push_back(-1);
-        }
-        return out;
-      }
-      return {};
-    };
-    auto overlay = extract_iv();
-    if (static_cast<int>(overlay.size()) >= NPlayers + 1) {
-      // Determine which perspective this session is. The overlay was
-      // emitted from the producer's view of THIS receiver; viz toggles
-      // must use the receiver's seat. Use the runtime viz tensor to
-      // find which viewer the producer thought we are: we are
-      // perspective `viewer` iff state.viz_["hand"][p, viewer]=1
-      // matches the overlay's `!= -1` pattern. Cheaper: the runner
-      // always calls apply_public_state on the per-seat session bundle
-      // in seat order, so the seat IS the perspective. We just need
-      // it. The runner's calling shape is opaque here — instead,
-      // embed perspective in the overlay implicitly: the producer
-      // wrote viz from `perspective` arg; we recover it by scanning
-      // viz tensor for the unique viewer whose visible-slot set
-      // matches the overlay's marked entries. For LL the unique
-      // perspective with `hand[perspective]=1 AND
-      // drawn_card[perspective]=1 (when current_player==perspective)`
-      // is well-defined — but simpler to compute: the receiver's seat
-      // is the seat whose `hand` slot is marked in the overlay AND
-      // matches the schema's owner_only_first_axis base — i.e. the
-      // overlay entry at index == seat is non-negative.
-      //
-      // For each non-negative slot entry, write the value AND toggle
-      // viz at every viewer axis the producer thought us to be — but
-      // since there's no way to know, we toggle viz at the seat whose
-      // `hand[seat] != -1` (the owner) and at the receiver. Simplest:
-      // mirror the producer's intent — toggle viz[..., receiver] = 1
-      // for every overlay entry that's non-negative. The receiver's
-      // perspective is encoded in the snap directly.
-      int receiver = -1;
-      auto it_recv = snap.find("__recv_perspective");
-      if (it_recv != snap.end() && it_recv->second.type() == typeid(int)) {
-        receiver = std::any_cast<int>(it_recv->second);
-      }
-      auto& hand_v = board_ai::viz::viz_get(state, "hand");
-      auto& drawn_v = board_ai::viz::viz_get(state, "drawn_card");
-      const int n_viewers_h = hand_v.viewer_count();
-      const int n_viewers_d = drawn_v.viewer_count();
-      // Wholesale-replace semantics: the producer's overlay encodes
-      // exactly what the receiver should see now. >=0 → visible (set
-      // value + viz=1); -1 → hidden (clear viz=0). Without the
-      // viz=0 path, an earlier reveal in this session sticks
-      // forever and observer's hash diverges from truth's after rules
-      // run reset_to_base on the truth side.
-      for (int p = 0; p < NPlayers; ++p) {
-        if (receiver >= 0 && receiver < n_viewers_h) {
-          const std::size_t off =
-              static_cast<std::size_t>(p) *
-                  static_cast<std::size_t>(n_viewers_h) +
-              static_cast<std::size_t>(receiver);
-          if (off < hand_v.data.size()) {
-            hand_v.data[off] =
-                (overlay[static_cast<size_t>(p)] >= 0) ? 1 : 0;
-          }
-        }
-        if (overlay[static_cast<size_t>(p)] >= 0) {
-          d.hand[static_cast<size_t>(p)] =
-              static_cast<std::int8_t>(overlay[static_cast<size_t>(p)]);
-        }
-      }
-      const int dval = overlay[static_cast<size_t>(NPlayers)];
-      if (receiver >= 0 && receiver < n_viewers_d) {
-        const std::size_t off = static_cast<std::size_t>(receiver);
-        if (off < drawn_v.data.size()) {
-          drawn_v.data[off] = (dval >= 0) ? 1 : 0;
-        }
-      }
-      if (dval >= 0) {
-        d.drawn_card = static_cast<std::int8_t>(dval);
-      }
-    }
-  }
-
-  // Variable-length sidecar keys are gone. discard_count / face_up_count
-  // / deck_size flowed back via `viz::apply_public` into the
-  // corresponding schema slots; deck_count is all_hidden and gets
-  // refilled by the trailing randomize_unseen call (the tracker keeps
-  // the observer's marginal-distribution view of the hidden deck and
-  // samples per-type counts from it).
+  board_ai::viz::apply_partial_reveals(
+      state, LoveLetterState<NPlayers>::schema(), receiver_seat, snap);
 }
 
 }  // namespace loveletter_events

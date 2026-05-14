@@ -146,6 +146,133 @@ let pendingCard = 0;
 let pendingTarget = -1;
 let currentCtx = null;
 
+// State-side LL stores discards as a multiset (discard_count[player][card])
+// for engine reasons (permutation invariance in the network features), so the
+// state dict's `p.discards` comes back sorted by card value. Players read
+// "what was played in what order" as table state, though, so we maintain a
+// frontend-only ordered log per player. Round resets and replay jumps may
+// temporarily desync; we recover by rebuilding from truth whenever the
+// multiset doesn't match. This is a UI memory only — no engine impact.
+const discardOrderByPlayer = new Map(); // player_idx -> [card, card, ...]
+
+function multisetEqual(a, b) {
+  if (a.length !== b.length) return false;
+  const counts = new Array(9).fill(0);
+  for (const c of a) counts[c]++;
+  for (const c of b) counts[c]--;
+  for (const v of counts) if (v !== 0) return false;
+  return true;
+}
+
+// Returns the per-player discard list reordered to play-order. Two paths:
+//   (a) Replay precompute attached `state.__llOrderByPlayer` on every frame
+//       (see precomputeReplayDiscardOrder) — used unconditionally if present.
+//   (b) Live play: walk the cached log; if the cache's multiset matches
+//       truth use it, otherwise fall back to truth (sorted) and reset the
+//       cache so the next describeTransition anchors from there.
+function orderedDiscardsFor(playerIdx, truthDiscards, state) {
+  const truth = truthDiscards || [];
+  if (state && state.__llOrderByPlayer && Array.isArray(state.__llOrderByPlayer[playerIdx])) {
+    return state.__llOrderByPlayer[playerIdx].slice();
+  }
+  const cached = discardOrderByPlayer.get(playerIdx);
+  if (cached && multisetEqual(cached, truth)) {
+    return cached.slice();
+  }
+  discardOrderByPlayer.set(playerIdx, truth.slice());
+  return truth.slice();
+}
+
+function recordDiscard(playerIdx, cardValue) {
+  if (cardValue <= 0) return;
+  const cur = discardOrderByPlayer.get(playerIdx) || [];
+  cur.push(cardValue);
+  discardOrderByPlayer.set(playerIdx, cur);
+}
+
+function resetDiscardOrder() {
+  discardOrderByPlayer.clear();
+}
+
+// Walk the replay frames forward and stamp each frame's state with
+// `__llOrderByPlayer: number[][]` (per-player ordered discard list at that
+// point in time). Same diff logic as describeTransition: for each ply,
+// figure out per-player added cards and append in actor-first order, with
+// the actor's played card landing before any forced (Prince) discards.
+// Reset any player's ordered list when their multiset shrinks (round
+// boundary — discards reset to empty in state).
+function precomputeReplayDiscardOrder(frames) {
+  if (!frames || !frames.length) return;
+  // Idempotent: onReplayFrames fires every render. Once stamped, skip.
+  const last = frames[frames.length - 1];
+  if (last && last.state && last.state.__llOrderByPlayer) return;
+  const orders = new Map(); // player_idx -> [card,...]
+  let prevPlayers = null;
+
+  function multisetCounts(arr) {
+    const c = new Array(9).fill(0);
+    for (const v of arr) c[v]++;
+    return c;
+  }
+
+  for (const frame of frames) {
+    const st = frame && frame.state;
+    if (!st || !Array.isArray(st.players)) continue;
+    const players = st.players;
+
+    // Per-player diff vs prev frame.
+    for (let p = 0; p < players.length; p++) {
+      const cur = (players[p].discards || []).slice();
+      const before = prevPlayers && prevPlayers[p] ? (prevPlayers[p].discards || []) : [];
+      const beforeC = multisetCounts(before);
+      const curC = multisetCounts(cur);
+      // Round reset detection: if cur multiset is NOT a superset of before,
+      // the round restarted (or this is a backward step). Adopt truth and
+      // re-anchor the ordered list to it (best-effort: as multiset).
+      let isSuperset = true;
+      for (let c = 1; c <= 8; c++) {
+        if (curC[c] < beforeC[c]) { isSuperset = false; break; }
+      }
+      if (!isSuperset) {
+        orders.set(p, cur.slice().sort((a, b) => a - b));
+        continue;
+      }
+      // Append the diff cards. We don't know intra-frame order between
+      // players precisely, but actor-first + played-card-first is right
+      // for the common case (Prince forced discard).
+      const addCounts = new Array(9).fill(0);
+      for (let c = 1; c <= 8; c++) addCounts[c] = curC[c] - beforeC[c];
+      const ordered = orders.get(p) ? orders.get(p).slice() : [];
+      // For the actor: their action card lands first.
+      const actor = parseActorIdx(frame.actor);
+      const playedCard = frame.action_info && frame.action_info.card;
+      if (p === actor && playedCard && addCounts[playedCard] > 0) {
+        ordered.push(playedCard);
+        addCounts[playedCard]--;
+      }
+      for (let c = 1; c <= 8; c++) {
+        while (addCounts[c] > 0) { ordered.push(c); addCounts[c]--; }
+      }
+      orders.set(p, ordered);
+    }
+
+    // Stamp this frame's state with a copy of the per-player order.
+    const stamp = [];
+    for (let p = 0; p < players.length; p++) {
+      stamp[p] = (orders.get(p) || []).slice();
+    }
+    st.__llOrderByPlayer = stamp;
+    prevPlayers = players;
+  }
+}
+
+function parseActorIdx(actor) {
+  if (typeof actor !== 'string') return -1;
+  if (!actor.startsWith('player_')) return -1;
+  const n = parseInt(actor.slice('player_'.length), 10);
+  return Number.isFinite(n) ? n : -1;
+}
+
 function getLegalSet(gs) {
   if (!gs) return new Set();
   return new Set(gs.legal_actions || []);
@@ -307,11 +434,42 @@ function renderBoard(container, gs, ctx) {
     }
     opp.appendChild(statusEl);
 
+    // Replay-only "reveal hidden info" mode: surface the opponent's
+    // current hand card. The replay's state dict carries truth (rebuilt
+    // from action_history through a single GameSession that holds GT),
+    // so p.hand is correct here. Live play never reaches this branch
+    // because ctx.revealHidden is gated on state.replayMode.
+    if (p.alive && !isTerminal) {
+      // The hand row is always rendered for alive opponents so the
+      // opponent box height stays anchored. In replay reveal-mode we
+      // surface the actual cards; in live play we render dashed
+      // placeholders sized by what's publicly known: 1 card normally,
+      // 2 cards for the current acting player mid-turn (post-draw).
+      const oppHand = document.createElement('div');
+      oppHand.className = 'll-opp-revealed-hand';
+      if (ctx.revealHidden) {
+        const cards = [];
+        if (p.hand > 0) cards.push(p.hand);
+        if (pi === currentPlayer && st.drawn_card > 0) cards.push(st.drawn_card);
+        for (const c of cards) {
+          oppHand.appendChild(buildRevealedCard(c, pi));
+        }
+      } else {
+        const slotCount = (pi === currentPlayer) ? 2 : 1;
+        for (let s = 0; s < slotCount; s++) {
+          const ph = document.createElement('div');
+          ph.className = 'll-discard-card ll-hand-placeholder';
+          oppHand.appendChild(ph);
+        }
+      }
+      opp.appendChild(oppHand);
+    }
+
     // End-of-round showdown: append the alive player's last hand card to
     // their visible discard pile so the table is fully revealed. Engine
     // leaves the hand intact for tie-break sum calculations, so we tack
     // it on the JS side without mutating game state.
-    const renderedDiscards = (p.discards || []).slice();
+    const renderedDiscards = orderedDiscardsFor(pi, p.discards || [], st);
     if (isTerminal && p.alive && p.hand > 0) renderedDiscards.push(p.hand);
     const disc = buildDiscardPile(renderedDiscards, pi);
     opp.appendChild(disc);
@@ -475,7 +633,7 @@ function renderPlayerArea(container, gs, ctx) {
   // Showdown: if the round ended and human is still alive, append their
   // last hand card to the discard pile so the player sees their own
   // table revealed alongside the opponents'.
-  const myDiscards = (pd.discards || []).slice();
+  const myDiscards = orderedDiscardsFor(humanPlayer, pd.discards || [], st);
   if (isTerminal && pd.alive && pd.hand > 0) myDiscards.push(pd.hand);
   const disc = buildDiscardPile(myDiscards, humanPlayer);
   disc.classList.add('mine');
@@ -486,6 +644,12 @@ function renderPlayerArea(container, gs, ctx) {
     dead.className = 'll-dead-msg';
     dead.textContent = t('ll.you_eliminated');
     area.appendChild(dead);
+    // Reserve the hand row so the player area's height stays anchored —
+    // .ll-hand has min-height: 180px which we'd otherwise lose at terminal
+    // / eliminated states, causing the whole layout to jump.
+    const handPlaceholder = document.createElement('div');
+    handPlaceholder.className = 'll-hand';
+    area.appendChild(handPlaceholder);
     container.appendChild(area);
     return;
   }
@@ -493,6 +657,9 @@ function renderPlayerArea(container, gs, ctx) {
   // At terminal: the human's last card has been moved to the discard pile
   // visually. Don't also render it as a hand card (that would duplicate it).
   if (isTerminal) {
+    const handPlaceholder = document.createElement('div');
+    handPlaceholder.className = 'll-hand';
+    area.appendChild(handPlaceholder);
     container.appendChild(area);
     return;
   }
@@ -530,6 +697,27 @@ function renderPlayerArea(container, gs, ctx) {
   }
 
   container.appendChild(area);
+}
+
+// Non-interactive card chip used to surface an opponent's hand card in
+// replay-mode reveal-hidden. Same visual language as the discard pile
+// chips (.ll-discard-card) so it fits in the opponent's fixed slot
+// without competing visually with the player's own hand.
+function buildRevealedCard(cardValue, ownerIdx) {
+  const el = document.createElement('div');
+  el.className = 'll-discard-card ll-revealed-hand-card card-' + cardValue;
+  el.setAttribute('data-revealed-hand', String(ownerIdx));
+
+  const v = document.createElement('div');
+  v.className = 'll-discard-card-value';
+  v.textContent = CARD_VALUES[cardValue];
+  el.appendChild(v);
+
+  const n = document.createElement('div');
+  n.className = 'll-discard-card-name';
+  n.textContent = cardLabel(cardValue);
+  el.appendChild(n);
+  return el;
 }
 
 function createCardElement(cardValue, playing, legalSet) {
@@ -665,6 +853,42 @@ function describeTransition(prevState, newState, actionInfo, actionId) {
   const humanPlayer = (currentCtx && currentCtx.state) ? currentCtx.state.humanPlayer : 0;
   const cardValue = actionInfo.card || 0;
   const target = actionInfo.target;
+
+  // Append to the ordered-discard cache so play-order survives across the
+  // post-animation re-render. We diff prev → new per player, so Prince's
+  // target-also-discards effect is captured (otherwise the target's added
+  // card would appear at multiset-sorted position rather than play-order).
+  // The actor goes first (their played card lands before the target's
+  // forced discard). Reconciliation in orderedDiscardsFor still recovers
+  // if our log diverges (round reset / replay jump / undo).
+  if (newState && newState.state && prevState.state) {
+    const prevPlayers = prevState.state.players || [];
+    const newPlayers = newState.state.players || [];
+    const seatOrder = [];
+    seatOrder.push(actor);
+    for (let p = 0; p < newPlayers.length; p++) if (p !== actor) seatOrder.push(p);
+    for (const p of seatOrder) {
+      const before = (prevPlayers[p] && prevPlayers[p].discards) || [];
+      const after = (newPlayers[p] && newPlayers[p].discards) || [];
+      const counts = new Array(9).fill(0);
+      for (const c of after) counts[c]++;
+      for (const c of before) counts[c]--;
+      // Anchor ordering: for the actor, the played card is the visible
+      // play and lands first; remaining diff cards (e.g. self-Prince
+      // post-redraw revealed Princess) come after. For non-actors only
+      // forced discards appear in the diff.
+      if (p === actor && cardValue > 0 && counts[cardValue] > 0) {
+        recordDiscard(p, cardValue);
+        counts[cardValue]--;
+      }
+      for (let c = 1; c <= 8; c++) {
+        while (counts[c] > 0) {
+          recordDiscard(p, c);
+          counts[c]--;
+        }
+      }
+    }
+  }
 
   // Step 1: the card physically moves to the actor's discard pile, with
   // the action-bubble popping above them. This resolves BEFORE any target
@@ -1007,6 +1231,7 @@ createApp({
   disableForce: true,
   showWinrateDefault: false,
   onActionSubmitted: () => { resetPending(); },
-  onGameStart: () => { resetPending(); },
-  onUndo: () => { resetPending(); },
+  onGameStart: () => { resetPending(); resetDiscardOrder(); },
+  onUndo: () => { resetPending(); resetDiscardOrder(); },
+  onReplayFrames: (frames) => { precomputeReplayDiscardOrder(frames); },
 });

@@ -43,7 +43,8 @@ template <int NPlayers>
 class CoupBeliefTracker final : public IBeliefTracker {
  public:
   using Cfg = CoupConfig<NPlayers>;
-  void init(const AnyMap& initial_observation) override;
+  void init(IGameState& state, int perspective,
+            const AnyMap& payload) override;
   void observe_public_event(
       int actor,
       ActionId action,
@@ -54,12 +55,15 @@ class CoupBeliefTracker final : public IBeliefTracker {
     return std::make_unique<CoupBeliefTracker<NPlayers>>(*this);
   }
 
-  // For tests: expose signal counts.
+  // For tests / encoder: expose signal counts and pending-claim state.
   int signal_count(int player, int role) const {
     if (player < 0 || player >= NPlayers) return 0;
     if (role < 0 || role >= kCharacterCount) return 0;
     return signals_[player][role];
   }
+  int pending_claimer() const { return pending_claimer_; }
+  int pending_claim_role() const { return pending_claim_role_; }
+  bool pending_challenged() const { return pending_challenged_; }
 
  private:
   int perspective_player_ = -1;

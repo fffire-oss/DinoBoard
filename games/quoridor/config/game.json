@@ -1,6 +1,6 @@
 {
   "game_id": "quoridor",
-  "display_name": "步步为营",
+  "display_name": "\u6b65\u6b65\u4e3a\u8425",
   "display_name_en": "Quoridor",
   "players": {
     "min": 2,
@@ -14,7 +14,12 @@
       "simulations": 800,
       "c_puct": 1.4,
       "temperature": 1.0,
-      "temperature_schedule": {"enabled": true, "initial": 1.0, "final": 0.15, "decay_plies": 40},
+      "temperature_schedule": {
+        "enabled": true,
+        "initial": 1.0,
+        "final": 0.15,
+        "decay_plies": 40
+      },
       "dirichlet_alpha": 0.15,
       "dirichlet_epsilon": 0.25,
       "dirichlet_on_first_n_plies": 16,
@@ -29,7 +34,12 @@
     "arena": {
       "inherits": "selfplay",
       "temperature": 0.1,
-      "temperature_schedule": {"enabled": false, "initial": 0.0, "final": 0.0, "decay_plies": 0},
+      "temperature_schedule": {
+        "enabled": false,
+        "initial": 0.0,
+        "final": 0.0,
+        "decay_plies": 0
+      },
       "dirichlet_epsilon": 0.0,
       "dirichlet_on_first_n_plies": 0,
       "ai_use_action_filter": false

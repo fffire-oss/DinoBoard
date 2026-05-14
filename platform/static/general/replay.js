@@ -336,6 +336,17 @@ export function createReplayController(infoCol, config) {
       applyVisibility();
     },
     isActive() { return frames !== null; },
+    rerender() {
+      // Re-issue onRenderFrame for the current step without changing
+      // step. Used by app.js when a UI toggle (e.g. revealHidden) flips
+      // mid-replay and the board needs to redraw with the new flag.
+      if (!frames || !frames.length) return;
+      // Force renderPanel's prevFrame=null path (we're not animating) by
+      // resetting lastRenderedStep; the board re-renders synchronously
+      // from displayFrame.
+      lastRenderedStep = -1;
+      renderPanel();
+    },
     onRenderFrame(fn) { onRenderFrame = fn; },
     onExit(fn) { onExit = fn; },
     setResolveActor(fn) { resolveActor = fn; },

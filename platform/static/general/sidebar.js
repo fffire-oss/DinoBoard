@@ -31,6 +31,23 @@ function saveShowWinrate(gameId, flag) {
   try { localStorage.setItem(showWinrateKey(gameId), flag ? '1' : '0'); } catch (e) {}
 }
 
+const REVEAL_HIDDEN_REPLAY_KEY = 'dinoboard.revealHiddenInReplay';
+
+function loadRevealHiddenInReplay() {
+  // Default ON: opening a replay is an explicit request to review the
+  // game with full information; hiding cards there serves no one. Live
+  // play is unaffected (the toggle is gated on state.replayMode in app.js).
+  // Users can opt out via the sidebar checkbox.
+  try {
+    const v = localStorage.getItem(REVEAL_HIDDEN_REPLAY_KEY);
+    return v === null ? true : v !== '0';
+  } catch (e) { return true; }
+}
+
+function saveRevealHiddenInReplay(flag) {
+  try { localStorage.setItem(REVEAL_HIDDEN_REPLAY_KEY, flag ? '1' : '0'); } catch (e) {}
+}
+
 export function createSidebar(sidebarEl, config, callbacks) {
   const difficulties = config.difficulties || ['heuristic', 'casual', 'expert'];
   const defaultDiff = config.defaultDifficulty || 'expert';
@@ -93,6 +110,10 @@ export function createSidebar(sidebarEl, config, callbacks) {
       <label class="side-toggle">
         <input type="checkbox" id="toggle-show-winrate">
         <span>${t('sidebar.toggle_show_winrate')}</span>
+      </label>
+      <label class="side-toggle">
+        <input type="checkbox" id="toggle-reveal-hidden-replay">
+        <span>${t('sidebar.toggle_reveal_hidden_replay')}</span>
       </label>
       <div id="ops-msg" class="muted"></div>
     </div>
@@ -251,6 +272,21 @@ export function createSidebar(sidebarEl, config, callbacks) {
     });
   }
 
+  // Reveal-hidden-info-in-replay toggle. Only takes effect during replay
+  // playback; live play is unaffected (the human still can't see the
+  // opponent's hand, drawn deck reserves, etc.). Default OFF — opt in
+  // for replay study / debug. Persisted globally (not per game), since
+  // the user is opting into "show me everything when reviewing".
+  const revealHiddenToggle = sidebarEl.querySelector('#toggle-reveal-hidden-replay');
+  let revealHiddenHandler = null;
+  if (revealHiddenToggle) {
+    revealHiddenToggle.checked = loadRevealHiddenInReplay();
+    revealHiddenToggle.addEventListener('change', () => {
+      saveRevealHiddenInReplay(revealHiddenToggle.checked);
+      if (revealHiddenHandler) revealHiddenHandler(revealHiddenToggle.checked);
+    });
+  }
+
   // Enable / disable the operate-during-human-turn buttons. Called by the
   // app whenever the game state changes — AI thinking, AI's turn, busy,
   // replay mode, terminal — all of these should lock out undo / force /
@@ -284,6 +320,10 @@ export function createSidebar(sidebarEl, config, callbacks) {
         : loadShowWinrate(config.gameId, winrateDefault);
     },
     onShowWinrateToggle(fn) { showWinrateHandler = fn; },
+    getRevealHiddenInReplay() {
+      return revealHiddenToggle ? revealHiddenToggle.checked : loadRevealHiddenInReplay();
+    },
+    onRevealHiddenInReplayToggle(fn) { revealHiddenHandler = fn; },
     rebuildForceButtons,
     setHumanCanAct,
   };

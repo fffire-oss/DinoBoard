@@ -157,11 +157,17 @@ class FilteredRulesWrapper final : public IGameRules {
 using PublicEventExtractor = board_ai::PublicEventExtractor;
 using PublicStateApplier = board_ai::PublicStateApplier;
 
+// Per-seat policy/value evaluator lookup. Selfplay's opponent-pool path and
+// arena both need this shape — same callback wired through both runners so
+// MCTS at each ply queries the network registered for the acting seat.
+using PolicyEvaluatorFactory = std::function<
+    const search::IPolicyValueEvaluator&(int player_index)>;
+
 SelfplayEpisodeResult run_selfplay_episode(
     IGameState& initial_state,
     const IGameRules& rules,
     const IStateValueModel& value_model,
-    const search::IPolicyValueEvaluator& evaluator,
+    PolicyEvaluatorFactory evaluator_for_player,
     const SelfplayConfig& config,
     std::uint64_t episode_seed,
     // One tracker per player seat. For hidden-info games: size == num_players;

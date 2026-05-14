@@ -98,9 +98,14 @@ using PublicEventExtractor = std::function<PublicEventTrace(
 // Required for all hidden-info games. Fully-public games (tictactoe,
 // quoridor) do not register one — there is no hidden for do_action_fast
 // to read wrong, so the public side is already tamper-proof.
+// receiver_seat: the perspective whose session this state belongs to.
+// Needed by partial-reveal sidecar appliers to toggle viz=1 on the right
+// viewer axis. Pass -1 from contexts where the seat is unknown / N/A
+// (fully-public games whose appliers don't consult it).
 using PublicStateApplier = std::function<void(
     IGameState& state,
-    const AnyMap& snapshot)>;
+    const AnyMap& snapshot,
+    int receiver_seat)>;
 
 struct GameBundle {
   std::unique_ptr<IGameState> state;

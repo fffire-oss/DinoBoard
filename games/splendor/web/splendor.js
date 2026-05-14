@@ -661,11 +661,13 @@ function renderPlayerArea(container, gameState, ctx) {
         reserveRow.appendChild(empty);
         continue;
       }
-      if (!item.visible && !isHuman) {
+      if (!item.visible && !isHuman && !ctx.revealHidden) {
         // Face-down reserve (drawn from deck) — kept hidden even when
         // playing for the AI seat via 替对手落子, since we mustn't reveal
         // its identity. Buy_reserved on a hidden slot is therefore not
         // exposed; the human can still play other actions for the AI.
+        // Replay-mode reveal-hidden bypasses this gate so the user can
+        // see the AI's face-down picks during review.
         const hidden = document.createElement('div');
         hidden.className = 'reserve-hidden';
         hidden.dataset.reserved = p + '-' + ri;

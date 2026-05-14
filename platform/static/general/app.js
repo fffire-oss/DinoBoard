@@ -50,6 +50,13 @@ export function createApp(config) {
   // the user toggles the checkbox mid-game (no need to wait for next move).
   sidebar.onShowWinrateToggle(() => { render(); });
 
+  // Reveal-hidden-info-in-replay — re-render the current replay frame so
+  // opponent hands / face-down reserves flip on/off without scrubbing.
+  // No effect during live play (revealHidden in ctx is gated on replayMode).
+  sidebar.onRevealHiddenInReplayToggle(() => {
+    if (state.replayMode) replay.rerender();
+  });
+
   modal.onReplay(() => enterReplay());
   modal.onRestart(() => {
     startGame(sidebar.getSideMode(), sidebar.getDifficulty(), sidebar.getNumPlayers());
@@ -103,6 +110,16 @@ export function createApp(config) {
       if (!state.gameState || state.gameState.is_terminal) return false;
       if (state.busy || poller.isPolling()) return false;
       return !state.aiPlayers.includes(state.gameState.current_player) || state.forceMode;
+    },
+    // Replay-only flag: when true, game frontends should render
+    // opponent-private slots (LL hand, Splendor face-down reserved cards,
+    // etc.) using the truth values present in the replay's state dict.
+    // The replay's state dict already carries truth (the replay rebuilds
+    // from action_history through a single GameSession that holds GT),
+    // and live play is structurally unaffected because this is gated on
+    // state.replayMode AND the user opt-in toggle.
+    get revealHidden() {
+      return state.replayMode && sidebar.getRevealHiddenInReplay();
     },
     submitAction(actionId) { onAction(actionId); },
     rerender() { render(); },

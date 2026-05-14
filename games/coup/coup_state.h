@@ -1,5 +1,6 @@
 #pragma once
 
+#include <any>
 #include <array>
 #include <cstdint>
 #include <vector>
@@ -22,6 +23,8 @@ constexpr int kStartingCoins = 2;
 constexpr int kCoupCost = 7;
 constexpr int kAssassinateCost = 3;
 constexpr int kForceCoupThreshold = 10;
+constexpr int kInfluencePerPlayer = 2;
+constexpr int kExchangeDrawSlots = 2;
 
 constexpr int kIncomeAction = 0;
 constexpr int kForeignAidAction = 1;
@@ -70,20 +73,27 @@ enum class CoupStage : std::int8_t {
   kExchangeReturn2 = 9,
   kLoseInfluenceFromAction = 10,
 };
+constexpr int kStageCount = 11;
 
 template <int NPlayers>
 struct CoupConfig {
   static_assert(NPlayers >= 2 && NPlayers <= 4);
   static constexpr int kPlayers = NPlayers;
-  // Public per-player (13): alive, coins, inf>=1, inf>=2,
-  // revealed-character counts (5), active/target/blocker/challenger (4).
-  static constexpr int kPerPlayerPublicFeatures = 13;
-  // Private per-player (5): unrevealed-character counts of the player's
-  // own hand. Only the owner knows their unrevealed cards.
-  static constexpr int kPerPlayerPrivateFeatures = 5;
+  // See coup_revival plan §"Encoder 设计". Per-player public 23: alive,
+  // coins, 2× influence_slot{revealed + char-OH(5)}=12, role one-hot
+  // (active/target/blocker/challenger)=4, signals(5).
+  static constexpr int kPerPlayerPublicFeatures = 23;
+  // Per-player private 22: 2× own influence char-OH (5+5=10) +
+  // 2× exchange_drawn{occupied + char-OH(5)}=12. Self-block only on
+  // perspective; other players' private blocks zero-filled by encoder.
+  static constexpr int kPerPlayerPrivateFeatures = 22;
   static constexpr int kPerPlayerFeatures =
-      kPerPlayerPublicFeatures + kPerPlayerPrivateFeatures;  // 18
-  static constexpr int kGlobalFeatures = 21;
+      kPerPlayerPublicFeatures + kPerPlayerPrivateFeatures;  // 45
+  // Global: stage(11) + declared_action_type(7) + claimed_char(5) +
+  // block_char(5) + pending_claimer relative-OH(N) + pending_challenged
+  // (1) + deck_size/15(1) + ply/200(1) + revealed multiset per role(5)
+  // = 36 + N.
+  static constexpr int kGlobalFeatures = 36 + NPlayers;
   static constexpr int kFeatureDim = kPerPlayerFeatures * NPlayers + kGlobalFeatures;
   static constexpr int kPublicFeatureDim =
       kPerPlayerPublicFeatures * NPlayers + kGlobalFeatures;
@@ -102,12 +112,17 @@ struct CoupData {
   int ply = 0;
   CoupStage stage = CoupStage::kDeclareAction;
 
-  std::array<std::array<CharId, 2>, Cfg::kPlayers> influence{};
-  std::array<std::array<bool, 2>, Cfg::kPlayers> revealed{};
+  std::array<std::array<CharId, kInfluencePerPlayer>, Cfg::kPlayers> influence{};
+  std::array<std::array<bool, kInfluencePerPlayer>, Cfg::kPlayers> revealed{};
   std::array<int, Cfg::kPlayers> coins{};
   std::array<bool, Cfg::kPlayers> alive{};
 
-  std::vector<CharId> court_deck;
+  // Court deck as fixed-shape multiset count + size scalar. Multiset
+  // shape lets the schema walker hash/serialize/randomize without
+  // variable-length escape hatches; size is the public count exposed
+  // to all viewers.
+  std::array<std::int8_t, kCharacterCount> deck_count{};
+  std::int8_t deck_size = 0;
 
   int active_player = 0;
   ActionId declared_action = -1;
@@ -126,10 +141,10 @@ struct CoupData {
 
   int challenge_check_index = 0;
 
-  // Sentinel {-1, -1} means "no card in this slot". Must not default to
-  // {0, 0} — randomize_unseen treats >=0 as "valid card in exchange_drawn"
-  // and would count it as a slot to fill, stealing from court_deck.
-  std::array<CharId, 2> exchange_drawn{-1, -1};
+  // Exchange-drawn buffer. Sentinel -1 means "no card here". Rules
+  // call viz::reveal_slot_to(active_player) when drawing and
+  // viz::reset_to_base on return; the schema base is all_hidden.
+  std::array<CharId, kExchangeDrawSlots> exchange_drawn{-1, -1};
   int exchange_held_count = 0;
 };
 
@@ -137,33 +152,31 @@ template <int NPlayers>
 struct CoupState final : public CloneableState<CoupState<NPlayers>> {
   using Cfg = CoupConfig<NPlayers>;
   CoupData<NPlayers> data;
-  std::vector<CoupData<NPlayers>> undo_stack;
 
   CoupState();
 
-  // Phase 3 — visibility schema. Coup is a hidden-info game:
-  //   - all_public: stage / coins / alive / revealed / current_player /
-  //     declared_action / etc. Everyone at the table sees these.
-  //   - owner_only_first_axis: influence[N][2]. Each player sees only
-  //     their own face-down cards. When a card is revealed-and-lost,
-  //     rules' do_action_fast flips revealed[p][s]=true (public flag
-  //     already in all_public space) — the influence card itself stays
-  //     keyed by owner; consumers gate on revealed[p][s] in Phase 3+.
-  //   - all_hidden: exchange_drawn[2]. Two cards drawn from court_deck
-  //     during Exchange; only the active player sees them. Rules will
-  //     reveal_slot_to(active_player) in do_action_fast on draw, and
-  //     reset_to_base on return-to-deck. (Reveal wiring is a follow-on;
-  //     this PR only declares the base.)
-  //   - court_deck (variable-length vector): NOT declared as a slot
-  //     field. Content is hidden, size is publicly derivable, both are
-  //     already handled by hash_public_fields / randomize_unseen.
+  // Visibility schema. Coup's hidden info partitions into:
+  //   - all_public scalars/arrays: stage/coins/alive/revealed/etc.,
+  //     and the multiset COUNT view (deck_size). Public to every
+  //     perspective at all times.
+  //   - owner_only_first_axis: influence[N][2]. base viz[p, *, p]=1.
+  //     When a card is revealed by a challenge or lose-influence,
+  //     rules call viz::reveal_slot(state, "influence", {p, s}) so
+  //     every perspective sees the truth (not gated on a side flag).
+  //   - all_hidden: exchange_drawn[2], deck_count[5]. Active player
+  //     gets reveal_slot_to during exchange; deck_count is filled by
+  //     the tracker's randomize_unseen for sim entries.
   static const viz::VisibilitySchema& schema();
 
   void reset_with_seed(std::uint64_t seed) override;
   StateHash64 state_hash() const override;
   void hash_field_slot(Hasher& h, const std::string& name,
                        const std::vector<int>& idx) const override;
-  void hash_extra_state_fields(int perspective, Hasher& h) const override;
+  std::any read_field_slot(const std::string& name,
+                           const std::vector<int>& idx) const override;
+  void write_field_slot(const std::string& name,
+                        const std::vector<int>& idx,
+                        const std::any& value) override;
   void mask_field_slot(const std::string& name,
                        const std::vector<int>& idx) override;
   const viz::VisibilitySchema& schema_ref() const override { return schema(); }
