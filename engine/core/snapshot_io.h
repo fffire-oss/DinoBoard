@@ -1,302 +1,216 @@
 #pragma once
 
-// Snapshot wire I/O — schema-walker driven.
+// Snapshot wire I/O — schema-walker driven, single unified protocol.
 //
-// Two halves of the same wire shape:
+// GT writes the complete observation for a perspective in two halves on
+// the same `AnyMap snap`:
 //
-//   1) `serialize_public` / `apply_public` — walks every (name, idx) of
-//      every all_public field, calling `state.read_field_slot` /
-//      `state.write_field_slot`. Wire shape: `AnyMap[field_name]` is a
-//      `vector<any>` in row-major slot order.
+//   1) Per-field value half: `snap[field_name]` is a `vector<any>` of
+//      `(idx_path, value)` pairs — one entry pair for every data slot
+//      where `viz_[name][..., perspective] == 1`. `idx_path` is a
+//      `vector<int>` (empty for scalar fields). `value` is whatever
+//      `state.read_field_slot(name, idx)` returned.
 //
-//   2) `serialize_partial_reveals` / `apply_partial_reveals` — sidecar
-//      that carries the non-all_public slots which rules have revealed
-//      to a specific perspective (LL hand[owner], LL drawn_card after
-//      reveal_slot_to(starter), etc.). Wire shape:
-//      `snap[__partial_reveal][field_name]` = vector<any>{idx, value, ...}.
+//   2) Viz-slice half: `snap[kVizSliceKey]` is an `AnyMap` keyed by field
+//      name; each value is a flat `vector<int>` of length
+//      `prod(data_axes)` carrying `viz_[name][..., perspective]` for
+//      every data slot. Receiver wholesale-replaces its own viz slice
+//      from this — no derivation, no reset-to-base.
+//
+// Both halves are walked through the schema's full slot set. There is no
+// all_public / non-all_public branching. A field declared all_public has
+// every slot's viz=1, so its full row appears in the value half; a field
+// declared owner_only_first_axis has only the perspective-owned rows in
+// the value half. Either way, the receiver just re-applies what the wire
+// says — both for values (write_field_slot) and for viz
+// (viz::apply_full_slice).
 
 #include <any>
 #include <stdexcept>
 #include <string>
-#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 #include "game_interfaces.h"
 #include "visibility_schema.h"
+#include "viz_runtime.h"
 #include "viz_walker.h"
 
 namespace board_ai {
 namespace viz {
 
+inline constexpr const char* kVizSliceKey = "__viz__";
+
 namespace detail {
-inline bool is_all_public(const VizTensor& v) {
-  if (v.data.empty()) return false;
-  for (auto byte : v.data) {
-    if (byte != 1) return false;
-  }
-  return true;
+
+// Number of data slots in a viz tensor (product of all data axes; viz
+// shape is data_axes + [n_viewers]).
+inline std::size_t data_slot_count(const VizTensor& v) {
+  if (v.data.empty()) return 0;
+  const int n_viewers = v.viewer_count();
+  if (n_viewers <= 0) return 0;
+  return v.data.size() / static_cast<std::size_t>(n_viewers);
 }
+
+// Extract a vector<int> from std::any, accepting either native vector<int>
+// or vector<any>-of-int (pybind round-trips empty Python lists this way).
+inline std::vector<int> any_to_int_vec(const std::any& a,
+                                       const std::string& ctx) {
+  if (a.type() == typeid(std::vector<int>)) {
+    return std::any_cast<const std::vector<int>&>(a);
+  }
+  if (a.type() == typeid(std::vector<std::any>)) {
+    const auto& av = std::any_cast<const std::vector<std::any>&>(a);
+    std::vector<int> out;
+    out.reserve(av.size());
+    for (const auto& x : av) {
+      if (x.type() != typeid(int)) {
+        throw std::invalid_argument(
+            ctx + ": vector contains non-int element");
+      }
+      out.push_back(std::any_cast<int>(x));
+    }
+    return out;
+  }
+  throw std::invalid_argument(ctx + ": payload is not vector<int>");
+}
+
 }  // namespace detail
 
-// ---------------- Walker-driven serialize/apply ----------------
-//
-// Walks every (name, idx) of every all_public field. For each slot:
-//   serialize_public: snap[name].push_back(state.read_field_slot(name, idx))
-//   apply_public    : state.write_field_slot(name, idx, snap[name][k++])
-// Skip set: fields the producer chooses not to ship (e.g. fixed-at-
-// game-start "first_player"). Non-all_public fields ride out-of-band
-// as partial-reveal sidecars (see below).
-
-inline void serialize_public(
+// Serialize the perspective's full observation into `snap`. See file
+// header for wire format. Fields named in `skip` are written to neither
+// half (used for fixed-at-game-start statics like Azul's
+// `game_first_player`).
+inline void serialize_public_snapshot(
     const IGameState& state, const VisibilitySchema& schema,
-    AnyMap& snap, const std::unordered_set<std::string>& skip = {}) {
-  std::unordered_set<std::string> public_fields;
-  for (const auto& f : schema.fields) {
-    if (detail::is_all_public(f.base_viz)) public_fields.insert(f.name);
-  }
-  for_each_visible_slot(
-      state, schema, /*perspective=*/0,
-      [&](const std::string& name, const std::vector<int>& idx,
-          const VizTensor& /*v*/) {
-        if (skip.count(name)) return;
-        if (!public_fields.count(name)) return;
-        auto it = snap.find(name);
-        if (it == snap.end()) {
-          it = snap.emplace(name, std::any(std::vector<std::any>{})).first;
-        }
-        auto& vec = std::any_cast<std::vector<std::any>&>(it->second);
-        vec.push_back(state.read_field_slot(name, idx));
-      });
-}
-
-inline void apply_public(
-    IGameState& state, const VisibilitySchema& schema, const AnyMap& snap,
+    int perspective, AnyMap& snap,
     const std::unordered_set<std::string>& skip = {}) {
-  std::unordered_map<std::string, std::size_t> cursor;
-  std::unordered_set<std::string> public_fields;
-  for (const auto& f : schema.fields) {
-    if (detail::is_all_public(f.base_viz)) public_fields.insert(f.name);
+  if (perspective < 0) {
+    throw std::invalid_argument(
+        "viz::serialize_public_snapshot: perspective must be >= 0");
   }
-  for_each_visible_slot(
-      state, schema, /*perspective=*/0,
-      [&](const std::string& name, const std::vector<int>& idx,
-          const VizTensor& /*v*/) {
-        if (skip.count(name)) return;
-        if (!public_fields.count(name)) return;
-        auto it = snap.find(name);
-        if (it == snap.end()) {
-          throw std::invalid_argument(
-              "viz::apply_public: snap is missing schema field '" + name +
-              "'");
-        }
-        const std::size_t k = cursor[name]++;
-        // py↔C++ AnyMap round-trip collapses all-int Python lists into
-        // vector<int> (see py_to_any in py_engine.cpp), so the payload
-        // arrives as either vector<any> (native C++) or vector<int>
-        // (after pybind). Handle both.
-        if (it->second.type() == typeid(std::vector<std::any>)) {
-          const auto& vec = std::any_cast<const std::vector<std::any>&>(it->second);
-          if (k >= vec.size()) {
-            throw std::invalid_argument(
-                "viz::apply_public: not enough values for field '" + name +
-                "'");
-          }
-          state.write_field_slot(name, idx, vec[k]);
-        } else if (it->second.type() == typeid(std::vector<int>)) {
-          const auto& vec = std::any_cast<const std::vector<int>&>(it->second);
-          if (k >= vec.size()) {
-            throw std::invalid_argument(
-                "viz::apply_public: not enough values for field '" + name +
-                "'");
-          }
-          state.write_field_slot(name, idx, std::any(vec[k]));
-        } else {
-          throw std::invalid_argument(
-              std::string("viz::apply_public: field '") + name +
-              "' has unsupported any type '" + it->second.type().name() +
-              "' for vector payload");
-        }
-      });
-}
 
-// ---------------- Walker-driven partial-reveal sidecar ----------------
-//
-// `serialize_public` only ships fields whose schema base_viz is all_public.
-// Fields with non-all_public base (owner_only_first_axis, all_hidden) but
-// whose runtime viz[idx, perspective] == 1 — Love Letter hand[owner],
-// LL drawn_card after reveal_slot_to(starter), Coup influence[p,s] after
-// lose-influence reveal_slot, etc. — ride out-of-band on this sidecar.
-//
-// Wire shape:
-//   snap[kPartialRevealKey] is an AnyMap keyed by field name. For each
-//   field, the value is a vector<any> of {idx, value} entries:
-//     vector<any>{
-//       any(vector<int> idx_path), any(value),
-//       any(vector<int> idx_path), any(value),
-//       ...
-//     }
-//   `idx_path` is the data-axis index (matches walker's idx, empty for
-//   scalars). `value` is what state.read_field_slot returns for that slot.
-//
-// `serialize_partial_reveals(state, schema, perspective, snap)`:
-//   For every field whose base_viz is NOT all_public, walk runtime viz=1
-//   slots for `perspective` and append (idx, value) entries.
-//
-// `apply_partial_reveals(state, schema, receiver_seat, snap)`:
-//   Wholesale-replacement semantics. For every non-all_public field,
-//   first reset its viz to schema base (i.e. drop all in-round reveals
-//   on the observer side), THEN walk the sidecar entries and:
-//     - state.write_field_slot(name, idx, value)
-//     - reveal_slot_to(state, name, idx, receiver_seat)
-//
-// The reset-to-base step is essential: rules on truth call reset_to_base
-// at round transitions / King-swap / Priest-peek-end, dropping a viewer's
-// runtime reveals back to schema base. The observer must mirror that
-// drop, otherwise a previously-revealed slot stays viz=1 forever and the
-// observer's hash diverges from truth's. Re-revealing happens via the
-// sidecar entries on the same call (any slot still visible to receiver
-// will be in the sidecar and will reveal_slot_to again).
-//
-// Receiver-seat is passed by the caller (runner / API session knows
-// which seat it is). No magic key in the AnyMap.
-//
-// Test guard: tests/framework/test_partial_reveal_round_trip.py.
-
-inline constexpr const char* kPartialRevealKey = "__partial_reveal";
-
-inline void serialize_partial_reveals(
-    const IGameState& state, const VisibilitySchema& schema,
-    int perspective, AnyMap& snap) {
-  if (perspective < 0) return;
-  std::unordered_set<std::string> non_public_fields;
-  for (const auto& f : schema.fields) {
-    if (f.base_viz.empty()) continue;
-    if (!detail::is_all_public(f.base_viz)) {
-      non_public_fields.insert(f.name);
-    }
-  }
-  if (non_public_fields.empty()) return;
-
-  AnyMap partial;
+  // Value half: walk visible slots, append (idx, value) pairs.
   for_each_visible_slot(
       state, schema, perspective,
       [&](const std::string& name, const std::vector<int>& idx,
           const VizTensor& /*v*/) {
-        if (!non_public_fields.count(name)) return;
-        auto it = partial.find(name);
-        if (it == partial.end()) {
-          it = partial.emplace(name, std::any(std::vector<std::any>{})).first;
+        if (skip.count(name)) return;
+        auto it = snap.find(name);
+        if (it == snap.end()) {
+          it = snap.emplace(name, std::any(std::vector<std::any>{})).first;
         }
         auto& vec = std::any_cast<std::vector<std::any>&>(it->second);
         vec.push_back(std::any(idx));
         vec.push_back(state.read_field_slot(name, idx));
       });
 
-  if (!partial.empty()) {
-    snap[kPartialRevealKey] = std::any(std::move(partial));
+  // Viz-slice half: for every schema field, copy the perspective's
+  // full data-slot viz row into a flat vector<int>.
+  AnyMap viz_slices;
+  for (const auto& f : schema.fields) {
+    if (skip.count(f.name)) continue;
+    if (f.base_viz.empty()) continue;
+    const auto& v = viz_get(const_cast<IGameState&>(state), f.name);
+    if (v.shape != f.base_viz.shape) {
+      throw std::runtime_error(
+          "viz::serialize_public_snapshot: state.viz_ shape mismatch for '" +
+          f.name + "'");
+    }
+    const int n_viewers = v.viewer_count();
+    if (perspective >= n_viewers) {
+      throw std::out_of_range(
+          "viz::serialize_public_snapshot: perspective out of range on '" +
+          f.name + "'");
+    }
+    const std::size_t n_slots = detail::data_slot_count(v);
+    std::vector<int> slice;
+    slice.reserve(n_slots);
+    const std::size_t row_stride = static_cast<std::size_t>(n_viewers);
+    for (std::size_t k = 0; k < n_slots; ++k) {
+      slice.push_back(static_cast<int>(
+          v.data[k * row_stride + static_cast<std::size_t>(perspective)]));
+    }
+    viz_slices.emplace(f.name, std::any(std::move(slice)));
   }
+  snap[kVizSliceKey] = std::any(std::move(viz_slices));
 }
 
-inline void apply_partial_reveals(
+// Apply a perspective snapshot onto `state`. Wholesale replaces the
+// perspective's viz slice and writes the (idx, value) pairs back via
+// `state.write_field_slot`. Fields named in `skip` are ignored on both
+// halves.
+inline void apply_public_snapshot(
     IGameState& state, const VisibilitySchema& schema,
-    int receiver_seat, const AnyMap& snap) {
-  if (receiver_seat < 0) {
-    // Caller doesn't know its seat (Splendor / fully-public games passing
-    // the default sentinel). Per the contract, sidecar should also be
-    // empty in that case, so a no-op is the right behavior. But if the
-    // sidecar IS present, that's a usage error.
-    if (snap.find(kPartialRevealKey) != snap.end()) {
-      throw std::invalid_argument(
-          "viz::apply_partial_reveals: snapshot carries partial reveals "
-          "but receiver_seat is -1");
-    }
-    return;
-  }
-
-  // Validate that every named field exists in the schema and has
-  // non-all_public base — defensive against shape drift.
-  std::unordered_set<std::string> non_public_fields;
-  for (const auto& f : schema.fields) {
-    if (f.base_viz.empty()) continue;
-    if (!detail::is_all_public(f.base_viz)) {
-      non_public_fields.insert(f.name);
-    }
-  }
-
-  // Wholesale reset: drop receiver's viz on every non-all_public field
-  // back to schema base BEFORE re-applying the sidecar's reveals. Mirrors
-  // truth-side reset_to_base calls that the receiver wouldn't otherwise
-  // see (round transitions, swaps, etc.).
-  for (const auto& f : schema.fields) {
-    if (f.base_viz.empty()) continue;
-    if (detail::is_all_public(f.base_viz)) continue;
-    auto& v = viz_get(state, f.name);
-    if (v.shape != f.base_viz.shape) continue;
-    const int n_viewers = v.viewer_count();
-    if (receiver_seat >= n_viewers) continue;
-    // Stride over every data-axis row, restoring receiver's viewer bit.
-    const std::size_t row_stride = static_cast<std::size_t>(n_viewers);
-    const std::size_t total = v.data.size();
-    for (std::size_t base = 0; base + row_stride <= total; base += row_stride) {
-      v.data[base + static_cast<std::size_t>(receiver_seat)] =
-          f.base_viz.data[base + static_cast<std::size_t>(receiver_seat)];
-    }
-  }
-
-  auto it = snap.find(kPartialRevealKey);
-  if (it == snap.end()) return;
-
-  // Sidecar is itself an AnyMap. Pybind round-trip preserves AnyMap type.
-  if (it->second.type() != typeid(AnyMap)) {
+    int perspective, const AnyMap& snap,
+    const std::unordered_set<std::string>& skip = {}) {
+  if (perspective < 0) {
     throw std::invalid_argument(
-        "viz::apply_partial_reveals: sidecar value is not an AnyMap");
+        "viz::apply_public_snapshot: perspective must be >= 0");
   }
-  const auto& partial = std::any_cast<const AnyMap&>(it->second);
 
-  for (const auto& [name, payload] : partial) {
-    if (!non_public_fields.count(name)) {
+  // Viz-slice half: replace receiver's perspective slice byte-for-byte.
+  // Done first so write_field_slot below operates on a state whose viz
+  // already reflects what GT shipped (downstream readers that key on
+  // viz see a consistent picture).
+  auto viz_it = snap.find(kVizSliceKey);
+  if (viz_it == snap.end()) {
+    throw std::invalid_argument(
+        std::string("viz::apply_public_snapshot: snap is missing '") +
+        kVizSliceKey + "' viz-slice section");
+  }
+  if (viz_it->second.type() != typeid(AnyMap)) {
+    throw std::invalid_argument(
+        std::string("viz::apply_public_snapshot: '") + kVizSliceKey +
+        "' value is not an AnyMap");
+  }
+  const auto& viz_slices = std::any_cast<const AnyMap&>(viz_it->second);
+  for (const auto& f : schema.fields) {
+    if (skip.count(f.name)) continue;
+    if (f.base_viz.empty()) continue;
+    auto fit = viz_slices.find(f.name);
+    if (fit == viz_slices.end()) {
       throw std::invalid_argument(
-          "viz::apply_partial_reveals: field '" + name +
-          "' is not a non-all_public schema field; sidecar shape drift?");
+          "viz::apply_public_snapshot: viz-slice missing field '" +
+          f.name + "'");
+    }
+    const std::vector<int> slice = detail::any_to_int_vec(
+        fit->second,
+        std::string("viz::apply_public_snapshot: field '") + f.name + "' viz");
+    apply_full_slice(state, f.name, perspective, slice);
+  }
+
+  // Value half: walk every (name, value-vec) entry and write back via
+  // state.write_field_slot. Each entry is a vector<any> alternating
+  // idx (vector<int>/vector<any>) and value.
+  std::unordered_set<std::string> field_names;
+  for (const auto& f : schema.fields) field_names.insert(f.name);
+
+  for (const auto& [name, payload] : snap) {
+    if (name == kVizSliceKey) continue;
+    if (skip.count(name)) continue;
+    if (!field_names.count(name)) {
+      throw std::invalid_argument(
+          "viz::apply_public_snapshot: snap key '" + name +
+          "' is not a schema field");
     }
     if (payload.type() != typeid(std::vector<std::any>)) {
       throw std::invalid_argument(
-          "viz::apply_partial_reveals: field '" + name +
+          "viz::apply_public_snapshot: field '" + name +
           "' payload is not vector<any>");
     }
     const auto& vec = std::any_cast<const std::vector<std::any>&>(payload);
     if (vec.size() % 2 != 0) {
       throw std::invalid_argument(
-          "viz::apply_partial_reveals: field '" + name +
+          "viz::apply_public_snapshot: field '" + name +
           "' has odd entry count (idx/value pairs expected)");
     }
     for (std::size_t k = 0; k + 1 < vec.size(); k += 2) {
-      const auto& idx_any = vec[k];
-      // Pybind round-trip folds all-int Python lists into vector<int>,
-      // but EMPTY Python lists arrive as vector<any> (no element to peek
-      // at the int-ness of). Native C++ producer always emits vector<int>.
-      std::vector<int> idx;
-      if (idx_any.type() == typeid(std::vector<int>)) {
-        idx = std::any_cast<const std::vector<int>&>(idx_any);
-      } else if (idx_any.type() == typeid(std::vector<std::any>)) {
-        const auto& av = std::any_cast<const std::vector<std::any>&>(idx_any);
-        idx.reserve(av.size());
-        for (const auto& x : av) {
-          if (x.type() != typeid(int)) {
-            throw std::invalid_argument(
-                "viz::apply_partial_reveals: field '" + name +
-                "' idx entry contains non-int element");
-          }
-          idx.push_back(std::any_cast<int>(x));
-        }
-      } else {
-        throw std::invalid_argument(
-            "viz::apply_partial_reveals: field '" + name +
-            "' idx entry is not vector<int>");
-      }
+      const std::vector<int> idx = detail::any_to_int_vec(
+          vec[k],
+          std::string("viz::apply_public_snapshot: field '") + name +
+              "' idx");
       state.write_field_slot(name, idx, vec[k + 1]);
-      reveal_slot_to(state, name, idx, receiver_seat);
     }
   }
 }

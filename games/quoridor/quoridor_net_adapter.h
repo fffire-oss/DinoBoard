@@ -15,20 +15,12 @@ class QuoridorFeatureEncoder final : public IFeatureEncoder {
  public:
   int action_space() const override { return kActionSpace; }
   int feature_dim() const override { return kFeatureDim; }
-  int public_feature_dim() const override { return kFeatureDim; }
-  int private_feature_dim() const override { return 0; }
 
-  void encode_public(
+  void encode_features(
       const IGameState& state,
       int perspective_player,
       const IBeliefTracker* tracker,
       std::vector<float>* out) const override;
-
-  void encode_private(
-      const IGameState& /*state*/,
-      int /*player*/,
-      const IBeliefTracker* /*tracker*/,
-      std::vector<float>* /*out*/) const override {}
 };
 
 }  // namespace board_ai::quoridor

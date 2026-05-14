@@ -88,7 +88,7 @@ class AzulState final : public CloneableState<AzulState<NPlayers>> {
 
   AzulState();
 
-  // Phase 3 — visibility schema. Azul partitions:
+  // Visibility schema. Azul partitions:
   //   - all_public: every game-facing field. Factories, center pile,
   //     each player's pattern lines / wall / floor / score, round meta,
   //     the first-player marker, AND bag_counts / box_lid_counts.

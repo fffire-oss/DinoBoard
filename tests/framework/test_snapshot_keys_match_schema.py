@@ -16,7 +16,7 @@ This lint pins them together. Every snapshot key must be either:
   (b) `<schema-field-name>_flat` (flattened multi-axis tensor — common
       shape for per-player 2D fields), OR
   (c) on the per-game whitelist of "snapshot-only" keys (variable-length
-      vectors and partial-reveal sidecars not in the schema).
+      vectors not in the schema, and the framework `__viz__` slice).
 
 If a future PR adds a new public field, it goes through schema first;
 the snapshot must follow. If it adds a snapshot key with no schema
@@ -36,9 +36,9 @@ from conftest import games_with_snapshot
 
 # Per-game allowlist of snapshot keys that intentionally have no schema
 # counterpart. Each entry must have a comment explaining why — usually
-# because it's a variable-length vector (handled by hash_public_fields /
-# randomize_unseen, not the schema) or a partial-reveal sidecar (the
-# schema tracks the gate flag, the snapshot ships the revealed value).
+# because it's a variable-length vector (handled by state_hash_for_perspective /
+# randomize_unseen, not the schema) or the framework `__viz__` slice (the
+# perspective's full viz tensor shipped wholesale; not a schema field).
 SNAPSHOT_ONLY_KEYS: dict[str, set[str]] = {
     "loveletter": {
         # Variable-length vectors: hidden contents OR all-public stacks
@@ -46,26 +46,23 @@ SNAPSHOT_ONLY_KEYS: dict[str, set[str]] = {
         "deck_size",       # public size of hidden deck
         "discard_piles",   # all-public per-player vectors
         "face_up_removed",  # 2p-only public vector
-        # §G.1 partial-reveal sidecar: per-perspective overlay carrying
-        # truth values for hand[p] / drawn_card slots that are viz=1 to
-        # the receiver but not all_public (owner_only_first_axis hand,
-        # all_hidden drawn_card with rules-driven owner reveal).
-        "owner_overlay",
-        "__recv_perspective",  # receiver-axis stash for owner_overlay applier
+        "__viz__",         # framework: per-field viz slice for perspective
     },
     "coup": {
         "court_deck_size",      # public size of hidden court deck
         "exchange_drawn_mask",  # public occupancy of all_hidden slots
-        "revealed_char_flat",   # partial-reveal: char id when revealed_flat[i]==1
+        "__viz__",              # framework: per-field viz slice for perspective
     },
     "splendor": {
-        "reserved_faceup_ids_flat",   # partial-reveal: id when reserved_visible
+        "__viz__",  # framework: per-field viz slice for perspective
     },
-    "azul": set(),
+    "azul": {
+        "__viz__",  # framework: per-field viz slice for perspective
+    },
 }
 
 
-# Schema field names that hash_public_fields legitimately omits — these
+# Schema field names that state_hash_for_perspective legitimately omits — these
 # are static-once-set fields that don't influence the equivalence class
 # (e.g. azul's `game_first_player` is fixed at game start). Snapshot may
 # legitimately omit them too. Listed here so the reverse direction of
@@ -77,7 +74,7 @@ SCHEMA_FIELDS_NOT_IN_SNAPSHOT: dict[str, set[str]] = {
     "splendor": set(),
     "loveletter": set(),
     "coup": {
-        "first_player",  # fixed at game start; not in hash_public_fields either
+        "first_player",  # fixed at game start; not in state_hash_for_perspective either
         "ply",           # mirrored as "ply" but coup snapshot uses different naming check
     },
 }
@@ -95,10 +92,13 @@ def _extract_snapshot_keys(register_text: str, schema_fields: set[str]) -> set[s
       loveletter, coup).
     - SnapshotIO style: `put_int(m, "name", v)` / `put_bool(...)` / `put_vec(...)`
       helpers (used by azul).
-    - Walker-driven style: `viz::serialize_public(after, schema, snap)` —
-      writes ALL schema all_public fields. When this call is present, the
-      union of schema fields (minus `skip` set) is the effective snap key
-      set (used by splendor).
+    - Walker-driven style: `viz::serialize_public_snapshot(after, schema,
+      perspective, snap)` — writes (idx, value) pairs for every slot
+      where viz[idx, perspective]=1, plus a `__viz__` viz-slice section.
+      For all_public fields every slot is in the value half, so we record
+      the schema field name as written; for non-all_public fields, only a
+      subset of slots ride the value half but the name is still keyed in
+      `snap[name]`, so we record it the same way.
 
     The lint cares about *what keys end up in the snapshot*, not about the
     syntactic shape of the write."""
@@ -108,9 +108,11 @@ def _extract_snapshot_keys(register_text: str, schema_fields: set[str]) -> set[s
         r'\bput_(?:int|bool|vec)\s*\(\s*m\s*,\s*"([^"]+)"',
         register_text,
     ))
-    if re.search(r'\bviz::serialize_public\s*\(', register_text):
-        # Walker writes every all_public schema field.
+    if re.search(r'\bviz::serialize_public_snapshot\s*\(', register_text):
+        # Walker writes every schema field (the value half is sparse —
+        # only viz=1 slots — but the field name still appears as a key).
         keys.update(schema_fields)
+        keys.add("__viz__")
     return keys
 
 
@@ -161,7 +163,7 @@ def test_every_snapshot_key_aligns_with_schema_or_is_whitelisted() -> None:
         "snapshot keys drifted from viz schema:\n" + "\n".join(failures)
         + "\n\nFix by either renaming the snap key to match the schema "
           "field name (preferred) or, if it's intentionally snapshot-only "
-          "(variable-length vector, partial-reveal sidecar), add it to "
+          "(variable-length vector, framework viz slice), add it to "
           "SNAPSHOT_ONLY_KEYS in this test with a one-line reason."
     )
 

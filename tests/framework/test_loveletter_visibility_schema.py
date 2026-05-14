@@ -1,4 +1,4 @@
-"""Phase 3 (loveletter): pin LoveLetter's visibility schema surface.
+"""Pin LoveLetter's visibility schema surface.
 
 LoveLetter is the most subtle game we ship. Schema partitions:
   - all_public scalars: current_player, first_player, winner, terminal,
@@ -8,10 +8,9 @@ LoveLetter is the most subtle game we ship. Schema partitions:
   - owner_only_first_axis: hand[N]. Each player sees only their own
     hand card. hand_exposed[p] gates downstream reveals (same pattern
     as Coup's revealed[] / influence[]).
-  - all_hidden: drawn_card (rules will reveal_slot_to(current_player)
-    on draw, reset_to_base on play — reveal-wiring is a follow-on PR).
-    set_aside_card (permanently hidden — bottom-of-deck removed at
-    game start).
+  - all_hidden: drawn_card (rules reveal_slot_to(current_player) on
+    draw, reset_to_base on play). set_aside_card (permanently hidden —
+    bottom-of-deck removed at game start).
   - Variable-length vectors NOT in schema: deck (hidden contents,
     public size — randomize_unseen handles); discard_piles[N]
     (all-public stack); face_up_removed (2p-only public).
@@ -79,7 +78,7 @@ def test_source_partitions_fields_correctly() -> None:
             text,
         ), (
             f"{name} must NOT be a schema slot — variable-length vector; "
-            "handled by hash_public_fields / randomize_unseen instead"
+            "handled by state_hash_for_perspective / randomize_unseen instead"
         )
 
 

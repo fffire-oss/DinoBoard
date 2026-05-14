@@ -153,13 +153,9 @@ board_ai::HeuristicResult heuristic_random(
 
 namespace coup_events {
 
-// Public-event extractor. All-public schema slots ride
-// `viz::serialize_public`. Per-perspective reveals — owner-visible
-// `influence[perspective, *]` (base owner_only_first_axis), challenge /
-// lose-influence reveals on `influence`, and `exchange_drawn` while
-// the active player holds the two drawn cards — ride the framework
-// partial-reveal sidecar `viz::serialize_partial_reveals`. Coup emits
-// no public events of its own; tracker signal accrual happens inside
+// Public-event extractor / applier — single unified call into the
+// schema-walker driven snapshot primitive. Coup emits no public events
+// of its own; tracker signal accrual happens inside
 // `CoupBeliefTracker::observe_public_event` driven by `(actor, action)`.
 template <int NPlayers>
 PublicEventTrace extract_events(
@@ -169,27 +165,17 @@ PublicEventTrace extract_events(
     int perspective) {
   using namespace board_ai::coup;
   PublicEventTrace out;
-  AnyMap snap;
-  board_ai::viz::serialize_public(after, CoupState<NPlayers>::schema(),
-                                  snap);
-  board_ai::viz::serialize_partial_reveals(
-      after, CoupState<NPlayers>::schema(), perspective, snap);
-  out.public_snapshot = std::move(snap);
+  board_ai::viz::serialize_public_snapshot(
+      after, CoupState<NPlayers>::schema(), perspective,
+      out.public_snapshot);
   return out;
 }
 
-// Inverse of `extract_events`'s snapshot population. Walker-driven
-// `viz::apply_public` writes every all_public slot back;
-// `viz::apply_partial_reveals` resets per-perspective reveals on
-// non-all_public fields to schema base, then re-applies the sidecar
-// entries — mirroring truth-side `reset_to_base` calls that the
-// receiver wouldn't otherwise see.
 template <int NPlayers>
 void apply_public_state(IGameState& state, const AnyMap& snap,
                         int receiver_seat) {
   using namespace board_ai::coup;
-  board_ai::viz::apply_public(state, CoupState<NPlayers>::schema(), snap);
-  board_ai::viz::apply_partial_reveals(
+  board_ai::viz::apply_public_snapshot(
       state, CoupState<NPlayers>::schema(), receiver_seat, snap);
 }
 

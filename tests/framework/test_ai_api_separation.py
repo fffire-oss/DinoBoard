@@ -389,7 +389,7 @@ _FORBIDDEN_STATE_KEYS = {
     # Hidden-info per-game private fields (Love Letter / Coup / Splendor)
     "p0_hand", "p1_hand", "p2_hand", "p3_hand",
     "face_down_id", "claimed_role", "claimed_roles",
-    "owner_overlay", "self_reserve_deck", "private_reserves",
+    "self_reserve_deck", "private_reserves",
     "influence", "remaining_deck", "discard_private",
     # Encoded tensors that should never be sent to clients
     "features", "legal_mask", "legal_actions",

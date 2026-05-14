@@ -49,7 +49,7 @@ void append_floor_features(const PlayerState& p, std::vector<float>* out) {
 }  // namespace
 
 template <int NPlayers>
-void AzulFeatureEncoder<NPlayers>::encode_public(
+void AzulFeatureEncoder<NPlayers>::encode_features(
     const IGameState& state,
     int perspective_player,
     const IBeliefTracker* /*tracker*/,

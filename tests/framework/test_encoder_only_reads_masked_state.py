@@ -11,11 +11,11 @@ Background (CLAUDE.md "AI Pipeline Independence" + ALGORITHM_OVERVIEW
   encoders MUST branch on the placeholder value (treating it as
   "hidden") rather than emitting it as a numeric feature.
 
-  If a per-game encode_public / encode_private forgets to handle a
-  hidden slot — i.e. it reads the slot and dumps the raw int into the
-  feature vector — the output will contain INT32_MIN (~ -2.147e9) or
-  INT8_MIN (-128). That's a structural leak symptom: the network sees
-  a sentinel value as if it were a real game-state feature.
+  If a per-game `encode_features` forgets to handle a hidden slot —
+  i.e. it reads the slot and dumps the raw int into the feature
+  vector — the output will contain INT32_MIN (~ -2.147e9) or INT8_MIN
+  (-128). That's a structural leak symptom: the network sees a
+  sentinel value as if it were a real game-state feature.
 
 This test guards the encoder contract end-to-end: across all games,
 no feature value falls into the placeholder-sentinel range.
@@ -58,36 +58,33 @@ _HIDDEN_INFO_GAMES = hidden_info_games()
 
 @pytest.mark.parametrize("game_id", ALL_GAMES)
 def test_encoder_features_have_no_placeholder_sentinels(game_id):
-    """encode_state runs the full encoder pipeline (encode + encode_public
-    + encode_private) on a freshly-created state. None of the produced
-    feature vectors may contain a placeholder sentinel value — that
+    """encode_state runs the encoder on a freshly-created state. The
+    feature vector must not contain a placeholder sentinel value — that
     would mean a hidden slot leaked into features unmasked.
     """
     enc = engine.encode_state(game_id, seed=42)
+    feats = np.asarray(enc["features"], dtype=np.float64)
+    if feats.size == 0:
+        return
 
-    for label in ("features", "public_features", "private_features"):
-        feats = np.asarray(enc[label], dtype=np.float64)
-        if feats.size == 0:
-            continue
+    # Detect Int32 placeholder leak.
+    bad32 = np.where(feats <= PLACEHOLDER_INT32 + 1)[0]
+    assert bad32.size == 0, (
+        f"[{game_id}] features contain Int32 placeholder sentinel at "
+        f"indices {bad32.tolist()[:5]} (value {feats[bad32[0]]}). "
+        f"An `encode_features` code path read a hidden slot without "
+        f"checking for kPlaceholderInt32. The masked-state contract "
+        f"requires hidden slots to be branched on the placeholder, "
+        f"not emitted as raw features.")
 
-        # Detect Int32 placeholder leak.
-        bad32 = np.where(feats <= PLACEHOLDER_INT32 + 1)[0]
-        assert bad32.size == 0, (
-            f"[{game_id}] {label} contains Int32 placeholder sentinel at "
-            f"indices {bad32.tolist()[:5]} (value {feats[bad32[0]]}). "
-            f"This means an encode_public/encode_private code path read a "
-            f"hidden slot without checking for kPlaceholderInt32. The "
-            f"masked-state contract requires hidden slots to be branched "
-            f"on the placeholder, not emitted as raw features.")
-
-        # Detect Int8 placeholder leak. -128 is well outside legitimate
-        # encoder output ranges (one-hots / small counts / [0,1] norms).
-        bad8 = np.where(np.isclose(feats, PLACEHOLDER_INT8, atol=1e-3))[0]
-        assert bad8.size == 0, (
-            f"[{game_id}] {label} contains Int8 placeholder sentinel "
-            f"(-128) at indices {bad8.tolist()[:5]}. "
-            f"This means an encode_public/encode_private code path read a "
-            f"hidden int8 slot without checking for kPlaceholderInt8.")
+    # Detect Int8 placeholder leak. -128 is well outside legitimate
+    # encoder output ranges (one-hots / small counts / [0,1] norms).
+    bad8 = np.where(np.isclose(feats, PLACEHOLDER_INT8, atol=1e-3))[0]
+    assert bad8.size == 0, (
+        f"[{game_id}] features contain Int8 placeholder sentinel "
+        f"(-128) at indices {bad8.tolist()[:5]}. "
+        f"An `encode_features` code path read a hidden int8 slot "
+        f"without checking for kPlaceholderInt8.")
 
 
 @pytest.mark.parametrize("game_id", _HIDDEN_INFO_GAMES)

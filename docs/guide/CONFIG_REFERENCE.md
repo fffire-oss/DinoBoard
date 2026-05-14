@@ -68,6 +68,8 @@ JSON 中**强制嵌套**：
 
 旧的扁平形式（`temperature_initial: 1.0`）被显式拒绝。
 
+**只有 `selfplay` profile 真的消费 schedule**（`_worker_selfplay` / `_worker_selfplay_pool` 把 `temperature_initial / final / decay_plies` 透传到 `run_selfplay_episode`）。`arena` / `eval` 的 worker 只读 `profile.temperature` 这一个标量（见 `training/pipeline.py:_worker_arena` / `_worker_eval_vs_heuristic`），所以 arena / eval profile 写 `temperature_schedule.enabled = true` 也不会衰减——按惯例那两个 profile 把 `enabled` 设 false、用单一 `temperature`（如 `0.1` 或 `0.0`）即可。Schema 仍要求嵌套结构存在（结构合法性校验）。
+
 ---
 
 ## game.json
@@ -81,7 +83,8 @@ JSON 中**强制嵌套**：
 | 字段 | 类型 | 必须 | 说明 |
 |---|---|---|---|
 | `game_id` | string | 是 | 必须和 GameRegistrar 注册的 id 一致 |
-| `display_name` | string | 是 | 显示名称 |
+| `display_name` | string | 是 | 显示名称（中文，sidebar 默认显示） |
+| `display_name_en` | string | 否 | 英文显示名（web sidebar 在 `lang=en` 时使用；缺省回退到 `display_name`） |
 | `players.min` | int | 是 | 最少玩家数 |
 | `players.max` | int | 是 | 最多玩家数 |
 | `action_space` | int | 是 | 动作空间大小（必须和 encoder 一致） |
@@ -99,7 +102,8 @@ JSON 中**强制嵌套**：
 | `episodes_per_step` | int | 200 | 每步自我对弈局数 |
 | `simulations_start` | int | =selfplay.simulations | 训练初始 MCTS 模拟次数，前 30% 步线性爬到 selfplay profile 的 simulations |
 | `batch_size` | int | 512 | SGD mini-batch 大小 |
-| `learning_rate` | float | 0.001 | AdamW 学习率 |
+| `learning_rate` | float | 0.001 | AdamW 基准学习率（schedule 的起点） |
+| `lr_schedule` | object | `null` | 学习率调度（见下）；不写 = 全程 constant |
 | `weight_decay` | float | 1e-4 | AdamW weight decay |
 | `train_batches_per_step` | int | 3 | 每步从 replay buffer 采样训练的 mini-batch 数 |
 | `grad_clip_norm` | float | 1.0 | 梯度裁剪范数（0 表示不裁剪） |
@@ -115,6 +119,30 @@ JSON 中**强制嵌套**：
 
 > **`eval_temperature` 字段已删除**：其语义并入 `mcts_profiles.eval.temperature`。
 > **`tail_solve_start_ply` 字段已删除**：触发条件由游戏注册的 `tail_solve_trigger` 决定，不再用步数阈值兜底。
+
+#### LR schedule
+
+`training.lr_schedule` 是可选 object；不写默认全程 constant `learning_rate`。
+
+| 字段 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `type` | str | `"constant"` | `"constant"` / `"cosine"` / `"step"` |
+| `lr_min` | float | `learning_rate * 0.01` | cosine 终点；仅 `type=cosine` 用 |
+| `gamma` | float | 10.0 | step decay 每次除的倍数；仅 `type=step` 用 |
+| `step_size` | int | `total_steps // 3` | step decay 多少步降一次；仅 `type=step` 用 |
+
+- **cosine**：half-cosine 从 `learning_rate` 衰减到 `lr_min`，覆盖整个训练（step 1 → total_steps）。最常用。
+- **step**：每 `step_size` 步把 lr 除以 `gamma`。AlphaZero 论文风格（1e-2 → 1e-3 → 1e-4 → 1e-5）。
+- **constant**：等价于不写 `lr_schedule`，保留是为了显式声明。
+
+每个 step 训练前刷新 `optimizer.param_groups[*]['lr']`。日志里启用 schedule 时会打 `lr=<value>`。
+
+```json
+"training": {
+  "learning_rate": 0.0003,
+  "lr_schedule": {"type": "cosine", "lr_min": 3e-5}
+}
+```
 
 #### Heuristic Guidance schedule
 
@@ -185,6 +213,8 @@ Frozen-pool fictitious self-play：每步把一部分 worker 的对手换成历�
 | `hidden_layers` | int[] | `[256, 256]` | 隐层大小列表 |
 
 > 激活函数硬编码 ReLU，结构固定 MLP。Value head 维度按 `num_players` 自动决定。
+>
+> 旧 config 里偶尔遗留 `"type": "mlp"` / `"activation": "relu"` 字段——`training/model.py` 只读 `hidden_layers`，**这两个字段不会被消费**，存在与否都没有效果，新游戏无需写。
 
 ### 完整示例（Quoridor）
 
@@ -337,3 +367,87 @@ threshold = 1/N + z · sqrt((1/N)·(1 - 1/N) / eval_games)
 `POST /ai/sessions` 等接口的强度（simulations / temperature / opponent_selection）由服务器从 `web_expert` profile 读出，**客户端不能传**——`platform/ai_service/sessions.py:_resolve_strength` 是唯一入口。如果客户端在 body 里塞 `simulations` / `temperature`，pydantic 会丢弃。
 
 详细语义见 [AI_API.md](AI_API.md)。
+
+---
+
+## 训练 CLI：`python -m training.cli`
+
+```
+python -m training.cli --game splendor --output runs/splendor_001 [...flags]
+```
+
+CLI 入口在 `training/cli.py`，固定从 `games/<game>/config/game.json` 加载基础配置，然后按下面的优先级合并：
+
+1. `game.json` 全部字段（基础）
+2. `--config-override <path>` 指定的 JSON 文件做 **deep merge**（覆盖任意嵌套字段）
+3. 命令行旗标（`--steps` / `--episodes` / `--batch-size` / `--lr` 等）只覆盖少数顶层字段
+
+### `--config-override`
+
+指向一个 JSON 文件，内容会和 `game.json` 做 deep merge：嵌套 dict 按 key 递归合并，list / 标量按 override 整体替换。
+
+适合不想改 `game.json` 但想跑一次实验的场景（lr schedule 试参、调 buffer 大小、改 dirichlet 等）。
+
+约定：override 文件放在游戏自己的目录下 `games/<game>/overrides/<name>.json`，不要放仓库根目录。
+
+```bash
+# games/splendor/overrides/lr_test.json
+{
+  "training": {
+    "learning_rate": 0.0003,
+    "lr_schedule": {"type": "cosine", "lr_min": 3e-5}
+  }
+}
+
+python -m training.cli --game splendor --output runs/lr_test \
+  --config-override games/splendor/overrides/lr_test.json
+```
+
+**已知限制**：`mcts_profiles.*` 字段虽然能写进 override JSON 并合并到内存中的 `game_config`，但 `training.mcts_profile.resolve_profile(game_id, name)` 在 selfplay / arena / eval 里**重新从磁盘读 `game.json`**，不会看到 override。要改 MCTS 参数仍需直接改 `game.json` 或新建 game variant。这是 `mcts_profile.py` 当前的实现细节，可在后续重构里打通。
+
+### 直接 CLI 旗标（少量顶层字段的快捷方式）
+
+| 旗标 | 覆盖字段 |
+|---|---|
+| `--steps N` | `training.steps` |
+| `--episodes N` | `training.episodes_per_step` |
+| `--batch-size N` | `training.batch_size` |
+| `--lr F` | `training.learning_rate` |
+| `--eval-benchmark ...` | `training.eval_benchmarks` |
+| `--workers N` | `training.runtime.workers` |
+| `--eval-every N` | `training.runtime.eval_every` |
+| `--save-every N` | `training.runtime.save_every` |
+| `--eval-games N` | `training.runtime.eval_games` |
+| `--seed N` | `training.runtime.seed` |
+
+CLI 旗标在 `--config-override` **之后**应用，所以同一个字段同时被旗标和 override 设置时，旗标赢（适合临时压一个值）。
+
+`training.runtime.*` 是为了让运行时旋钮（worker 数、eval 频率、seed 等）能写进 override 文件，避免每次启动都得敲一长串 CLI 旗标——常见配置一次写好，启动只剩 `--game` / `--output` / `--config-override` 三个参数。
+
+### `--init-from`
+
+`--init-from <path.pt>` 从一个 PyTorch checkpoint 加载权重作为新 run 的起点：
+
+- checkpoint 必须是 `dict` 且至少包含 `"model_state_dict"`，其 keys / shapes 跟当前 `game.json` 配出的 PVNet 完全一致。
+- **优化器状态丢弃**：Adam 一阶/二阶矩按参数 id 索引，结构变了就跟新参数对不上；统一重新初始化。
+- 训练 step 仍从 1 开始（init 不是续训，是"换起点"）。如果你需要"中断后真正接着训"，应另开一个 `--resume <output_dir>`，从 `output_dir/checkpoint.pt` 加载完整 `(model, optimizer, step)` —— 这条目前未实现。
+
+迁移旧框架（`games.<game>.train.plugin`）训练的 checkpoint 时，因为 backbone / head key 命名、输入维度可能都不一样，需要先用 `scripts/convert_*_legacy_pt.py` 转一遍：
+
+```bash
+python3 scripts/convert_splendor_legacy_pt.py \
+  --in  games/splendor/model/latest_step_13500.pt \
+  --out games/splendor/model/latest_step_13500.converted.pt
+
+python -m training.cli --game splendor --output runs/splendor_warmstart \
+  --config-override games/splendor/overrides/server.json \
+  --init-from games/splendor/model/latest_step_13500.converted.pt
+```
+
+转换脚本要做的事（具体到 Splendor 的 `convert_splendor_legacy_pt.py`）：
+
+1. **Key 重命名**：legacy `policy.*` → `policy_head.*`，`value.0.*` → `value_head.0.*`。
+2. **输入维度 permute**：legacy 网络是 294 维（reference 项目布局），新 encoder 是 295 维（顺序也不同）；按 `scripts/fix_splendor_2p_feature_order.py` 同款 permutation 把 `backbone.0.weight` 重排到 `[hidden, 295]`，新的 first_player bit 列零初始化。
+3. **Value head scalar → N=2 镜像**：2p 零和 + tanh 是奇函数，所以 `(W, b) -> ([W; -W], [b; -b])` 在数值上等价于 `(v, -v)`；engine 的 `OnnxPolicyValueEvaluator` 对 legacy scalar value head 也是同款分解，迁移到新的 N=2 PVNet 后行为完全一致。
+
+其他游戏要做类似迁移时新写一个 `scripts/convert_<game>_legacy_pt.py`，内容按上面三件事剪裁——只有不需要 input permute / value head 镜像的简单情况可以省略对应步骤。

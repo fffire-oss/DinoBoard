@@ -29,7 +29,7 @@
 
 | 名词 | 定位 | 一句话 |
 |------|------|--------|
-| **rules** | 推进 state 的代码 | `do_action_fast(state, action, rng)`,**同时**改业务字段和 viz——是 viz 的**唯一 writer** |
+| **rules** | 推进 state 的代码 | `do_action_fast(state, action, rng)`,**同时**改业务字段和 viz——是 viz 的**唯一游戏侧 writer**（receiver-side framework appliers 重建另算,见 §4.4） |
 
 **派生流水线**(从 state + viz 算出 perspective 视图)
 
@@ -129,9 +129,13 @@ perspective snapshot。GT 不做 belief、不做搜索、不做信息集推断�
   （对手买暗压牌时公开那张 reserved 的真实 `card_id`）/ Azul `factory_refill`
   / Coup `card_revealed` / `exchange_complete` / `self_influence_redraw`
 - `public_snapshot: AnyMap` = 按字段名 keyed 的整张 post-action 公开视图；
-  framework walker 按 schema 顺序遍历 slot，对 `viz[..., viewer]=1` 的 slot
-  调 `read_field_slot` 写入，viz=0 的 slot 不写。viewer 端按 schema 顺序
-  `apply_public` 反向写回 state（无独立的 visibility_mask 字段、无 bit-packing）
+  framework walker (`viz::serialize_public_snapshot`) 按 schema 顺序遍历每
+  个 slot，对 `viz[..., viewer]=1` 的 slot 把 `(idx_path, value)` 追加到
+  `snap[name]`，并把 perspective 的整张 viz 切片以扁平 `vector<int>` 形式
+  写到 `snap["__viz__"][name]`。viewer 端 `viz::apply_public_snapshot` 先按
+  字节整张覆盖 `state.viz_[name][..., viewer]`，再逐个 `(idx, value)` 写回
+  state（无独立的 visibility_mask 字段、无 bit-packing、无 all_public vs
+  非 all_public 分支）
 - 每个 `PublicEvent = std::pair<std::string, AnyMap>`；`kind` 字符串由游戏
   自定（`"deck_flip"` / `"opp_buy_reserved_reveal"` / ...），`payload` 里的
   key 也由游戏决定。**没有 phase 概念**——observer 不跑 `do_action_fast`，
@@ -165,21 +169,23 @@ AI 端面对信息不全。收到
   card_id 的 reserved 槽 ...)都由 `public_snapshot` 自然带回——只要当前
   `viz[..., perspective]=1`(不论是 base 就如此还是 rules 临时翻明的),
   truth 端 walker 在 perspective 自己的 snapshot 里就会写入真值,observer
-  端 `apply_public` 整张覆盖时直接落回对应槽位。schema 的 base viz 只决定
-  "未发生任何 reveal 时谁能看",运行时翻面完全跟着 rules 跑(§4)
+  端 `apply_public_snapshot` 按字节整张覆盖 viz 切片再逐 slot 写真值,
+  直接落回对应槽位。schema 的 base viz 只决定 "未发生任何 reveal 时谁能看",
+  运行时翻面完全跟着 rules 跑、再随 wire 整张同传(§4)
 
-**snapshot-path 游戏的 session 不跑 `do_action_fast`、不跑 `randomize_unseen`**
-——这一类(Splendor / Love Letter / Coup / Azul) session 只负责"接 snapshot + 喂
-tracker",viz=1 整张覆盖、viz=0 留着上次的旧值,等下一个 observe 就行。"采一个
-具体世界"是 sim 入口的事(§1.3),session 不重复做。
+session 推进公开转移分两类,按游戏注没注册 `public_state_applier`(等价于
+manifest 上有没有 `snapshot` capability)分流。两类都**不跑 `randomize_unseen`**
+(那是 sim 入口的事,§1.3),也都**不读 truth 任何字段**:
 
-> 例外:**fully-public no-snapshot 游戏**(TicTacToe / Quoridor)没注册
-> `public_state_applier`,这类游戏的 session 路径上**会**跑
-> `do_action_fast(seat, view_step_rng)`——它们没有 viz=0 槽位,也没有 snapshot
-> 协议,推进 state 的唯一办法就是替这一座位 replay 那个动作。但仍然不跑
-> `randomize_unseen`(没有 viz=0 槽位要填),也不读 truth 任何字段:输入只有
-> `(action_id, seat 自己的当前 state)`。这条例外不破坏"决策路径不读 truth"——
-> 它只是"snapshot 不存在时,怎么把公开转移做出来"的实作答案。
+- **snapshot-path 游戏**(Splendor / Love Letter / Coup / Azul):session 收
+  到 `public_snapshot` 就把 viz=1 字段整张覆盖,viz=0 留着上次的旧值;不跑
+  `do_action_fast`。"我看不到的部分"就让它躺着,等下一个 observe 再被
+  snapshot 整张刷新。
+- **fully-public no-snapshot 游戏**(TicTacToe / Quoridor):没有 `public_snapshot`
+  可以替换,这一类游戏 session 路径上跑 `do_action_fast(seat, view_step_rng)`
+  ——也就是替这一座位 replay 那个动作。能这么做是因为它们没有 viz=0 槽位、
+  且推进过程不依赖任何隐藏信息;输入只有 `(action_id, seat 自己的当前 state)`,
+  truth 不在签名里。
 
 **AI 端永远不在 observe 阶段重新算 viz**——viz 只在 GT 端算一次、协议
 传过来。运行时正确性 = 数据传输完整性。
@@ -204,14 +210,17 @@ sim_tracker->randomize_unseen(*state, observer, per_sim_rng);  // 把 viz=0 槽�
 正 sim 结束 state + tracker 一起丢弃，下个 sim 从 session 重新克隆。
 **绝不 cross-sim 污染**。
 
-> Rules 引擎只服务于"已完全确定"状态：GT 直接喂真值跑一次；AI 在 sim 里
-> sample 出一个具体世界后跑同一份代码。这条决定了下面所有"谁负责什么"。
+`randomize_unseen` 怎么填 viz=0 槽位是 game 自己的事——简单游戏从未见过
+的池子里 uniform 抽（Splendor / Love Letter 走这条）；bluff 游戏要做基于
+观察历史的加权采样（Coup 用 claim/challenge 历史驱动的联合先验），免得
+ISMCTS 在 uniform 世界里被对手"任意诈唬"骗到。具体做法见 §8.2。
 
 ---
 
 ## 2. Visibility schema
 
-每款游戏在 `games/<id>/<id>_visibility.cpp` 声明 state 字段元数据：
+每款游戏在 `games/<id>/<id>_state.cpp` 的 `schema()` 函数中声明 state
+字段元数据：
 
 - state 里**每一个**字段都必须 declare：name + 数据 shape + base viz
   tensor。schema 没列的字段 register-time 校验 fail
@@ -258,7 +267,7 @@ GT 端、AI session 端、sim 端的随机决策因此完全解耦,这条是 ISM
 
 ---
 
-## 4. Rules：唯一的 viz writer
+## 4. Rules：唯一的游戏侧 viz writer
 
 ### 4.1 `do_action_fast_impl` 同时维护 state 和 viz
 
@@ -293,6 +302,17 @@ framework 提供的 helper(仅简化常见模式,不替作者决定语义):
 - `viz::reset_to_base(IGameState& s, const std::string& name,
    const VisibilitySchema& schema, const std::vector<int>& idx)`——
    重置回 schema 声明的 base(因此需要 schema 入参)
+- `viz::swap_slot(IGameState& s, const std::string& name,
+   const std::vector<int>& idx_a, const std::vector<int>& idx_b)`——
+   把两个槽位的整条 viewer 轴一起对换(viz[a, :] ↔ viz[b, :])。槽位
+   内容被规则代码互换时,可见性必须跟着内容走——"谁看过这张 cid"
+   是属于这张牌的事实
+- `viz::swap_slot_owned(IGameState& s, const std::string& name,
+   int owner_a, int owner_b)`——上一条对 `owner_only_first_axis`
+   字段(如 LL `hand[player]`)的便捷封装,等价于
+   `swap_slot({owner_a}, {owner_b})` 后再分别
+   `reveal_slot_to(owner_a)` / `reveal_slot_to(owner_b)`,一行表达
+   "两位玩家手牌互换,各自看到自己的新牌"(Love Letter King 出牌)
 
 字段 path 是**运行时字符串**(不是编译期 member-pointer),`declare_field`
 register-time 校验存在性。写错字段名编译过、register-time 抛错。
@@ -381,12 +401,9 @@ emitter"这条逃生通道。
 
 ```cpp
 class IFeatureEncoder {
-  virtual void encode_public(const MaskedState&, int perspective,
-                             const IBeliefTracker* tracker,
-                             std::vector<float>* out) const = 0;
-  virtual void encode_private(const MaskedState&, int perspective,
-                              const IBeliefTracker* tracker,
-                              std::vector<float>* out) const = 0;
+  virtual void encode_features(const MaskedState&, int perspective,
+                               const IBeliefTracker* tracker,
+                               std::vector<float>* out) const = 0;
 };
 
 class IPolicyValueEvaluator {
@@ -411,7 +428,7 @@ class IPolicyValueEvaluator {
 
 ```
 GT 端
-  state(GT) ──make_masked_state──▶ MaskedState ──serialize_public / SnapshotIO──▶ wire (public_snapshot)
+  state(GT) ──make_masked_state──▶ MaskedState ──viz::serialize_public_snapshot──▶ wire (public_snapshot, 含 __viz__ 切片)
                                                                           │
                                                                           ▼
                                                           AI 端 apply_observation
@@ -464,14 +481,22 @@ placeholder。
 底料都是 schema 已有字段（stage / ply / current_player）的展开形式，
 encoder 在 MaskedState 上做 one-hot / ratio / flag 即可。
 
-**Public/private 分割**：
+**单一 `encode_features`**：
 
-- `encode_public` 没有 player 参数，**MUST NOT** 读任何玩家的 private
-  字段（用 `encode_public` 的纯接口签名作语法守护）
-- `encode_private(perspective)` **MUST NOT** 读其他玩家的 private 字段
-- 默认 `encode(...)` 把两者依次拼成 flat tensor，和 hash 拼接顺序对齐
-- `encode_with_masked(masked, ...)` 是 sim descent 的快路径，跳过二次
-  clone+mask；`encode(state, ...)` 内部 `make_masked_state` 一次后转发
+- 接口只有一个虚函数 `encode_features(masked, perspective, tracker, out)`，
+  game 端按 schema 声明的固定 layout 顺序追加特征到 `out`——viz=0 槽位读
+  到 `kPlaceholder`，emit 全零 / 显式占位符特征即可。**信息泄漏的语法防
+  线在 viz / walker 把真值替成 placeholder 这一层**，与 layout 排版无关
+- 默认 `encode(state, ...)` 内部 `make_masked_state` 一次然后调
+  `encode_features` 一次，得到 flat tensor；`encode_with_masked(masked,
+  ...)` 是 sim descent 的快路径，复用 hash 那一步已经造好的 MaskedState，
+  跳过二次 clone+mask
+- 历史上接口曾拆成 `encode_public` + `encode_private(p)`，初衷是 layout
+  对齐网络让 public 段对所有 perspective 字节相等共享 KV 缓存——但实际
+  上每个 perspective 都按自己视角座位旋转 / 自己 viz=1 的 reveal 集合
+  组装特征，public 段并不真的 byte-equal，KV 缓存收益没兑现；而结构性
+  防泄漏的功劳完全归 viz / walker 那一层，与拆分无关。所以拆分只剩下让
+  网络架构需要拼接的额外耦合，已经合并掉
 
 CI 守护：`test_encoder_respects_hash_scope` 验证 opp private 变化、
 public + own private 不变时 encoder bit-equal。这是 encoder/hash scope
@@ -1045,17 +1070,13 @@ action, state_after, perspective) diff 生成(`engine/core/game_registry.h`)。
 > session state 的最终一致性靠"public 整张覆盖 + 决策侧物理上读不到
 > viz=0"这两条担保。
 
-实现可走两条路径(wire 一致):
-- **walker 化路径**:`viz::serialize_public` / `viz::apply_public`
-  (`engine/core/snapshot_io.h`)——schema-walker 自动按字段序遍历每个
-  `is_all_public` 字段,调 game-side `read_field_slot` /
-  `write_field_slot`。Splendor 走这条
-- **message-driven 路径**:`SnapshotIO + emit_snapshot / apply_snapshot`
-  ——每个公开字段游戏端注册一对 `SnapshotEmitter / SnapshotApplier`
-  函数。LL / Coup / Azul 走这条
-
-两条路径产出**同一个 `AnyMap public_snapshot` shape**,wire 形态平权;选
-哪条只是 game-side 的实现风格,框架不偏不倚。
+实现统一走一条路径:`viz::serialize_public_snapshot` /
+`viz::apply_public_snapshot` (`engine/core/snapshot_io.h`)——schema-walker
+按字段序遍历每个 slot,对 `viz[..., perspective]=1` 的 slot 调 game-side
+`read_field_slot` / `write_field_slot`,并把整张 viz 切片以扁平 vector
+形式同传到 `__viz__` 键下。所有四款 hidden-info 游戏(LL / Splendor /
+Coup / Azul)都走这一条路径,无 all_public vs 非 all_public 分支、无
+per-game 自定 extractor / applier 类。
 
 `initial_observation` 是另一种 opening-fact dict(每个 perspective 在
 session 启动时收到一次,内容是该 perspective 看得见的开局事实——例如
@@ -1063,27 +1084,28 @@ LL 自己的开局手牌、开局发给起手玩家的 `drawn_card`)。它的 wi
 **与逐 ply snapshot 同构**,两段:
 
 ```
-{ "public_snapshot": <viz::serialize_public(state, schema)>,    # 完全同一个 walker,只取 all_public slot
-  "tracker_init":    <tracker.pack_init_payload(state, p)> }   # 视角私有引导(AnyMap)
+{ "public_snapshot": <viz::serialize_public_snapshot(state, schema, p)>,  # 完全同一个 walker
+  "tracker_init":    <tracker.pack_init_payload(state, p)> }              # 视角私有引导(AnyMap)
 ```
 
-GT 端先用 `viz::serialize_public` 走 walker 把所有 `all_public` slot 写
-进 `public_snapshot`(和逐 ply 完全同一条路径);再调
-`tracker.pack_init_payload(gt_state, perspective)` 拿到该 perspective 在
-session 启动时需要的私有引导(默认空 AnyMap;LL 在 `pack_init_payload`
-里塞 `own_hand`,以及当 `drawn_card` 已被 `reveal_slot_to(perspective)`
-时塞 `drawn_card`)。
+GT 端先用 `viz::serialize_public_snapshot` 走 walker 把每个
+`viz[..., perspective]=1` 的 slot 连同整张 viz 切片写进 `public_snapshot`
+(和逐 ply 完全同一条路径);再调 `tracker.pack_init_payload(gt_state,
+perspective)` 拿到该 perspective 在 session 启动时需要的私有引导(默认空
+AnyMap;LL 在 `pack_init_payload` 里塞 `own_hand`,以及当 `drawn_card` 已被
+`reveal_slot_to(perspective)` 时塞 `drawn_card`)。
 
 session 端 `apply_initial_observation(perspective, obs)` 解开两段:
-`public_snapshot` 走 `viz::apply_public` 整张覆盖(和逐 ply 同一函
-数);`tracker_init` 直接传给 `tracker.init(*state, perspective, payload)`,
-让 tracker 把私有 slot 写进 session 的 state 并翻 viz=1。
+`public_snapshot` 走 `viz::apply_public_snapshot` 把 viz 切片整张覆盖再
+逐 slot 写真值(和逐 ply 同一函数);`tracker_init` 直接传给
+`tracker.init(*state, perspective, payload)`,让 tracker 把私有 slot 写进
+session 的 state 并翻 viz=1。
 
 这条协议把"开局"和"逐 ply"合并到同一个 walker 上:public 部分共享
-`serialize_public` / `apply_public`,perspective-private 部分由
-`pack_init_payload` ↔ `tracker.init`(opening 端)和 `public_event_extractor`
-↔ `tracker.observe_public_event`(per-ply 端)分别承担,框架不再为开局
-搞特例分支。
+`serialize_public_snapshot` / `apply_public_snapshot`,perspective-private
+部分由 `pack_init_payload` ↔ `tracker.init`(opening 端)和
+`public_event_extractor` ↔ `tracker.observe_public_event`(per-ply 端)分别
+承担,框架不再为开局搞特例分支。
 
 ### 10.2 协议字段限制
 
@@ -1108,7 +1130,7 @@ viz=1 还是 0,见 `docs/FRAMEWORK_DESIGN_RATIONALE.md` §3.3。
 
 | # | 不变量 | 守护机制 |
 |---|---|---|
-| I1 | 规则引擎是 viz 的唯一 writer | `do_action_fast(State&, Action)` 同时维护 state 和 state.viz_ |
+| I1 | 规则引擎是 viz 的唯一游戏侧 writer | `do_action_fast(State&, Action)` 同时维护 state 和 state.viz_;receiver 端由 GT 整张同传 viz 切片 + framework helper `viz::apply_full_slice`(`engine/core/viz_runtime.h`)按字节覆盖,无 per-game viz 推导 hook;`test_rules_sole_viz_writer` 仅守游戏侧 |
 | I2 | viz 是 (state, action, next_state) 的纯函数 | rules 不接受 history buffer 入参 |
 | I3 | 内部 RNG 永不进 hash / wire | RNG 不在 state 上;只有 gt_rng / session_rng / sim_rng 三类,互不派生,各自由调用方独立 seed;`test_public_hash_excludes_internal_rng` 守护 |
 | I4 | viz 不保证单调 | rules 在槽位换内容时主动 `reset_to_base`;AI 端 observe 替换 not merge |

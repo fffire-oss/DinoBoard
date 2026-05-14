@@ -10,7 +10,7 @@ For every game that registers a `public_state_applier`:
     MUST equal truth.state_hash_for_perspective(perspective) for every
     perspective.
 
-If this fails, the applier has drifted from `hash_public_fields` and the
+If this fails, the applier has drifted from `state_hash_for_perspective` and the
 observer's public view no longer matches truth — which is the same
 class of silent public-state drift as BUG-028.
 
@@ -127,4 +127,4 @@ def test_snapshot_applier_round_trip_at_each_ply(game_id):
             f"[{game_id}] ply {i}: observer hash_for_perspective({perspective}) "
             f"{obs_hash:#x} != truth hash {truth_snapshots[i][perspective]:#x} "
             f"after apply_public_snapshot. The applier is likely missing a "
-            f"public field that hash_public_fields reads.")
+            f"public field that state_hash_for_perspective reads.")

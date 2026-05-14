@@ -240,7 +240,7 @@ PublicEventTrace extract_events(
     const IGameState& before,
     ActionId /*action*/,
     const IGameState& after,
-    int /*perspective*/) {
+    int perspective) {
   const auto& sb = board_ai::checked_cast<AzulState<NPlayers>>(before);
   const auto& sa = board_ai::checked_cast<AzulState<NPlayers>>(after);
   PublicEventTrace out;
@@ -253,28 +253,23 @@ PublicEventTrace extract_events(
     out.events.emplace_back("factory_refill", std::move(payload));
   }
 
-  // Public snapshot — walker-driven `viz::serialize_public` walks every
-  // all_public schema slot via `state.read_field_slot`. Azul has no
-  // per-perspective hidden info, so no partial-reveal sidecar is needed.
-  // `game_first_player` is fixed at game start, omitted from the hash,
-  // and skipped here.
-  {
-    AnyMap snap;
-    board_ai::viz::serialize_public(after, AzulState<NPlayers>::schema(), snap,
-                                    /*skip=*/{"game_first_player"});
-    out.public_snapshot = std::move(snap);
-  }
+  // Public snapshot — walker-driven, single unified call. Azul has no
+  // per-perspective hidden info; the wire still ships a per-perspective
+  // viz slice (all-1 for every slot) for protocol uniformity.
+  // `game_first_player` is fixed at game start and skipped here.
+  board_ai::viz::serialize_public_snapshot(
+      after, AzulState<NPlayers>::schema(), perspective,
+      out.public_snapshot, /*skip=*/{"game_first_player"});
 
   return out;
 }
 
-// applier — writes public fields from truth snapshot via walker-driven
-// `viz::apply_public` → `state.write_field_slot`.
 template <int NPlayers>
 void apply_public_state(IGameState& state, const AnyMap& snap,
-                        int /*receiver_seat*/) {
-  board_ai::viz::apply_public(state, AzulState<NPlayers>::schema(), snap,
-                              /*skip=*/{"game_first_player"});
+                        int receiver_seat) {
+  board_ai::viz::apply_public_snapshot(
+      state, AzulState<NPlayers>::schema(), receiver_seat, snap,
+      /*skip=*/{"game_first_player"});
 }
 
 }  // namespace azul_events

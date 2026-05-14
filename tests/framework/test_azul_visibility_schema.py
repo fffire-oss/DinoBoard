@@ -1,4 +1,4 @@
-"""Phase 3 (azul): pin azul's visibility schema surface.
+"""Pin azul's visibility schema surface.
 
 Azul partitions:
   - all_public: every game-facing field — factories, center, scores,
@@ -6,7 +6,7 @@ Azul partitions:
     Azul has no hidden private state; the only hidden info is the
     bag/box-lid composition (multisets), and those are NOT slot fields.
   - bag, box_lid: variable-length vectors. Hidden contents, public
-    size — handled by hash_public_fields (multiset only) and
+    size — handled by state_hash_for_perspective (multiset only) and
     randomize_unseen. NOT in the schema.
 """
 from __future__ import annotations
@@ -70,7 +70,7 @@ def test_source_declares_all_public_fields() -> None:
         ), (
             f"{name} must NOT be a schema slot — variable-length vector "
             "with hidden contents and public size; handled by "
-            "hash_public_fields (multiset) / randomize_unseen instead"
+            "state_hash_for_perspective (multiset) / randomize_unseen instead"
         )
 
 

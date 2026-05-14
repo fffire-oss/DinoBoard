@@ -5,11 +5,10 @@ Why first: reset_step_count_base resets the framework-managed step_count_
 member which guards DAG acyclicity. If a game's body runs first and
 mutates state before the base call, the step counter is out of sync with
 the rest of the (zeroed) public fields, breaking the DAG invariant. RNG
-no longer lives on IGameState (Commit C of plan
-hazy-popping-wozniak.md), so this rule reduces to "step_count first."
+does not live on IGameState; the runner owns it. So this rule reduces
+to "step_count first."
 
-Allowlist: any game .cpp not yet migrated. Empty by default — all six
-games migrate together.
+Allowlist: empty — every shipped game must call the base.
 """
 from __future__ import annotations
 
@@ -22,8 +21,8 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 GAMES_DIR = PROJECT_ROOT / "games"
 
-# Games whose state .cpp file is exempt from this lint (none — all six
-# are migrated together in Phase 1.1).
+# Games whose state .cpp file is exempt from this lint. Empty — every
+# shipped game must call the base.
 ALLOWLIST: set[str] = set()
 
 

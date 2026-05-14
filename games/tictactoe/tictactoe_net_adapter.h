@@ -11,26 +11,17 @@ namespace board_ai::tictactoe {
 constexpr int kActionSpace = 9;
 constexpr int kFeatureDim = 28;
 
-// TicTacToe is fully observable — no private information per player.
-// `encode_private` is a no-op; `private_feature_dim()` returns 0.
+// TicTacToe is fully observable — no perspective-private fields.
 class TicTacToeFeatureEncoder final : public IFeatureEncoder {
  public:
   int action_space() const override { return kActionSpace; }
   int feature_dim() const override { return kFeatureDim; }
-  int public_feature_dim() const override { return kFeatureDim; }
-  int private_feature_dim() const override { return 0; }
 
-  void encode_public(
+  void encode_features(
       const IGameState& state,
       int perspective_player,
       const IBeliefTracker* tracker,
       std::vector<float>* out) const override;
-
-  void encode_private(
-      const IGameState& /*state*/,
-      int /*player*/,
-      const IBeliefTracker* /*tracker*/,
-      std::vector<float>* /*out*/) const override {}
 };
 
 }  // namespace board_ai::tictactoe

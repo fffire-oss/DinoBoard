@@ -12,7 +12,7 @@
 namespace board_ai::loveletter {
 
 template <int NPlayers>
-void LoveLetterFeatureEncoder<NPlayers>::encode_public(
+void LoveLetterFeatureEncoder<NPlayers>::encode_features(
     const IGameState& state,
     int perspective_player,
     const IBeliefTracker* /*tracker*/,
@@ -61,40 +61,31 @@ void LoveLetterFeatureEncoder<NPlayers>::encode_public(
     out->push_back(static_cast<float>(count) /
                    static_cast<float>(kCardCounts[static_cast<size_t>(c)]));
   }
-}
 
-template <int NPlayers>
-void LoveLetterFeatureEncoder<NPlayers>::encode_private(
-    const IGameState& state,
-    int player,
-    const IBeliefTracker* /*tracker*/,
-    std::vector<float>* out) const {
-  const auto* s = dynamic_cast<const LoveLetterState<NPlayers>*>(&state);
-  if (!s || !out || player < 0 || player >= NPlayers) return;
-  const auto& d = s->data;
-
-  // Encoder reads MaskedState directly: viz=1 slots carry truth, viz=0
-  // slots carry kPlaceholderInt8 (INT8_MIN), which never equals any
-  // legitimate cid in 1..8 — the one-hot naturally encodes as all-zero
-  // for hidden slots without any explicit placeholder branch.
+  // Per-perspective hand / drawn-card features. Encoder reads
+  // MaskedState directly: viz=1 slots carry truth, viz=0 slots carry
+  // kPlaceholderInt8 (INT8_MIN), which never equals any legitimate cid
+  // in 1..8 — the one-hot naturally encodes as all-zero for hidden
+  // slots without any explicit placeholder branch.
   //
-  // hand[pid]: owner_only_first_axis. From perspective `player`:
-  //   - pid == player        : viz=1 (truth)
-  //   - other pid, no reveal : viz=0 (placeholder)
+  // hand[pid]: owner_only_first_axis. From perspective:
+  //   - pid == perspective         : viz=1 (truth)
+  //   - other pid, no reveal       : viz=0 (placeholder)
   //   - other pid, after Priest peek / Baron / King swap : viz=1 (rules
-  //     called reveal_slot_to(player) on that slot — viz follows cid)
+  //     called reveal_slot_to(perspective) on that slot — viz follows cid)
   //
   // drawn_card: all_hidden base; rules call reveal_slot_to(current_player)
-  // on draw and reset_to_base on play. Visible only when player ==
+  // on draw and reset_to_base on play. Visible only when perspective ==
   // current_player and a draw is in flight.
   for (int pi = 0; pi < NPlayers; ++pi) {
-    const int pid = (player + pi) % NPlayers;
+    const int pid = (perspective_player + pi) % NPlayers;
     const std::int8_t hand_card = d.hand[static_cast<size_t>(pid)];
     for (int c = 1; c <= kCardTypes; ++c) {
       out->push_back(hand_card == c ? 1.0f : 0.0f);
     }
     for (int c = 1; c <= kCardTypes; ++c) {
-      const bool show_drawn = (pid == d.current_player && pid == player &&
+      const bool show_drawn = (pid == d.current_player &&
+                                pid == perspective_player &&
                                 d.drawn_card == c);
       out->push_back(show_drawn ? 1.0f : 0.0f);
     }

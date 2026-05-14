@@ -357,12 +357,11 @@ using board_ai::loveletter::kKingCount;
 using board_ai::loveletter::kCountessAction;
 using board_ai::loveletter::kPrincessAction;
 
-// Public-event extractor. All-public schema slots ride
-// `viz::serialize_public`. Per-perspective reveals (owner-visible
-// `hand[p]`, current-player-visible `drawn_card`, Priest/Baron peeks)
-// ride the framework partial-reveal sidecar
-// `viz::serialize_partial_reveals`. LL emits no public events;
-// `out.events` stays empty.
+// Public-event extractor / applier — single unified call into the
+// schema-walker driven snapshot primitive. The wire carries (a) every
+// (idx, value) pair where viz[idx, perspective]=1 and (b) the
+// perspective's full viz slice; the receiver wholesale-replaces both.
+// LL emits no public events; `out.events` stays empty.
 template <int NPlayers>
 PublicEventTrace extract_events(
     const IGameState& /*before*/,
@@ -370,24 +369,16 @@ PublicEventTrace extract_events(
     const IGameState& after,
     int perspective) {
   PublicEventTrace out;
-  AnyMap snap;
-  board_ai::viz::serialize_public(after, LoveLetterState<NPlayers>::schema(),
-                                  snap);
-  board_ai::viz::serialize_partial_reveals(
-      after, LoveLetterState<NPlayers>::schema(), perspective, snap);
-  out.public_snapshot = std::move(snap);
+  board_ai::viz::serialize_public_snapshot(
+      after, LoveLetterState<NPlayers>::schema(), perspective,
+      out.public_snapshot);
   return out;
 }
 
-// Inverse of `extract_events`'s snapshot population. Walker-driven
-// `viz::apply_public` writes every all_public slot back;
-// `viz::apply_partial_reveals` resets per-perspective reveals to schema
-// base and re-applies the sidecar entries.
 template <int NPlayers>
 void apply_public_state(IGameState& state, const AnyMap& snap,
                         int receiver_seat) {
-  board_ai::viz::apply_public(state, LoveLetterState<NPlayers>::schema(), snap);
-  board_ai::viz::apply_partial_reveals(
+  board_ai::viz::apply_public_snapshot(
       state, LoveLetterState<NPlayers>::schema(), receiver_seat, snap);
 }
 

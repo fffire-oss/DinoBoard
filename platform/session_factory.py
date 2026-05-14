@@ -44,9 +44,9 @@ def _from_session_dict(sess: dict, *, use_action_filter: bool) -> SessionConfig:
         seed=sess["seed"],
         model_path=sess["model_path"] if sess["use_model"] else "",
         use_action_filter=use_action_filter,
-        tail_solve_enabled=bool(sess.get("tail_solve_enabled", False)),
-        tail_solve_depth_limit=int(sess.get("tail_solve_depth_limit", 0)),
-        tail_solve_node_budget=int(sess.get("tail_solve_node_budget", 0)),
+        tail_solve_enabled=bool(sess["tail_solve_enabled"]),
+        tail_solve_depth_limit=int(sess["tail_solve_depth_limit"]),
+        tail_solve_node_budget=int(sess["tail_solve_node_budget"]),
     )
 
 

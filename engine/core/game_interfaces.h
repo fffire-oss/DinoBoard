@@ -83,9 +83,9 @@ class IGameState {
                                const std::vector<int>& /*idx*/) const {}
 
   // Typed slot read/write for walker-driven snapshot wire I/O
-  // (`viz::serialize_public` / `viz::apply_public`). Game returns a
-  // typed std::any for the named slot, or accepts one back. Mirrors
-  // hash_field_slot / mask_field_slot dispatch shape.
+  // (`viz::serialize_public_snapshot` / `viz::apply_public_snapshot`).
+  // Game returns a typed std::any for the named slot, or accepts one
+  // back. Mirrors hash_field_slot / mask_field_slot dispatch shape.
   virtual std::any read_field_slot(const std::string& /*name*/,
                                    const std::vector<int>& /*idx*/) const {
     return {};
@@ -162,11 +162,17 @@ class IGameState {
 
  public:
   // Per-state visibility tensor, keyed by FieldDecl::name. Initialized
-  // by viz::init_viz at reset_with_seed; mutated only by rules inside
-  // do_action_fast via reveal_slot / reveal_slot_to / reset_to_base
-  // (golden standard I1 — rules are the sole writer). Framework readers
-  // (hash walker, snapshot serializer, mask_all_hidden_slots) read it
-  // directly.
+  // by viz::init_viz at reset_with_seed; on the GT-side path, mutated
+  // ONLY by rules inside do_action_fast via reveal_slot /
+  // reveal_slot_to / reset_to_base (golden standard I1 — rules are the
+  // sole *game-side* writer; enforced by test_rules_sole_viz_writer).
+  // On the receiver / session path, the framework helper
+  // `viz::apply_full_slice` (invoked from `viz::apply_public_snapshot`)
+  // overwrites `viz_[name][..., perspective]` byte-for-byte from the
+  // perspective's viz slice carried on the wire under the `__viz__`
+  // key — receiver-side reconstruction of GT-side writes, not a second
+  // game-side writer. Framework readers (hash walker, snapshot
+  // serializer, mask_all_hidden_slots) read it directly.
   std::unordered_map<std::string, viz::VizTensor> viz_;
 
   // Per-slot placeholder write for hidden slots. Walker calls this for

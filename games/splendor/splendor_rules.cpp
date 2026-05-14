@@ -639,29 +639,8 @@ void SplendorRules<NPlayers>::undo_action_impl(IGameState& state, const UndoToke
   (void)token;
 }
 
-template <int NPlayers>
-void sync_splendor_reserved_viz(IGameState& state) {
-  using Cfg = SplendorConfig<NPlayers>;
-  auto& s = checked_cast<SplendorState<NPlayers>>(state);
-  const auto& d = s.persistent.data();
-  const auto& schema = SplendorState<NPlayers>::schema();
-  for (int p = 0; p < Cfg::kPlayers; ++p) {
-    for (int i = 0; i < 3; ++i) {
-      // Reset to schema base (owner-only_first_axis) and then reveal if
-      // the just-applied snapshot says this slot is publicly face-up.
-      viz::reset_to_base(state, "reserved", schema, {p, i});
-      if (d.reserved_visible[p][i] != 0) {
-        viz::reveal_slot(state, "reserved", {p, i});
-      }
-    }
-  }
-}
-
 template class SplendorRules<2>;
 template class SplendorRules<3>;
 template class SplendorRules<4>;
-template void sync_splendor_reserved_viz<2>(IGameState&);
-template void sync_splendor_reserved_viz<3>(IGameState&);
-template void sync_splendor_reserved_viz<4>(IGameState&);
 
 }  // namespace board_ai::splendor

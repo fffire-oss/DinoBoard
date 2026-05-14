@@ -4,10 +4,9 @@
 
 - **game_id**：`splendor` / `splendor_2p` / `splendor_3p` / `splendor_4p`
 - **玩家数**：2–4
-- **动作空间**：70（所有变体相同）
+- **动作空间**：随玩家数变化（2p=70 / 3p=71 / 4p=72）。`kChooseNobleCount = num_players + 1`，多一个贵族就多一个 action_id。其它分段（buy / reserve / take token / return / pass）规模不变
 - **隐藏信息**：有（暗牌：玩家可以盲预订一张自己看得但对手看不见的 deck 卡）
 - **公开事件**：`deck_flip`（post）、`self_reserve_deck`（post，仅 perspective 自己的盲预订）、`opp_buy_reserved_reveal`（pre，对手买自己暗牌时揭示）
-- **多人变体：** action_space 相同，只是 `players.max` 不同，AI 自动适配
 
 ---
 
@@ -26,8 +25,8 @@
 | 50–54 | 拿 1 个宝石 | 5 色各一个（bank 几乎空时用） |
 | 55–59 | 拿 2 个同色宝石 | 5 色各一个（该色 bank ≥ 4 时合法） |
 | 60+ | 选贵族 | 多张贵族可选时选哪一张。2p：60–62；3p：60–63；4p：60–64 |
-| `kReturnTokenOffset`（动态） | 归还宝石 | 拿宝石后超过 10 个上限时归还一个，5 色 + 金币 = 6 种 |
-| `kPassAction` = 69 | Pass | 极少用（仅在无合法动作的死角） |
+| 紧随贵族段 | 归还宝石 | 拿宝石后超过 10 个上限时归还一个；5 色 + 金币 = 6 种。2p offset=63、3p=64、4p=65 |
+| 最后一个 | Pass | 极少用（仅在无合法动作的死角）。2p=69、3p=70、4p=71 |
 
 **TakeThree 组合的 id → colors 映射**见 `games/splendor/splendor_rules.cpp:kTakeThreeCombos`。从 action_id 反推色彩需要查这个表。实际上接入方通常不需要反推，只需要把 legal_actions 里的 id 原样传给 AI——AI 的 `action_info` 字段会返回人类可读的描述（`type`, `colors`, `card_id` 等）。
 
@@ -94,9 +93,10 @@ tableau 上某格的卡变了——可能是买/预订后翻新，也可能是�
 import requests
 BASE = "http://localhost:8000"
 
+initial_observation = gt_session.extract_initial_observation(0)
 sess = requests.post(f"{BASE}/ai/sessions", json={
     "game_id": "splendor_2p", "seed": 777, "my_seat": 0,
-    "simulations": 1500, "temperature": 0.0,
+    "initial_observation": initial_observation,
 }).json()
 sid = sess["session_id"]
 

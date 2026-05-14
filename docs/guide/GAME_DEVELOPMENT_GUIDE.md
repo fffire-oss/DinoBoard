@@ -214,14 +214,20 @@ struct UndoRecord {
 
 ### 3.1 必须实现的方法
 
+`IGameRules` 的 public 入口（`do_action_fast` / `do_action_deterministic` / `undo_action`）是 framework 持有的 non-virtual wrapper，负责自动维护 `step_count_`（前两者 +1，`undo_action` -1）。**游戏作者重写 protected `*_impl`，永远不要 override public 入口**。
+
 ```cpp
 class MyGameRules final : public IGameRules {
  public:
   bool validate_action(const IGameState& state, ActionId action) const override;
   std::vector<ActionId> legal_actions(const IGameState& state) const override;
-  UndoToken do_action_fast(IGameState& state, ActionId action,
+
+ protected:
+  void do_action_fast_impl(IGameState& state, ActionId action,
                            std::mt19937_64& rng) const override;
-  void undo_action(IGameState& state, const UndoToken& token) const override;
+  void undo_action_impl(IGameState& state, const UndoToken& token) const override;
+  // 残局求解器需要这一对，不需要可省略：
+  UndoToken do_action_deterministic_impl(IGameState& state, ActionId action) const override;
 };
 ```
 
@@ -269,12 +275,12 @@ Quoridor：action ∈ [0, 209)
   }
 ```
 
-#### `undo_action(state, token)`
+#### `undo_action_impl(state, token)`
 
-弹出 undo_stack 顶部记录，恢复状态。
+弹出 undo_stack 顶部记录，恢复状态。**只在 `do_action_deterministic_impl` push 过 undo_stack 的游戏才需要重写**——`do_action_fast` 路径不支持 undo，没有 push 就不需要 pop。
 
 ```cpp
-void undo_action(IGameState& state, const UndoToken& token) const override {
+void undo_action_impl(IGameState& state, const UndoToken& token) const override {
   auto* s = &checked_cast<MyGameState>(state);
   if (s->undo_stack.empty()) return;
   const auto rec = s->undo_stack.back();
@@ -285,7 +291,7 @@ void undo_action(IGameState& state, const UndoToken& token) const override {
   s->winner_ = rec.prev_winner;
   // ...
 
-  (void)token;  // token.undo_depth 可用于一致性检查
+  (void)token;  // token.undo_depth 可用于一致性检查；step_count_ 由框架 -1
 }
 ```
 
@@ -328,60 +334,53 @@ void undo_action(IGameState& state, const UndoToken& token) const override {
 
 ### 4.1 必须实现的方法
 
-Encoder 接口按 hash scope 拆成 public / private 两半，**结构性约束**和 walker 驱动的 `state_hash_for_perspective(p)` 完全对齐——encoder 输入是 `MaskedState`，slots 中 `viz[..., perspective]=0` 的位置已经被 framework 替换成 `kPlaceholder*`，encoder 物理上读不到 truth：
+Encoder 接口只有一个虚方法 `encode_features`，**结构性约束**和 walker 驱动的 `state_hash_for_perspective(p)` 完全对齐——encoder 输入是 `MaskedState`，slots 中 `viz[..., perspective]=0` 的位置已经被 framework 替换成 `kPlaceholder*`，encoder 物理上读不到 truth：
 
 ```cpp
 class MyGameFeatureEncoder final : public IFeatureEncoder {
  public:
   int action_space() const override;          // 动作空间大小
-  int feature_dim() const override;           // = public + private 特征总维度
-  int public_feature_dim() const override;    // 公开特征维度
-  int private_feature_dim() const override;   // 一名玩家的私有特征维度（对所有玩家相同）
+  int feature_dim() const override;           // 特征总维度
 
-  void encode_public(const MaskedState& state,
-                     int perspective_player,
-                     const IBeliefTracker* tracker,
-                     std::vector<float>* out) const override;
-
-  void encode_private(const MaskedState& state,
-                      int player,
-                      const IBeliefTracker* tracker,
-                      std::vector<float>* out) const override;
+  void encode_features(const MaskedState& state,
+                       int perspective_player,
+                       const IBeliefTracker* tracker,
+                       std::vector<float>* out) const override;
 };
 ```
 
 **硬约束**（`tests/framework/test_encoder_respects_hash_scope.py` 守护）：
-- `encode_public` / `encode_private` 都从 `MaskedState` 读字段；`viz[..., perspective]=0` 的 slot 已经是 `kPlaceholder*`，encoder 必须分支处理 placeholder，**禁止查询 viz、禁止访问任何玩家的 private 字段绕过 mask**
-- `encode_private(p)` 由于 MaskedState 是按 `player` 视角构建的，其它玩家的 private slot 在 `MaskedState` 中天然是 placeholder——读它们结构上就是读 placeholder，不是泄露
+- `encode_features` 从 `MaskedState` 读字段；`viz[..., perspective]=0` 的 slot 已经是 `kPlaceholder*`，encoder 必须分支处理 placeholder，**禁止查询 viz、禁止访问任何玩家的 private 字段绕过 mask**
+- 其它玩家的 private slot 在 `MaskedState` 中天然是 placeholder——读它们结构上就是读 placeholder，不是泄露
 - `tracker` 可能为 nullptr（游戏没有注册 belief_tracker 时）；tracker 上只能读公开衍生统计（如 Coup 的 claim history、Splendor 的多重集统计），不要把"perspective 自己的 private 知识"塞到 tracker 里——那应该走 `state.viz_`
-- 不需要自己实现 `encode(...)`——基类提供默认实现，会自动 `make_masked_state` 一次、按 `[encode_public, encode_private(perspective)]` 顺序拼接，并填充 `legal_mask`。游戏直接 override `encode_public` + `encode_private` 即可
+- 不需要自己实现 `encode(...)`——基类提供默认实现，会自动 `make_masked_state` 一次、调用 `encode_features` 一次，并填充 `legal_mask`。游戏只需 override `encode_features`
 
 #### `action_space() -> int`
 
 返回动作空间总大小（策略头的输出维度）。**必须和 game.json 中的 `action_space` 一致**。
 
-#### `feature_dim() / public_feature_dim() / private_feature_dim() -> int`
+#### `feature_dim() -> int`
 
-总维度 = public + private 之和。**必须和 game.json 中的 `feature_dim` 一致**（game.json 只记录总维度）。完全公开游戏（TicTacToe、Quoridor）`private_feature_dim()` 返回 0、`encode_private` 是空实现。
+特征总维度。**必须和 game.json 中的 `feature_dim` 一致**。完全公开游戏（TicTacToe、Quoridor）就把所有公开字段编完即可。
 
-**示例**（TicTacToe，public 28 维 + private 0 维）：
+**示例**（TicTacToe，28 维公开特征）：
 ```cpp
 // tictactoe_net_adapter.h
 class TicTacToeFeatureEncoder final : public IFeatureEncoder {
  public:
   int action_space() const override { return 9; }
   int feature_dim() const override { return 28; }
-  int public_feature_dim() const override { return 28; }
-  int private_feature_dim() const override { return 0; }
 
-  void encode_public(const IGameState& state, int perspective_player,
-                     std::vector<float>* out) const override;
-  void encode_private(const IGameState&, int, std::vector<float>*) const override {}
+  void encode_features(const MaskedState& state,
+                       int perspective_player,
+                       const IBeliefTracker* tracker,
+                       std::vector<float>* out) const override;
 };
 
 // tictactoe_net_adapter.cpp
-void TicTacToeFeatureEncoder::encode_public(
-    const IGameState& state, int perspective_player,
+void TicTacToeFeatureEncoder::encode_features(
+    const MaskedState& state, int perspective_player,
+    const IBeliefTracker* /*tracker*/,
     std::vector<float>* out) const {
   const auto& s = checked_cast<TicTacToeState>(state);
   const int opp = 1 - perspective_player;
@@ -396,7 +395,7 @@ void TicTacToeFeatureEncoder::encode_public(
 }
 ```
 
-**隐藏信息游戏的写法**：手牌、盲压牌、对手牌的私人确定知识（如 LL Priest 偷看后看到的 opp hand）这些都通过 `MaskedState` 的 `viz=1` 槽位读到——直接 `if (mstate.is_visible({...}, p)) ...` 即可，**不要**把这种 perspective-private 知识塞到 tracker 里。`encode_private` 拼自身手牌 + 通过 viz reveal 看到的 opp 槽位；`encode_public` 拼公开弃牌区、棋盘、当前玩家标记、tracker 公开知识聚合（如 Coup claim history、Splendor 多重集统计）。两个函数被默认 `encode()` 自动按顺序拼接成单一 flat tensor 喂给网络——网络架构不变，纯粹是代码层面的强约束。
+**隐藏信息游戏的写法**：手牌、盲压牌、对手牌的私人确定知识（如 LL Priest 偷看后看到的 opp hand）这些都通过 `MaskedState` 的 `viz=1` 槽位读到——viz=0 槽位读到的就是 `kPlaceholder*`，encoder 自然 emit 全零 / 占位符特征即可，**不要**把这种 perspective-private 知识塞到 tracker 里。`encode_features` 按 schema 列字段顺序统一拼接：公开棋盘 / 弃牌区 / 当前玩家、tracker 公开聚合（如 Coup claim history、Splendor 多重集统计），以及自身手牌 + 通过 viz reveal 看到的 opp 槽位——layout 顺序由 game 自己定，固定即可，不再有 public / private 拆分。
 
 ### 4.2 视角处理
 
@@ -405,7 +404,7 @@ void TicTacToeFeatureEncoder::encode_public(
 原因详见 `docs/KNOWN_ISSUES.md` 第 4 条：棋盘旋转容易把和格子绑定的结构（例如 Quoridor 里墙的「挡哪两条边」语义）旋转错，而且训练看起来能跑、但有一方的策略永远学不好，这种 bug 非常难定位。网络自己可以学 P0/P1 的不对称，不需要我们帮它「归一化」视角。
 
 ```cpp
-// 正确示范（写在 encode_public 里）：把 "我" 和 "对手" 的棋子都按
+// 正确示范（写在 encode_features 里）：把 "我" 和 "对手" 的棋子都按
 // perspective_player 来选，棋盘坐标保持不变
 const int me = perspective_player;
 const int opp = 1 - perspective_player;
@@ -466,21 +465,24 @@ GameBundle 是一个聚合所有游戏组件的结构体。工厂函数返回一
 | 15 | `adjudicator` | `GameAdjudicator` | 否 | 超时判定胜负 |
 | 16 | `auxiliary_scorer` | `AuxiliaryScorer` | 否 | 辅助训练信号 |
 | 17 | `training_action_filter` | `TrainingActionFilter` | 否 | 训练时约束动作空间 |
+| 18 | `stochastic_tail_solve_safe` | `bool` (default `false`) | — | 注册了 `belief_tracker` + `tail_solver` 的游戏**必填 `true`**——硬约束（`GameRegistry::create_game()` 启动时校验，不满足直接抛 `std::runtime_error`），表示作者已确认 `do_action_deterministic_impl` 不会消费隐藏 chance（不抽 deck、不翻 face-down）。Splendor 用 `forced_draw_override = -2` 占位符就是这个机制。 |
 
 > **注**:开局观察(`initial_observation`)和逐 ply snapshot **共享同一条
 > 框架级 walker**,wire shape 是两段:
 >
 > ```
-> { "public_snapshot": <viz::serialize_public(state, schema)>,    # 所有 all_public slot,与逐 ply 完全同源
->   "tracker_init":    <tracker.pack_init_payload(state, p)> }   # 视角私有引导(默认空 AnyMap)
+> { "public_snapshot": <viz::serialize_public_snapshot(state, schema, p)>,  # 整张含 __viz__ 切片,与逐 ply 完全同源
+>   "tracker_init":    <tracker.pack_init_payload(state, p)> }              # 视角私有引导(默认空 AnyMap)
 > ```
 >
-> GT 端先用 `viz::serialize_public` 走 walker(经 `read_field_slot` emit
-> 每个 `all_public` slot),再调 `tracker.pack_init_payload` 取该 perspective
-> 的私有引导。session 端 `apply_initial_observation` 把 `public_snapshot`
-> 喂给 `viz::apply_public`(经 `write_field_slot` 整张覆写),把
-> `tracker_init` 喂给 `tracker.init(*state, perspective, payload)`,由
-> tracker 负责把私有 slot 写进 session state 并翻 viz=1。
+> GT 端先用 `viz::serialize_public_snapshot` 走 walker(对每个
+> `viz[..., p]=1` 的 slot 经 `read_field_slot` emit `(idx, value)`,并把
+> 整张 viz 切片同传到 `__viz__`),再调 `tracker.pack_init_payload` 取该
+> perspective 的私有引导。session 端 `apply_initial_observation` 把
+> `public_snapshot` 喂给 `viz::apply_public_snapshot`(先按字节整张覆盖
+> viz 切片再经 `write_field_slot` 逐 slot 写值),把 `tracker_init` 喂给
+> `tracker.init(*state, perspective, payload)`,由 tracker 负责把私有 slot
+> 写进 session state 并翻 viz=1。
 >
 > 游戏只要把 schema visibility + per-slot dispatcher 写对,public 部分零
 > 工作量;perspective-private 字段(LL 起手牌、LL 起手 `drawn_card`)在
@@ -519,6 +521,24 @@ using AuxiliaryScorer = std::function<float(const IGameState& state, int player)
 // 训练动作过滤
 using TrainingActionFilter = std::function<std::vector<ActionId>(
     const IGameState& state, const IGameRules& rules, const std::vector<ActionId>& legal)>;
+
+// 残局求解触发条件——返回 true 的 ply 才允许尝试 alpha-beta
+using TailSolveTrigger = std::function<bool(const IGameState& state, int ply)>;
+
+// 公开事件抽取——GT 端为这一手 (state_before -> action -> state_after)
+// 算出对 perspective 可见的事件序列 + 公开 snapshot
+using PublicEventExtractor = std::function<PublicEventTrace(
+    const IGameState& state_before,
+    ActionId action,
+    const IGameState& state_after,
+    int perspective_player)>;
+
+// 公开 snapshot 反向写回——observer 路径上 apply_observation 不重放规则,
+// 完全靠 applier 把公开字段从 snapshot 整体覆写到 session state
+using PublicStateApplier = std::function<void(
+    IGameState& state,
+    const AnyMap& snapshot,
+    int receiver_seat)>;
 ```
 
 ---
@@ -659,11 +679,16 @@ target_link_libraries(game_<name> PUBLIC dinoboard_core)
 
 ### 8.2 games/manifest.json
 
-在 `games/manifest.json` 的 `games` 数组里追加一项——这是 setup.py 和顶层 CMakeLists.txt 共享的唯一来源，新游戏只需要在这里登记一次：
+`games/manifest.json` 是 setup.py、顶层 CMakeLists.txt、`engine.available_games()`、web `/api/games/available`、`tests/conftest.py` 共享的**唯一来源**——新游戏在这里登记一次，五条链路同时识别。
+
+在 `games` 数组里追加一项：
 
 ```json
 {
   "id": "<name>",
+  "enabled": true,
+  "framework_whitelist": true,
+  "capabilities": ["hidden_info", "snapshot", "tracker"],
   "sources": [
     "<name>_state.cpp",
     "<name>_rules.cpp",
@@ -673,7 +698,15 @@ target_link_libraries(game_<name> PUBLIC dinoboard_core)
 }
 ```
 
-不要再去手改 `setup.py` 的 sources 列表，也不要在顶层 `CMakeLists.txt` 添加 `add_subdirectory`——两边都会自动从 manifest 读取。
+| 字段 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `id` | string | 必填 | 游戏 id（必须和 GameRegistrar 注册的 id 一致） |
+| `enabled` | bool | `true` | `false` → setup.py / CMake 跳过这一项不编译，所有层（含 manifest 的 5 条消费链）按"游戏不存在"处理。临时下线一个游戏（schema 重写、迁移期）翻这个 boolean 就够，sources 留在盘上 |
+| `framework_whitelist` | bool | `false` | `true` 表示游戏必须满足框架核心不变量；用于一些 framework_whitelist-only 测试的快速过滤 |
+| `capabilities` | string[] | `[]` | 测试 matrix 标签。识别值见 manifest 顶部的 `_capabilities_doc`：`"hidden_info"`（perspective-private slots）、`"snapshot"`（注册了 `public_state_applier`、走 snapshot 协议）、`"tracker"`（注册了 belief_tracker）。`tests/conftest.py::games_with_capability(...)` 据此自动参数化框架测试 |
+| `sources` | string[] | 必填 | 相对 `games/<id>/` 的 .cpp 文件列表，构建时原样消费 |
+
+不要再去手改 `setup.py` 的 sources 列表、顶层 `CMakeLists.txt` 的 `add_subdirectory`、或框架测试里的游戏列表常量——这些层全部从 manifest 读取，**改一处其它都跟着走**。
 
 ### 8.3 构建验证
 
@@ -689,6 +722,38 @@ python -c "import dinoboard_engine; print(dinoboard_engine.available_games())"
 ---
 
 ## 9. 训练可选特性
+
+### 9.0 训练循环架构（必读）
+
+整个训练 pipeline 是 **config-driven**：每次实验只改 `games/<game>/config/game.json`，不动代码。一个完整 step 的形状：
+
+```
+selfplay (episodes_per_step 局, MCTS profile = "selfplay")
+    │
+    ├→ samples (state_hash + π + z_values) push 进 replay buffer
+    │
+    └→ SGD step: 从 buffer 随机采样 train_batches_per_step 个 mini-batch
+       ↓
+       新 latest 权重 → 导出 model_latest.onnx + 周期性快照 model_step_<N>.onnx
+       ↓
+       arena gating (latest vs best, MCTS profile = "arena")
+       ↓
+       latest 胜率 ≥ gating_accept_win_rate → 提升为 best；否则保持 best
+       ↓
+       (按周期) eval benchmarks (MCTS profile = "eval"，对手为 heuristic 或外部 ONNX)
+       ↓
+       下一步
+```
+
+几条关键约束：
+
+- **三个 profile 各司其职**。`selfplay` 真正消费 `temperature_schedule`（前期多样，后期收敛）；`arena` / `eval` 只读单一 `temperature` 标量，schedule 字段虽然在 schema 里强制嵌套，但运行时不衰减。配字段含义见 [CONFIG_REFERENCE.md](CONFIG_REFERENCE.md)。
+- **latest 永不回滚**。即使没通过 gating，下一步继续在 latest 上训练；只有 best 是"经过门槛验证的最强存档"。这是 AlphaZero 范式的标准做法，不要试图实现 "rollback to best"。
+- **selfplay loss 不下降是正常现象**。对手也在变强，policy KL 维持在某个 plateau 是健康的；不要把它当 bug 排查（详见 [KNOWN_ISSUES.md](../KNOWN_ISSUES.md)）。
+- **eval 与 selfplay 必须用同一份 build**。如果中途重新编译了 C++（改了规则、encoder、tail solver），上一步的样本和这一步的网络就不在同一个语义下，gating 结果毫无意义。这就是为什么所有 selfplay / arena / eval 都跑在 C++ runner 里——绝不允许 Python 旁路。
+- **可选特性都挂在 step 内**：opponent pool（`opponent_pool_*`）替换部分 worker 的对手；heuristic guidance（`heuristic_guidance_*`）用启发式打头几步；training action filter（`training_filter_*`）让 selfplay 只在过滤后的子集里搜索；auxiliary score（`auxiliary_score`）开第二个 head 学副任务。**每一项都通过 game.json 的 schedule 控制开关时机，不需要改代码**。详见 §9.1–§9.7。
+
+新游戏走完 §1–§8 后，最小可训练形态只需要 `mcts_profiles.{selfplay, arena, eval}` 三个 profile + `training.steps` + `network.hidden_layers`，§9 的特性都可以等出现具体瓶颈再加。
 
 ### 9.1 HeuristicPicker — 启发式策略
 
@@ -1074,6 +1139,9 @@ BUG-037 postmortem:LL 4p step-125 DAG mismatch 的根因就是 `hash_field_slot`
 
 **字段归类(由 schema base viz 决定,运行时由 rules 通过 `viz::reveal_slot`
 / `reveal_slot_to` / `reset_to_base` 改写 viz)**:
+
+> **I1 invariant — rules 是游戏端唯一的 viz 写入者**：`games/<id>/*.cpp,*.h` 里**禁止**直接写 `state.viz_[name][...] = ...`，必须通过 `viz::reveal_slot` / `reveal_slot_to` / `reset_to_base` / `swap_slot_owned`。Receiver 端的 viz 是框架级 `viz::apply_full_slice`（在 `viz::apply_public_snapshot` 内部）按字节整张覆盖的，不是每个游戏自己 derive。`tests/framework/test_rules_sole_viz_writer.py` lint 守护这条——CI 直接抓 `games/<id>/` 下任何 `viz_[...]=` 模式并失败。
+
 - **`all_public`**:所有玩家都能看见的字段。弃牌堆、公开棋盘、分数、当前
   玩家、回合计数等。所有 perspective 都看到 viz=1
 - **`owner_only_first_axis`**:第一维当 owner 轴。owner-only 手牌、影响牌
@@ -1119,10 +1187,13 @@ acyclic。**游戏开发者不要在 `hash_field_slot` 里重复 hash step_count
 ### 10.4 IBeliefTracker
 **用途**：维护当前玩家的信息认知，为 ISMCTS 根采样提供 prior。
 
-5 个必须实现的方法（观察-only 接口）：
+必须实现的方法（观察-only 接口，签名见 `engine/core/belief_tracker.h`）：
 
 ```cpp
-virtual void init(const AnyMap& initial_observation) = 0;
+virtual void init(IGameState& state, int perspective,
+                  const AnyMap& payload) = 0;
+virtual AnyMap pack_init_payload(const IGameState& gt_state,
+                                 int perspective) const;   // 默认返回空 AnyMap
 virtual void observe_public_event(
     int actor, ActionId action,
     const std::vector<PublicEvent>& events) = 0;
@@ -1133,17 +1204,18 @@ virtual AnyMap serialize() const = 0;
 ```
 
 **关于这几个方法**：
-- `init` **不接 perspective 形参**——tracker 是 perspective-agnostic 的，观察者座位由 `randomize_unseen` 的 `observer` 参数传入。
+- `init(state, perspective, payload)` 在 walker `apply_public_snapshot` 把所有 `viz[..., perspective]=1` 的槽位连同整张 viz 切片写完之后被调用。它做两件事：(a) 把 `payload` 里携带的 perspective-private bootstrap 写进 `state`（必要时同步 toggle `state.viz_`，例如 LL 把 `hand[perspective]` 写回 + viz=1 给自己）；(b) 从 state 的公开字段播种 tracker 自身的累积内存。selfplay / arena / heuristic 路径下每个 seat session 用同 seed 初始化、private 槽位已经正确，`payload` 此时为空 → init 在 state 上 no-op；API / web 路径下 session 用独立 seed 初始化、private 槽位是错的，`payload` 由 GT 端 `pack_init_payload` 打包补上正确内容。
+- `pack_init_payload(gt_state, perspective)` 在 GT 端打包 walker 公开广播覆盖不到的 perspective-private 引导（LL `hand[perspective]`、Coup 自家两张 influence cid）。默认返回空 AnyMap；纯公开 / 对称随机的游戏不需要 override。输出会通过 wire 喂给 peer session 的 `init` 作为 `payload`。
 - `randomize_unseen` 必须 `const`：MCTS sim 路径上调的是 cloned `sim_tracker`，不允许写回累积状态。
 - `clone()` 每次 sim determinization 都会被调用——把当前 belief 复制一份给 sim 用，主 session 的 tracker 不被 sim 写脏。
 - `serialize()` 输出 canonical 字典，给 `test_api_belief_matches_selfplay` 之类的回归测试做对比。
 
-**结构性约束（编译器层强制）**：`init` 和 `observe_public_event` 方法签名里都不接 `IGameState*` 真相——tracker 物理上拿不到 truth state,**无法**偷看：
+**结构性约束**：`init` 收的是 session 自家的 `IGameState&`（不是 GT 真相），用来写 perspective-private bootstrap；`observe_public_event` 完全不接 state，只吃事件流。tracker 物理上拿不到 GT truth state，**无法**偷看 GT 隐藏字段：
 
-- `init(MaskedState, perspective)` 收 walker 物化的 MaskedState——viz=1 槽位含真值,viz=0 槽位被框架置为 `kPlaceholder`。tracker 想偷 hidden 字段也读不到,只能从可见的开局事实(自己的起手牌、公开 tableau 等)推断
-- `observe_public_event` 收 `events` → 来自 `bundle.public_event_extractor(before, action, after, perspective).events`。list 内顺序就是 producer 发出的顺序;tracker 把它当事实序列消费,不需要区分动作前后
+- `init(state, perspective, payload)` —— `state` 是观察者自家的 session state，walker 已经把 `all_public` 部分覆盖完毕；tracker 只能 (a) 把 `payload` 里的 perspective-private 值写进自家 state，(b) 读自家 state 的公开字段播种内存。`payload` 是 wire AnyMap，由 GT 端 `pack_init_payload` 打包，含什么、不含什么由游戏定。
+- `observe_public_event` 收 `events` → 来自 `bundle.public_event_extractor(before, action, after, perspective).events`。list 内顺序就是 producer 发出的顺序；tracker 把它当事实序列消费，不需要区分动作前后。
 
-`public_event_extractor` 是小函数(~20-40 行),只读观察者可见字段,易于审计。开局观察的 walker 路径完全在框架层,不需要 game-side 代码。
+`public_event_extractor` 是小函数(~20-40 行)，只读观察者可见字段，易于审计。开局观察的两段式 wire（`viz::serialize_public_snapshot(...)` 公开部分 + 各 perspective 的 `pack_init_payload(...)` 私有引导）完全由框架装配，game 端只实现 `pack_init_payload` / `init`。
 
 `randomize_unseen(state, observer, rng)` 是采样的**写入口**——可以读 state 的公开字段 + observer 视角下 viz=1 的字段（discard_piles、自己的 hand 等），但禁止读 opp 视角下的 hidden 字段（对手手牌、deck 内容）。tracker 从自己累积的 belief 构建 unseen pool 和 known-hand 分配。
 
@@ -1170,8 +1242,11 @@ Stale 采样(opp hidden 字段的旧 cid 现在已经被公开看到)必须从�
 
 ```
 游戏开始（每个座位 p = 0..num_players-1）：
-  bootstrap_p = make_masked_state(state, schema, p)  // 框架 walker
-  per_perspective_trackers[p]->init(bootstrap_p, p)
+  // session state 已经被 viz::apply_public_snapshot 覆盖了 viz=1 槽位 + 整张 viz 切片
+  payload_p = bundle.belief_tracker.pack_init_payload(gt_state, p)  // GT 端打包
+  per_perspective_trackers[p]->init(session_state[p], p, payload_p)
+  // init 内部把 payload 里的 perspective-private 字段写回 session_state[p]
+  // 并 toggle viz=1 给自己；同时从 session_state 公开字段播种 tracker 内存
 
 每一步 ply（acting player = cp）：
   1. MCTS 搜索                                                 // 见 §MCTS
@@ -1196,11 +1271,11 @@ web / API / per-seat selfplay 推 observer state（不调 do_action_fast）：
 游戏开发者只需实现 `IBeliefTracker` 的方法(`init` / `pack_init_payload` /
 `observe_public_event` / `randomize_unseen` / `serialize` / `clone`)+
 `public_event_extractor`(+ `public_state_applier`,隐藏信息游戏必装)。
-开局观察统一走两段式 wire(`{"public_snapshot": viz::serialize_public(...),
+开局观察统一走两段式 wire(`{"public_snapshot": viz::serialize_public_snapshot(...),
 "tracker_init": tracker.pack_init_payload(...)}`),public 部分由框架 walker
 自动处理,perspective-private 引导由 tracker 自家的 `pack_init_payload` /
 `init` 收尾——session 端 `apply_initial_observation` 把
-`public_snapshot` 喂给 `viz::apply_public`,把 `tracker_init` 喂给
+`public_snapshot` 喂给 `viz::apply_public_snapshot`,把 `tracker_init` 喂给
 `tracker.init(*state, perspective, payload)`。extractor 调用封装见
 `bindings/py_engine.cpp`。
 
@@ -1293,7 +1368,7 @@ ISMCTS 根采样 + encoder 信息屏障在双人游戏中完全自洽；多人�
 3. Encoder 接受 `MaskedState`——viz=0 槽位由 framework 替换为 `kPlaceholder`，encoder 必须分支处理 placeholder（§10.7），不要查询 viz、不要绕过 mask 读 truth
 4. **在 `<game>_state.cpp` 用 `viz::declare_field` 声明每个 state 字段的 name + data shape + base viz tensor**（`all_public` / `owner_only_first_axis` / `all_hidden`），实现 `hash_field_slot` / `read_field_slot` / `write_field_slot` / `mask_field_slot` 四个 per-slot dispatcher（§10.3b）。框架的 walker 按 schema 顺序遍历每个 slot——`viz[..., perspective]=1` 时调 `hash_field_slot` 把 truth mix 进 hash，`viz[..., perspective]=0` 时 mix `kPlaceholder` 哨兵——自动得到 `state_hash_for_perspective(p)` 作 DAG 节点键
 5. **`reset_with_seed` 第一行调 `reset_step_count_base()` 把 step_count_ 归零**。step_count_ 由框架的 `IGameRules` wrapper 在 `do_action_fast_impl` / `do_action_deterministic_impl` 前自动 +1，在 `undo_action_impl` 后自动 -1，**作者既看不到 step_count_ 也无法忘记 / 双 bump**（字段 protected + IGameRules friend）。step_count_ 单调递增保证 DAG 结构性 acyclic（回归测试见 `tests/framework/test_step_count_strict_increase.py`）
-6. **实现 message-driven snapshot 路径**：统一用 walker——`viz::serialize_public` 走全部 all_public schema 字段，`viz::serialize_partial_reveals` 走那些 base viz 不是 all_public、但 runtime viz 对 perspective 为 1 的 slot（owner-only hand、reveal_slot_to 翻给某个 viewer 的牌、被 reveal_slot 翻给所有人的影响牌等）。session 侧 `viz::apply_public` + `viz::apply_partial_reveals` 反向写回，partial-reveal applier 先把 receiver 的 viz 在每个 non-all_public 字段上 reset 回 schema base，再按 sidecar 重新 reveal——这样 truth 端的 `reset_to_base`（轮间洗牌、Prince 弃牌等）在 observer 侧自动同步。tracker 需要的私有/对手知识增量通过 `events` 列表（`PublicEventTrace.events`）增量传递。详见 §14 事件协议章节（参考 `games/splendor/splendor_register.cpp` 纯 all_public 形态、`games/loveletter/loveletter_register.cpp` 加 partial-reveal 形态、`games/azul/azul_register.cpp` 全 all_public 但需要 `skip` 参数的形态）
+6. **实现 message-driven snapshot 路径**：统一用 walker——`viz::serialize_public_snapshot` 走全部 schema 字段，对 `viz[..., perspective]=1` 的每个 slot 把 `(idx_path, value)` 追加到 `snap[name]`，并把 perspective 的整张 viz 切片以扁平 `vector<int>` 形式同传到 `snap["__viz__"][name]`（覆盖 base viz 全 1 的 slot 和 base viz 不是 all_public 但 runtime 已翻给 perspective 的 slot——owner-only hand、reveal_slot_to 翻给某个 viewer 的牌、被 reveal_slot 翻给所有人的影响牌等）。session 侧 `viz::apply_public_snapshot` 先按字节整张覆盖 viz 切片（framework helper `viz::apply_full_slice`），再逐 `(idx, value)` 写回 state——truth 端的 `reset_to_base`（轮间洗牌、Prince 弃牌等）通过整张 viz 同传自动同步,无需 per-game viz 推导 hook。tracker 需要的私有/对手知识增量通过 `events` 列表（`PublicEventTrace.events`）增量传递。详见 §14 事件协议章节（参考 `games/splendor/splendor_register.cpp`、`games/loveletter/loveletter_register.cpp`、`games/azul/azul_register.cpp`——三家 register 都收敛到一行 `serialize_public_snapshot` + 一行 `apply_public_snapshot`，差别只在是否传 `skip={...}`）
 7. 在 `make_<game>` 里注册 `belief_tracker` + `public_event_extractor` + `public_state_applier`(开局观察由框架 walker 自动处理,不再需要 per-game extractor/applier)
 8. **验证测试**：
    - `tests/framework/test_ai_api_separation.py::test_full_game_via_api[<game>]` 必须过（API 契约）
@@ -1322,7 +1397,7 @@ ISMCTS 让开发者**不需要在游戏规则里做任何防御性代码**（没
 
 ## 11. Web 前端开发
 
-Web 前端开发已独立成章，详见 [WEB_DEVELOPMENT_GUIDE.md](WEB_DEVELOPMENT_GUIDE.md)。该文档涵盖 StateSerializer / ActionDescriptor / 目录结构 / 交互设计原则 / `createApp(config)` 框架 API、通用布局、悔棋/替对手落子/智能提示等高级操作、AI Pipeline 与掉分分析、录像回放、统一录像格式、模型评估工具、common.js 通用功能、核心 API 与交互流程。
+Web 前端开发已独立成章，详见 [WEB_DEVELOPMENT_GUIDE.md](WEB_DEVELOPMENT_GUIDE.md)。该文档涵盖 StateSerializer / ActionDescriptor / 目录结构 / 交互设计原则 / `createApp(config)` 框架 API、通用布局、悔棋/替对手落子/智能提示等高级操作、AI Pipeline 与掉分分析、录像回放、统一录像格式、模型评估工具、`general/` 通用模块、核心 API 与交互流程。
 
 视觉与交互的总体原则见 [WEB_DESIGN_PRINCIPLES.md](WEB_DESIGN_PRINCIPLES.md)，新游戏前端开发**必读**。
 
@@ -1502,10 +1577,10 @@ m["box_counts"] = std::any(box_counts);
 3. 实现 public-event 协议（§14.3），在 GameBundle 注册：
    - `public_event_extractor` — GT 侧：`(state_before, action, state_after, perspective) → PublicEventTrace { events, public_snapshot }`
    - `public_state_applier` — observer 侧：把 `public_snapshot` 整体写回 session state 的公开字段
-   - 开局观察 = `viz::serialize_public` (public 部分,框架 walker)+
+   - 开局观察 = `viz::serialize_public_snapshot` (public 部分,框架 walker)+
      `tracker.pack_init_payload` (perspective-private 引导,游戏自家
      tracker 实现);session 端 `apply_initial_observation` 自动分别走
-     `viz::apply_public` 和 `tracker.init`
+     `viz::apply_public_snapshot` 和 `tracker.init`
 4. 在 `tests/<your_game>/test_checklist.py` 里加一个 `TestApiBeliefEquivalence` 类(参考 `tests/loveletter/` / `tests/splendor/` / `tests/coup/test_checklist.py`),调用 `assert_api_belief_matches_selfplay(GAME, PUBLIC_KEYS)` —— 这个 helper 一次完成三层等价断言(belief snapshot 每步一致 / 公开 state 字段终局相等 / perspective 回合 legal actions 相等),不需要重新实现
 
 ### 14.3 Public-Event 协议设计
@@ -1528,14 +1603,15 @@ session 上 viz=0 槽位**不动**——决策侧的 hash 用 `kHiddenHashSentin
 **初始观察**:与逐 ply snapshot 共用同一条 walker,wire shape 是两段:
 
 ```
-{ "public_snapshot": <viz::serialize_public(state, schema)>,    # 所有 all_public slot
-  "tracker_init":    <tracker.pack_init_payload(state, p)> }   # 视角私有引导(默认空)
+{ "public_snapshot": <viz::serialize_public_snapshot(state, schema, p)>,  # 整张含 __viz__ 切片
+  "tracker_init":    <tracker.pack_init_payload(state, p)> }              # 视角私有引导(默认空)
 ```
 
-- **public 部分**:GT 端 `viz::serialize_public` 走 walker 经
-  `read_field_slot` emit 每个 `all_public` slot;session 端
-  `viz::apply_public` 经 `write_field_slot` 整张覆写。Splendor 的
-  `tableau` + `nobles`、LL 的 `discard_count` / `face_up_count` /
+- **public 部分**:GT 端 `viz::serialize_public_snapshot` 走 walker,对每
+  个 `viz[..., p]=1` 的 slot 经 `read_field_slot` emit `(idx, value)`,并
+  把整张 viz 切片同传到 `__viz__`;session 端 `viz::apply_public_snapshot`
+  先按字节整张覆盖 viz 切片再经 `write_field_slot` 逐 slot 写值。Splendor
+  的 `tableau` + `nobles`、LL 的 `discard_count` / `face_up_count` /
   `deck_size` 都走这条,无 per-game 代码。
 - **perspective-private 部分**:由游戏自家 tracker 的 `pack_init_payload`
   / `init` 负责。LL 在 `pack_init_payload` 里塞 `own_hand`(以及当
@@ -1545,7 +1621,7 @@ session 上 viz=0 槽位**不动**——决策侧的 hash 用 `kHiddenHashSentin
   perspective-private 字段,`pack_init_payload` 直接返回空。
 
 session 端 `apply_initial_observation(perspective, obs)` 解开两段分别走
-`viz::apply_public` 和 `tracker.init(*state, perspective, payload)`。
+`viz::apply_public_snapshot` 和 `tracker.init(*state, perspective, payload)`。
 opening 和 per-ply 在框架眼里是同一种"public_snapshot + 视角私有引导"
 模式,只是引导通道不同(opening 走 `pack_init_payload` ↔ `init`,
 per-ply 走 `public_event_extractor` ↔ `observe_public_event`)。

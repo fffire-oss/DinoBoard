@@ -49,8 +49,9 @@ Background (CLAUDE.md "AI Pipeline Independence" + ALGORITHM_OVERVIEW
 
 Scope (IN_SCOPE_GAMES below): TicTacToe / Quoridor / Azul / Splendor /
 LoveLetter — the five games whose per-seat session state is currently
-driven by the public-event protocol. Coup is excluded (manifest
-enabled=false until its schema-driven tracker rewrite).
+driven by the public-event protocol. Coup is excluded pending its
+schema-driven tracker rewrite (perspective-baked private knowledge in
+the tracker hasn't migrated to viz=0 schema slots yet).
 """
 from __future__ import annotations
 

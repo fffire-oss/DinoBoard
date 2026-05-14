@@ -19,18 +19,10 @@ class LoveLetterFeatureEncoder final : public IFeatureEncoder {
   LoveLetterFeatureEncoder() = default;
   int action_space() const override { return kActionSpace; }
   int feature_dim() const override { return Cfg::kFeatureDim; }
-  int public_feature_dim() const override { return Cfg::kPublicFeatureDim; }
-  int private_feature_dim() const override { return Cfg::kPrivateFeatureDim; }
 
-  void encode_public(
+  void encode_features(
       const IGameState& state,
       int perspective_player,
-      const IBeliefTracker* tracker,
-      std::vector<float>* out) const override;
-
-  void encode_private(
-      const IGameState& state,
-      int player,
       const IBeliefTracker* tracker,
       std::vector<float>* out) const override;
 };

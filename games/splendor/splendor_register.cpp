@@ -330,103 +330,24 @@ PublicEventTrace extract_events(
     }
   }
 
-  // full post-action public snapshot for
-  // message-driven public state推进. Walker-driven via
-  // viz::serialize_public — reads typed values through
-  // SplendorState::read_field_slot.
-  {
-    AnyMap snap;
-    board_ai::viz::serialize_public(after, SplendorState<NPlayers>::schema(), snap);
-
-    // Snapshot-only keys (not schema fields):
-    //  - reserved_faceup_ids_flat: partial-reveal sidecar for the
-    //    schema "reserved_visible" gate
-    // (deck_sizes is now a schema field, walked by serialize_public.)
-    std::vector<int> reserved_faceup_ids_flat(NPlayers * 3, -1);
-    for (int p = 0; p < NPlayers; ++p) {
-      for (int i = 0; i < 3; ++i) {
-        if (da.reserved_visible[p][i] != 0) {
-          reserved_faceup_ids_flat[p * 3 + i] = static_cast<int>(da.reserved[p][i]);
-        }
-      }
-    }
-    snap["reserved_faceup_ids_flat"] = std::any(reserved_faceup_ids_flat);
-
-    out.public_snapshot = std::move(snap);
-  }
+  // Full post-action public snapshot — walker-driven, single unified
+  // call. Carries every (idx, value) pair for slots viz=1 to perspective
+  // and the perspective's full viz slice. Receiver wholesale-replaces
+  // both halves; no per-game viz derivation needed.
+  board_ai::viz::serialize_public_snapshot(
+      after, SplendorState<NPlayers>::schema(), perspective,
+      out.public_snapshot);
 
   return out;
 }
 
-// applier — inverse of the snapshot extractor above. Walker-driven via
-// viz::apply_public — writes typed values through
-// SplendorState::write_field_slot. The remaining snapshot-only key
-// (reserved_faceup_ids_flat) is handled here in a trailing
-// mutate_persistent block. Hidden fields (face-down reserved ids, deck
-// contents) are left for randomize_unseen to fill.
+// applier — single unified call. Hidden fields (face-down reserved ids,
+// deck contents) are left for randomize_unseen to fill at sim entry.
 template <int NPlayers>
 void apply_public_state(IGameState& state, const AnyMap& snap,
-                        int /*receiver_seat*/) {
-  auto& s = board_ai::checked_cast<SplendorState<NPlayers>>(state);
-
-  // Schema-driven public fields.
-  board_ai::viz::apply_public(state, SplendorState<NPlayers>::schema(), snap);
-
-  // Snapshot-only keys: variable-length vectors and partial-reveal sidecar.
-  auto get_iv = [&](const char* key) -> std::vector<int> {
-    auto it = snap.find(key);
-    if (it == snap.end()) return {};
-    if (it->second.type() == typeid(std::vector<int>)) {
-      return std::any_cast<std::vector<int>>(it->second);
-    }
-    if (it->second.type() == typeid(std::vector<std::any>)) {
-      const auto& av = std::any_cast<const std::vector<std::any>&>(it->second);
-      std::vector<int> out;
-      out.reserve(av.size());
-      for (const auto& x : av) {
-        if (x.type() == typeid(int)) out.push_back(std::any_cast<int>(x));
-      }
-      return out;
-    }
-    return {};
-  };
-  auto faceup_ids_flat = get_iv("reserved_faceup_ids_flat");
-
-  mutate_persistent<NPlayers>(s, [&](SplendorData<NPlayers>& d) {
-    // Partial-reveal sidecar: face-up reserved cards overwrite from
-    // snapshot (gated on schema-applied reserved_visible). Face-down
-    // reserved cards: leave as-is (tracker / self_reserve_deck handle).
-    // Trailing slots beyond reserved_size are inactive — clear them to
-    // -1 so observer's view matches truth's remove_reserved_at, which
-    // sets the freed slot to -1 after compaction. Without this clear,
-    // a buy-reserved that compacts the array leaves stale cids in the
-    // observer's owner-visible trailing slots and the perspective hash
-    // diverges from truth.
-    for (int p = 0; p < NPlayers; ++p) {
-      const int rs = static_cast<int>(d.reserved_size[p]);
-      for (int i = 0; i < 3; ++i) {
-        const int idx = p * 3 + i;
-        if (i >= rs) {
-          d.reserved[p][i] = -1;
-          continue;
-        }
-        if (idx < static_cast<int>(faceup_ids_flat.size()) &&
-            d.reserved_visible[p][i] != 0 &&
-            faceup_ids_flat[idx] >= 0) {
-          d.reserved[p][i] = static_cast<std::int16_t>(faceup_ids_flat[idx]);
-        }
-      }
-    }
-  });
-
-  // Re-sync state.viz_["reserved"] from the just-applied reserved_visible.
-  // The API path skips do_action_fast, so the rules-side
-  // reveal_slot/reset_to_base transitions never run on observer state;
-  // without this call, the schema-driven hash would walk a stale viz_
-  // and diverge from truth (which did run do_action_fast). The actual viz
-  // writes live in splendor_rules.cpp::sync_splendor_reserved_viz to keep
-  // the I1 invariant (rules.cpp is the sole writer of viz_).
-  board_ai::splendor::sync_splendor_reserved_viz<NPlayers>(state);
+                        int receiver_seat) {
+  board_ai::viz::apply_public_snapshot(
+      state, SplendorState<NPlayers>::schema(), receiver_seat, snap);
 }
 
 }  // namespace splendor_events

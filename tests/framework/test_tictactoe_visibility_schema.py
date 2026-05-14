@@ -1,24 +1,12 @@
-"""Phase 3 (tictactoe pilot): pin tictactoe's visibility schema surface.
+"""Pin tictactoe's visibility schema surface.
 
-Tic-Tac-Toe is the first game to declare a `static const viz::VisibilitySchema& schema()`
-under Phase 3, used as the reference for the per-game schema bring-up
-pattern. This file pins:
-
-  - the header exposes `schema()` (Phase 3 vocabulary, future-proofs against
-    accidental rename / removal as later games copy the pattern)
+  - the header exposes `schema()` (future-proofs against accidental
+    rename / removal)
   - the .cpp's schema() body declares every persistent state field with
     `all_public` viz (tictactoe is fully observable — no field may declare
     `all_hidden` or `owner_only_first_axis`)
   - `reset_with_seed` wires `init_viz(*this, schema())` so a freshly reset
     state actually carries the schema's base_viz in its `viz_` map
-
-Runtime walker semantics (for_each_visible_slot visits every slot for
-each of the 2 perspectives) are exercised indirectly by every tictactoe
-test that calls reset_with_seed — init_viz throwing or producing a
-malformed VizTensor would surface as an immediate construction failure.
-A direct runtime test is deferred until pybind exposes viz_ inspection
-(currently the viz_ map is C++-private to the framework's encoder /
-hash / snapshot consumers, none of which exist for tictactoe yet).
 """
 from __future__ import annotations
 

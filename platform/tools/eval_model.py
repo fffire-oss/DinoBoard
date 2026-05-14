@@ -25,7 +25,7 @@ Usage:
 import argparse
 import json
 import sys
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -136,38 +136,61 @@ def main():
             "heuristic_temp": args.heuristic_temp,
         })
 
-    results = []
-    if args.workers <= 1:
-        for t in tasks:
-            results.append(_run_one_game(t))
-    else:
-        with ProcessPoolExecutor(max_workers=args.workers) as pool:
-            results = list(pool.map(_run_one_game, tasks))
-
-    results.sort(key=lambda r: r["game_idx"])
-
     per_seat = [{"w": 0, "l": 0, "d": 0} for _ in range(num_players)]
+    running_w = running_l = running_d = 0
 
     if args.games > 1 and not args.no_save:
         out_path.mkdir(parents=True, exist_ok=True)
 
-    for r in results:
-        game_idx = r["game_idx"]
+    def _stream_print(r: dict, n_done: int) -> None:
+        """Tally + print one finished game as soon as it returns."""
+        nonlocal running_w, running_l, running_d
         model_seat = r["model_seat"]
-        model_won = not r["draw"] and r["winner"] == model_seat
-
         if r["draw"]:
             winner_name = "draw"
             per_seat[model_seat]["d"] += 1
-        elif model_won:
+            running_d += 1
+        elif r["winner"] == model_seat:
             winner_name = name_model
             per_seat[model_seat]["w"] += 1
+            running_w += 1
         else:
             winner_name = name_opp
             per_seat[model_seat]["l"] += 1
+            running_l += 1
+        running_total = running_w + running_l + running_d
+        wr = (running_w / running_total * 100) if running_total else 0.0
+        # Stream-printed as games finish: completion order is NOT game_idx
+        # order, but every line carries seed + game_idx so it can be re-sorted
+        # if needed. The trailing "n_done/total" is wall-clock progress; the
+        # leading "[game_idx+1/total]" preserves the previous log shape.
+        print(f"[{r['game_idx']+1}/{args.games}] {name_model}(seat{model_seat}) vs {name_opp} "
+              f"seed={r['seed']}: {winner_name} wins, {r['total_plies']} plies  "
+              f"({n_done}/{args.games}, {name_model} {running_w}-{running_l}-{running_d}={wr:.0f}%)",
+              flush=True)
 
-        print(f"[{game_idx+1}/{args.games}] {name_model}(seat{model_seat}) vs {name_opp} "
-              f"seed={r['seed']}: {winner_name} wins, {r['total_plies']} plies")
+    results: list[dict] = []
+    n_done = 0
+    if args.workers <= 1:
+        for t in tasks:
+            r = _run_one_game(t)
+            results.append(r)
+            n_done += 1
+            _stream_print(r, n_done)
+    else:
+        with ProcessPoolExecutor(max_workers=args.workers) as pool:
+            futures = {pool.submit(_run_one_game, t): t for t in tasks}
+            for fut in as_completed(futures):
+                r = fut.result()
+                results.append(r)
+                n_done += 1
+                _stream_print(r, n_done)
+
+    results.sort(key=lambda r: r["game_idx"])
+
+    for r in results:
+        game_idx = r["game_idx"]
+        model_seat = r["model_seat"]
 
         if args.no_save:
             continue

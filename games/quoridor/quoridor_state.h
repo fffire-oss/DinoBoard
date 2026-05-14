@@ -109,7 +109,7 @@ struct QuoridorState final : public CloneableState<QuoridorState> {
 
   QuoridorState();
 
-  // Phase 3 — visibility schema. Quoridor is fully public: pawn positions,
+  // Visibility schema. Quoridor is fully public: pawn positions,
   // wall placements, walls remaining, scores — every viewer can see all
   // of it. Same all_public-only declaration pattern as tictactoe.
   static const viz::VisibilitySchema& schema();

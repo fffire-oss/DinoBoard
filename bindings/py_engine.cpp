@@ -51,8 +51,9 @@ inline search::OpponentSelection parse_opponent_selection(
 inline void tracker_init(IBeliefTracker& bt, const GameBundle& /*bundle*/,
                          IGameState& state, int perspective,
                          const AnyMap& payload = {}) {
-  // Two-step init: walker `apply_public` (the broadcast public snapshot
-  // path) is the responsibility of the caller; here we just hand the
+  // Two-step init: walker `apply_public_snapshot` (the broadcast
+  // public snapshot path) is the responsibility of the caller; here
+  // we just hand the
   // perspective-private bootstrap payload to the tracker. The tracker
   // writes any private slots into `state` and seeds its own memory by
   // reading public facts from `state`.
@@ -856,7 +857,7 @@ py::dict run_heuristic_episode_py(
 // DIFFERENT perspective and applying a sequence of (actor, action) public
 // events on that tracker. Used by OB-002 regression test: a tracker bound
 // to seat A who learned an opponent's hand via Priest must not leak that
-// knowledge into encode_private for seat B.
+// knowledge into the encoder output for seat B.
 py::dict encode_state_for_perspective_py(
     const std::string& game_id,
     std::uint64_t seed,
@@ -901,16 +902,15 @@ py::dict encode_state_for_perspective_py(
     }
   }
 
-  std::vector<float> public_features, private_features;
+  std::vector<float> features;
   auto masked = make_masked_state(*bundle.state,
                                   bundle.state->schema_ref(), encode_player);
-  bundle.encoder->encode_public(*masked, encode_player, bundle.belief_tracker.get(), &public_features);
-  bundle.encoder->encode_private(*masked, encode_player, bundle.belief_tracker.get(), &private_features);
+  bundle.encoder->encode_features(*masked, encode_player,
+                                  bundle.belief_tracker.get(), &features);
 
   py::gil_scoped_acquire acquire;
   py::dict out;
-  out["public_features"] = public_features;
-  out["private_features"] = private_features;
+  out["features"] = features;
   out["tracker_perspective"] =
       bundle.belief_tracker ? tracker_perspective : -1;
   return out;
@@ -933,30 +933,15 @@ py::dict encode_state_py(
   const int action_space = bundle.encoder->action_space();
   const int feature_dim = bundle.encoder->feature_dim();
 
-  // Also compute the public/private split so tests can verify the
-  // structural invariant (changing an opp's private shouldn't affect
-  // encode_private for perspective, etc.).
-  std::vector<float> public_features, private_features;
-  auto masked = make_masked_state(*bundle.state,
-                                  bundle.state->schema_ref(), player);
-  bundle.encoder->encode_public(*masked, player, bundle.belief_tracker.get(), &public_features);
-  bundle.encoder->encode_private(*masked, player, bundle.belief_tracker.get(), &private_features);
-  const int public_dim = bundle.encoder->public_feature_dim();
-  const int private_dim = bundle.encoder->private_feature_dim();
-
   py::gil_scoped_acquire acquire;
   py::dict out;
   out["features"] = features;
-  out["public_features"] = public_features;
-  out["private_features"] = private_features;
   out["legal_mask"] = legal_mask;
   out["legal_actions"] = legal;
   out["current_player"] = player;
   out["is_terminal"] = is_terminal;
   out["action_space"] = action_space;
   out["feature_dim"] = feature_dim;
-  out["public_feature_dim"] = public_dim;
-  out["private_feature_dim"] = private_dim;
   return out;
 }
 
@@ -1304,25 +1289,17 @@ class GameSessionWrapper {
   // perspective from the truth state, the way the partner-side server would
   // before sending it to the AI. Two-section wire shape, structurally
   // identical to per-ply snapshot:
-  //   {"public_snapshot": <walker viz::serialize_public(state)>,
+  //   {"public_snapshot": <walker viz::serialize_public_snapshot(state, perspective)>,
   //    "tracker_init":    <tracker.pack_init_payload(state, perspective)>}
-  // The public_snapshot half carries only all_public schema slots — exactly
-  // what every viewer sees at every ply. Perspective-private bootstrap that
-  // all_public broadcast can't reach (e.g. Love Letter own starting hand)
-  // flows through tracker_init.
+  // The public_snapshot half carries every (idx, value) pair where
+  // viz[idx, perspective]=1 plus the full perspective viz slice;
+  // perspective-internal tracker bootstrap rides tracker_init.
   py::dict extract_initial_observation(int perspective) {
     AnyMap pub;
     AnyMap tk_init;
     {
       py::gil_scoped_release release;
-      viz::serialize_public(
-          *bundle_->state, bundle_->state->schema_ref(), pub);
-      // Walker-driven partial-reveal sidecar: owner_only_first_axis
-      // slots whose runtime viz[..., perspective] == 1 (e.g. Coup
-      // influence[perspective, *] at game start, since the
-      // owner_only base puts viz[p, *, p]=1) are emitted here, no
-      // game-specific extractor needed.
-      viz::serialize_partial_reveals(
+      viz::serialize_public_snapshot(
           *bundle_->state, bundle_->state->schema_ref(), perspective, pub);
       if (bt_) {
         tk_init = bt_->pack_init_payload(*bundle_->state, perspective);
@@ -1340,9 +1317,9 @@ class GameSessionWrapper {
 
   // Partner-provided initial observation. Two-section wire shape mirrors
   // per-ply snapshot: `public_snapshot` is wholesale-applied via
-  // `viz::apply_public` (same path per-ply uses); `tracker_init` is handed
-  // to `tracker.init` so it can write any perspective-private slots into
-  // session state and seed its own memory. The session's viz=0 slots are
+  // `viz::apply_public_snapshot` (same primitive per-ply uses);
+  // `tracker_init` is handed to `tracker.init` so it can write any
+  // perspective-internal tracker memory. The session's viz=0 slots are
   // never touched here — sim-entry `randomize_unseen` on a clone is the
   // only path that reads them.
   void apply_initial_observation(int perspective_player, py::dict initial_obs) {
@@ -1369,14 +1346,7 @@ class GameSessionWrapper {
     py::gil_scoped_release release;
     external_obs_mode_ = true;
     api_perspective_ = perspective_player;
-    viz::apply_public(
-        *bundle_->state, bundle_->state->schema_ref(), pub);
-    // Walker-driven partial-reveal sidecar: mirror of the extract path.
-    // Owner_only_first_axis slots that GT-side walker emitted to the
-    // perspective (e.g. Coup influence[perspective, *] at game start)
-    // are wholesale-applied here — no per-game initial_observation
-    // extractor/applier needed.
-    viz::apply_partial_reveals(
+    viz::apply_public_snapshot(
         *bundle_->state, bundle_->state->schema_ref(),
         perspective_player, pub);
     if (bt_) {

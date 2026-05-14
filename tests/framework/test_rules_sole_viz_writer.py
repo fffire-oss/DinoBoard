@@ -25,10 +25,8 @@ Rules-side bookkeeping is permitted to read viz_ (e.g. saving a
 slot's pre-action visibility before reveal). The lint checks for
 *writes*, not reads.
 
-Phase 3.1 baseline: only `viz::init_viz` is currently in use, all
-under `_state.cpp::reset_with_seed`. The lint is therefore strict
-from day one — any future reveal_slot drift outside rules.cpp
-fails CI immediately.
+The lint is strict — any reveal_slot / reset_to_base / direct viz_
+mutation outside the allowed file fails CI.
 """
 from __future__ import annotations
 

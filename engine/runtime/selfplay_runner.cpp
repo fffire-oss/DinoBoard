@@ -116,14 +116,15 @@ SelfplayEpisodeResult run_selfplay_episode(
   // Tracing uses its own separate tracker instance so trace output stays
   // reproducible across refactors of MCTS tracker routing. Initial
   // observation is the snapshot-path's opening twin:
-  //   { "public_snapshot": <walker viz::serialize_public(state)>,
+  //   { "public_snapshot": <walker viz::serialize_public_snapshot(state, perspective)>,
   //     "tracker_init":    <tracker.pack_init_payload(state, p)> }
   // Wire shape mirrors per-ply public_snapshot: the public part is
   // produced by exactly the same walker, and `tracker_init` plays the
   // role per-ply `events` plays for `tracker.observe_public_event`.
   if (tracing) {
     AnyMap pub;
-    viz::serialize_public(*state, state->schema_ref(), pub);
+    viz::serialize_public_snapshot(
+        *state, state->schema_ref(), trace_perspective, pub);
     AnyMap tracker_init_payload;
     if (trace_belief_tracker) {
       tracker_init_payload = trace_belief_tracker->pack_init_payload(
@@ -204,9 +205,7 @@ SelfplayEpisodeResult run_selfplay_episode(
         heuristic_dist(heuristic_rng) < config.training_filter_ratio;
     const IGameRules& effective_rules = use_filter ? *filtered_rules_ptr : rules;
 
-    // AI-path reads come from the acting seat's session state (truth-free)
-    // when per-seat mode is on; otherwise fall back to truth (legacy path
-    // for games whose tracker is still perspective-baked).
+    // AI-path reads come from the acting seat's session state (truth-free).
     IGameState& ai_view = ai_view_for(player);
 
     const auto legal = effective_rules.legal_actions(ai_view);

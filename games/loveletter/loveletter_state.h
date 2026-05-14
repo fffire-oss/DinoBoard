@@ -44,20 +44,12 @@ template <int NPlayers>
 struct LoveLetterConfig {
   static_assert(NPlayers >= 2 && NPlayers <= 4);
   static constexpr int kPlayers = NPlayers;
-  // Public per-player (visible to all): alive, protected, current_player,
-  // hand_exposed (4), discard counts (8), discard size (1) = 13.
-  static constexpr int kPerPlayerPublicFeatures = 13;
-  // Private per-player (from p's perspective, about p or p's knowledge of
-  // others): hand one-hot (8) + drawn_card one-hot (8) = 16.
-  static constexpr int kPerPlayerPrivateFeatures = 16;
-  static constexpr int kPerPlayerFeatures =
-      kPerPlayerPublicFeatures + kPerPlayerPrivateFeatures;  // 29
+  // Per-player features: alive, protected, current_player, hand_exposed
+  // (4) + discard counts (8) + discard size (1) + hand one-hot (8)
+  // + drawn_card one-hot (8) = 29.
+  static constexpr int kPerPlayerFeatures = 29;
   static constexpr int kGlobalFeatures = 12;
   static constexpr int kFeatureDim = kPerPlayerFeatures * NPlayers + kGlobalFeatures;
-  static constexpr int kPublicFeatureDim =
-      kPerPlayerPublicFeatures * NPlayers + kGlobalFeatures;
-  static constexpr int kPrivateFeatureDim =
-      kPerPlayerPrivateFeatures * NPlayers;
   static constexpr int kFaceUpRemoved = NPlayers == 2 ? 3 : 0;
 };
 
@@ -102,11 +94,10 @@ struct LoveLetterState final : public CloneableState<LoveLetterState<NPlayers>> 
 
   LoveLetterState();
 
-  // Phase 3 — visibility schema. LoveLetter is the most subtle game we
-  // ship; the schema captures the full visibility layout but does NOT
-  // by itself wire dynamic reveals — those will land in a follow-on PR
-  // that mutates state.viz_ from inside do_action_fast (Priest peek,
-  // Baron compare, end-of-round flips). Partition:
+  // Visibility schema. LoveLetter is the most subtle game we ship;
+  // the schema captures the static visibility layout. Dynamic reveals
+  // (Priest peek, Baron compare, end-of-round flips) are wired by
+  // do_action_fast via reveal_slot_to / reveal_slot. Partition:
   //
   //   - all_public scalars: current_player, first_player, winner,
   //     terminal, ply.

@@ -29,7 +29,7 @@
 9. [录像回放](#9-录像回放)
 10. [统一录像格式](#10-统一录像格式)
 11. [模型评估工具](#11-模型评估工具)
-12. [通用功能（common.js）](#12-通用功能commonjs)
+12. [框架提供的通用 UI](#12-框架提供的通用-ui)
 13. [核心 API](#13-核心-api)
 14. [交互流程](#14-交互流程)
 
@@ -141,13 +141,14 @@ games/<game>/web/
 | `numPlayers` | int | 否 | 玩家数（默认 2） |
 | `renderBoard` | `(container, gameState, ctx)` | 是 | 渲染公共游戏区域（棋盘/牌桌） |
 | `renderPlayerArea` | `(container, gameState, ctx)` | 是 | 渲染玩家私有区域 |
-| `formatOpponentMove` | `(actionInfo, actionId) -> string` | 否 | 格式化对手上一步的文字描述 |
-| `formatSuggestedMove` | `(actionInfo, actionId) -> string` | 否 | 格式化 AI 提示推荐动作的文字描述 |
+| `formatOpponentMove` | `(actionInfo, actionId, actorIdx) -> string` | 否 | 格式化对手上一步的文字描述。`actorIdx` 是动作发起者的 seat 编号（多人游戏需要） |
+| `formatSuggestedMove` | `(actionInfo, actionId, actorIdx) -> string` | 否 | 格式化 AI 提示推荐动作的文字描述 |
 | `getPlayerSymbol` | `(aiPlayer) -> string` | 否 | 返回玩家身份描述（默认"先手"/"后手"） |
-| `extensions` | `(gameState) -> [{label, value}]` | 否 | 信息栏扩展内容（如"牌堆剩余"） |
+| `extensions` | `Array<{ render(el, gameState) }>` | 否 | 信息栏扩展条目数组，每个条目实现 `render(el, gameState)`，由 `info_panel.updateExtensions(gameState, extensions)` 在每次状态更新时调用——直接 DOM 写 `el.textContent` 或 `el.innerHTML` 即可。例：`{ render(el, gs) { el.textContent = `袋中：${gs.state.bag_total}`; } }` |
 | `gameIntro` | string | 否 | 开局后写入侧栏 ops-msg 的简短操作说明，AI 第一次落子时自动清空，后续让位给"已悔棋"/掉分提示等瞬态信息 |
 | `disableForce` | bool | 否 | 默认 false。设 true 时禁用"替对手落子"——侧栏不渲染按钮，pipeline 也不会进入 forceMode。隐藏信息游戏必须开启，见下文 §5.1 |
 | `showWinrateDefault` | bool | 否 | "显示胜率预估"复选框的默认值（可被 localStorage 覆盖）。默认 true（完全信息游戏开启）；隐藏信息游戏必须显式置为 false，见下文 §5.1 |
+| `describeTransition` | `(prevState, newState, actionInfo, actionId) -> AnimStep[] \| null` | 否 | 动作动画描述函数。返回动画步骤数组，框架按序播放后再切换到新状态；返回 `null`/`[]` 直接切换；抛异常自动降级直接切换。详见 §5.3 |
 | `onGameStart` | `() -> void` | 否 | 开局回调（可用于清理 UI 状态） |
 | `onActionSubmitted` | `() -> void` | 否 | 玩家提交动作后回调 |
 | `onUndo` | `() -> void` | 否 | 悔棋后回调 |
@@ -161,17 +162,22 @@ games/<game>/web/
 | `ctx.submitAction(actionId)` | 提交玩家动作。游戏将点击/拖拽手势翻译为 actionId 后调用此方法 |
 | `ctx.rerender()` | 强制重新渲染（用于游戏内部状态变化后触发更新） |
 
-### gameState 对象（来自后端 state_serializer）
+### gameState 对象（来自后端 `session_response`）
 
-后端 `session_response()` 返回的对象，包含：
-- `current_player`：当前玩家
-- `is_terminal`：是否终局
-- `winner`：胜者（-1 为平局或未终局）
+后端 `platform/game_service/sessions.py::session_response()` 返回的对象。**注意 `state_serializer` 返回的游戏自定义字段被嵌在 `state` 子对象下**，不在顶层：
+
+顶层框架字段：
+- `session_id`：本局 ID
+- `current_player`：当前玩家 seat
+- `is_terminal` / `winner` / `is_turn_start`
 - `legal_actions`：合法动作 ID 列表
-- `last_action_id`：上一步动作 ID
-- `last_action_info`：上一步 `action_descriptor` 返回的信息
-- `difficulty`：当前难度
-- 游戏自定义字段（由 `state_serializer` 返回的所有 key-value）
+- `last_actor`：上一步动作发起者（来自 replay frames 的最后一帧 actor，可能为 `null`）
+- `last_action_info` / `last_action_id` / `last_action_actor`：**这三个字段来自后端的 pipeline 结果，由 `app.js` 在 AI 落子完成后客户端写入 `state.gameState`**（`session_response` 本身不直接返回它们）。游戏 JS 在 `formatOpponentMove` / `formatSuggestedMove` 里只读不写
+- `num_players` / `human_player` / `ai_player` / `ai_players` / `difficulty`
+
+`state` 子对象（`gs.get_state_dict()` 调用 `state_serializer` 的返回值）：
+- `state_serializer` 返回的所有 key-value 都在这层，例：`gameState.state.walls_remaining`、`gameState.state.bag_total`
+- `extensions` 的 `render(el, gameState)` 拿到的就是顶层 `gameState`，访问游戏字段记得 `gameState.state.xxx`
 
 ### 典型游戏 JS 结构
 
@@ -197,11 +203,11 @@ createApp({
     // 渲染玩家手牌/个人区域
   },
 
-  formatOpponentMove(actionInfo, actionId) {
+  formatOpponentMove(actionInfo, actionId, actorIdx) {
     return `对手${actionInfo.type === 'move' ? '移动到' : '放置墙于'} (${actionInfo.row},${actionInfo.col})`;
   },
 
-  formatSuggestedMove(actionInfo, actionId) {
+  formatSuggestedMove(actionInfo, actionId, actorIdx) {
     return `建议${actionInfo.type === 'move' ? '移动到' : '放墙于'} (${actionInfo.row},${actionInfo.col})`;
   },
 });
@@ -227,6 +233,75 @@ showWinrateDefault: false,
 
 - **简单参考**：`games/tictactoe/web/`（9 格棋盘，最简交互）
 - **复杂参考**：`games/quoridor/web/`（9×9 棋盘 + 墙放置 + 棋子跳跃）
+
+### 5.3 `describeTransition` —— 动画步骤描述
+
+> 何时**应该**做动画、`popup` vs `reveal` 怎么取舍这种**设计判据**写在 [`WEB_DESIGN_PRINCIPLES.md` §3](WEB_DESIGN_PRINCIPLES.md)。本节只列**实现细节**：可用的 step 类型、字段、`data-*` 选择器约定、推荐时长。
+
+`describeTransition(prevState, newState, actionInfo, actionId)` 返回一个 `AnimStep[]`，框架按序 await。所有 step 都跑在 z-index 10001 的 `.anim-overlay` 层上，不会修改业务 DOM；动画结束后 app 会重渲染到 `newState`。
+
+#### Step 类型
+
+| type | 必备字段 | 可选字段 | 说明 |
+|------|---------|---------|------|
+| `fly` | `from`, `to`, `createElement` | `width`/`height`, `duration`, `onStart(srcEl)`, `hideFrom`, `onComplete` | 创建一个飞行 sprite 从 `from` 飞到 `to`。`from`/`to` 接受 CSS 选择器或 `HTMLElement` |
+| `flyGroup` | `flights[]`（无 `type` 的 fly 字段对象数组） | — | 一组 fly 并行播放，整体在最慢的那条结束时返回 |
+| `group` | `children[]`（任意 step 数组） | — | 任意类型 step 并行播放 |
+| `popup` | `target`, `content` | `className`, `width`, `height`, `duration` | 数字/文字气泡浮现再淡出。`content` 是字符串或 `HTMLElement` |
+| `run` | `fn` | — | 在 step 间执行 DOM mutation。常用来在 fly 之间改动业务 DOM 让下一步看到中间状态 |
+| `fadeOut` | `target` | `duration` | 淡出一个 DOM 元素 |
+| `highlight` | `target` | `className`, `duration` | 短暂加 CSS class，`duration` 后移除 |
+| `pause` | `duration` | — | 等待一段时间，纯粹用于节奏 |
+| `reveal` | `title`, `body` | `buttonText`（默认"知道了"）, `className`, `timeoutMs` | 阻塞式弹窗，玩家点确认后才继续。**默认不要给 `timeoutMs`**——强制看清就是它存在的意义 |
+
+#### `fly` 的中间状态机制
+
+一个动作常常是多步动画的串联（购买卡牌 = 宝石飞回银行 + 卡牌飞到玩家区）。每步动画结束后，前一步的 DOM 状态需要保持，否则后面的步骤会从错误的初始位置出发。三种维护方式：
+
+- **`onStart(srcEl)`**：fly 启动时执行（在源 rect 已采集、sprite 已生成、动画即将开始的时刻）。把源 DOM 改成"取走后"的样子，sprite 从原位飞走，视觉上容器位置不动只有实体离开。**容器有空态背景时优先用这个**（详见 [`WEB_DESIGN_PRINCIPLES.md` §3.5](WEB_DESIGN_PRINCIPLES.md) 的 hideFrom 陷阱）
+- **`hideFrom: true`**：fly 结束后源元素 `visibility: hidden`（保留布局占位）。简单粗暴，但会把整个容器（含空态背景）一起藏掉，仅适用于"取走后容器本来就该完全消失"的场景
+- **`onComplete`**：fly 结束后跑回调，比如递减计数器文字，让后续 step 看到正确数字
+
+所有动画播完后框架自动恢复 `visibility: hidden` 的元素，再触发业务 DOM re-render。
+
+#### `data-*` 选择器约定
+
+`describeTransition` 用 CSS 选择器定位 DOM。渲染函数需要在关键元素上加 `data-*` 属性。命名没有强制要求，**唯一的硬约束是 `data-player` / `data-opponent`**（§3.6 头顶气泡需要它定位行动玩家容器）：
+
+| 属性 | 含义 |
+|------|------|
+| `data-player="<idx>"` | 人类玩家自己的区域（**必须**，每个 player-area 都要加，含人类自己的） |
+| `data-opponent="<idx>"` | 对手玩家区域（**必须**） |
+| `data-bank-gem="<color>"` | 银行宝石（按颜色索引）—— Splendor 风格示例 |
+| `data-tableau="<tier>-<slot>"` | 公开牌位 |
+| `data-player-gem="<player>-<color>"` | 玩家宝石 |
+| `data-reserved="<player>-<slot>"` | 保留卡 |
+| `data-noble="<slot>"` / `data-deck="<tier>"` | 贵族 / 牌堆 |
+
+只要 `describeTransition` 和渲染函数用一致的选择器即可。
+
+#### 推荐时长
+
+| 动画类型 | 推荐时长 |
+|---------|---------|
+| 宝石/token 移动 | 350–450ms |
+| 卡牌移动 | 450–600ms |
+| popup 头顶气泡 | 1200–1800ms |
+| 步骤间间隔 | 60ms（`STEP_GAP`，框架自动插入） |
+| 整体超时上限 | 30000ms（`MAX_QUEUE_MS`，仅为兜底失控的动画链） |
+
+`fly` 默认 `duration = 350ms`（`DEFAULT_DURATION`）。token 类小元素够用，卡牌偏快——把卡牌单独提到 ~550ms 是 Splendor 实测舒适的数值。`flyGroup` 里的多条 flight 应该用相同或相近 duration，否则视觉上割裂。
+
+更详细的速度调优经验、为什么"动画不要太快"，见 [`WEB_DESIGN_PRINCIPLES.md` §3 速度建议](WEB_DESIGN_PRINCIPLES.md)。
+
+#### 最低实现清单
+
+每个 `describeTransition` 返回的动画链都必须满足：
+
+1. 有可视化实体位移的动作（拿宝石、移砖、买卡）→ 至少一个 `fly` / `flyGroup`
+2. 没有实体位移的动作（声明、决策、偷看）→ 至少一个 `popup`（[`WEB_DESIGN_PRINCIPLES.md` §3.6](WEB_DESIGN_PRINCIPLES.md)）
+3. 揭示玩家本人才知道的私密信息（Priest/Baron 等）→ 用 `reveal`，**不要**用 popup（[`WEB_DESIGN_PRINCIPLES.md` §3.7](WEB_DESIGN_PRINCIPLES.md)）
+4. 录像回放走同一份 `describeTransition`——所有 step 在复盘里也会触发，含 `reveal` 的"知道了"按钮
 
 ---
 
@@ -412,50 +487,81 @@ Pipeline 协调对局中的 AI 决策和分析。核心设计：**每个 human-t
 
 ## 11. 模型评估工具
 
-`platform/tools/eval_model.py` — 独立评估训练成果的脚本，支持并行对局和胜率统计：
+`platform/tools/eval_model.py` — 独立评估训练成果的脚本，支持并行对局和胜率统计。**搜索强度（`simulations` / `temperature` 等）由 `--profile` 指定的 MCTS profile 决定**，没有 `--sims` / `--temp` 这类直接旋钮（避免和 profile 配置漂移）。
 
 ```bash
-# 快速评估：40 局 4 worker 并行，只看胜率（不保存录像）
+# 快速评估：40 局 4 worker 并行，只看胜率（不保存录像）；强度走 arena profile
 python3 platform/tools/eval_model.py \
   --game quoridor \
-  --model-a runs/quoridor_v14/models/model_best.onnx \
-  --sims 400 --games 40 --workers 4 --no-save -o /tmp/eval
+  --model runs/quoridor_v14/models/model_best.onnx \
+  --games 40 --workers 4 --no-save -o /tmp/eval
 
-# model vs heuristic，保存录像供前端回放
+# model vs heuristic，保存录像供前端回放；用 web_expert profile 跑高强度
 python3 platform/tools/eval_model.py \
-  --game quoridor \
-  --model-a runs/quoridor_v14/models/model_latest.onnx --name-a latest \
-  --heuristic-temp 0.2 --sims 800 --games 20 \
+  --game quoridor --profile web_expert \
+  --model runs/quoridor_v14/models/model_latest.onnx --name-model latest \
+  --heuristic-temp 0.2 --games 20 \
   -o games/quoridor/replay/latest_vs_heuristic
 
 # model vs model
 python3 platform/tools/eval_model.py \
   --game quoridor \
-  --model-a models/step500.onnx --name-a step500 \
-  --model-b models/model_init.onnx --name-b init \
-  --temp 0.1 --games 20 --workers 4 \
+  --model models/step500.onnx --name-model step500 \
+  --opponent models/model_init.onnx --name-opponent init \
+  --games 20 --workers 4 \
   -o games/quoridor/replay/step500_vs_init
-
-# constrained 模式（动作过滤）
-python3 platform/tools/eval_model.py \
-  --game quoridor --constrained \
-  --model-a models/latest.onnx --name-a latest \
-  --games 10 -o games/quoridor/replay/constrained_test
 ```
 
-参数说明：`--workers N` 并行跑 N 局，`--no-save` 只输出统计不写文件。自动交替先后手，输出按先后手分别统计胜率。录像为轻量 JSON（仅含 action_history），前端加载时自动回放生成帧。
+主要参数：
 
-## 12. 通用功能（common.js）
-
-`common.js` 提供以下自动注入的通用功能，所有游戏前端自动获得：
-
-| 功能 | 说明 |
+| 参数 | 说明 |
 |------|------|
-| 缩放控件 | 左上角 +/- 按钮，缩放棋盘区域，状态保存到 localStorage |
-| 侧边栏收起 | 侧边栏边缘"收起/展开"按钮，状态保存到 localStorage |
-| 尚未开局提示 | 棋盘区域显示"尚未开局"占位文字 |
+| `--game` | game id（如 `quoridor` / `loveletter_4p` / `azul_3p`） |
+| `--model` | 待测模型路径（轮转所有座位） |
+| `--opponent` | 对手；模型路径或字符串 `heuristic`（默认 heuristic） |
+| `--profile` | MCTS profile 名（默认 `arena`；常用 `web_expert`） |
+| `--name-model` / `--name-opponent` | 录像里的显示名（缺省取文件 stem） |
+| `--heuristic-temp` | heuristic 对手温度（仅 model vs heuristic） |
+| `--games` / `--workers` | 局数 / 并行数 |
+| `-o` / `--output` | 录像输出目录 |
+| `--no-save` | 只打印统计，不写录像 |
 
-**尚未开局提示**：layout.css 提供 `.not-started-placeholder` 样式类供游戏自由选用——但目前的参考实现（quoridor、azul、splendor、loveletter）都不依赖它，而是在 `gameState` 为空时直接 `renderEmptyBoard(container)` 渲染一份占位空盘（空网格 / 空 factory 区 / 空 tableau），让棋盘区域尺寸稳定。这个做法把"开局前的视觉占位"和"游戏专属的空盘语义"合在一起，省一层 DOM 注入。
+自动交替先后手，输出按先后手分别统计胜率。录像为轻量 JSON（仅含 action_history），前端加载时自动回放生成帧。
+
+## 12. 框架提供的通用 UI
+
+`createApp` 自动注入以下通用功能，游戏前端**不需要额外代码**：
+
+| 功能 | 实现位置 | 说明 |
+|------|---------|------|
+| 缩放控件 | `general/layout.js` | 左上角 +/- 按钮缩放棋盘区域，状态保存到 `localStorage['dino_board_zoom']` |
+| 侧边栏收起 | `general/sidebar.js` | 侧边栏边缘"收起/展开"按钮，状态保存到 localStorage |
+| 信息栏 | `general/info_panel.js` | 回合 / 对手动作 pill / 胜率 pill / AI 提示 / `extensions` 渲染入口 |
+| 录像窗口 | `general/replay.js` | 对局结束后自动展示，专家难度逐帧含掉分分析 |
+| 国际化 | `general/i18n.js` + `i18n_strings.js` | `t(key)` 返回当前语言文案 |
+
+### 12.1 游戏 JS 可直接 `import` 的 framework 辅助 API
+
+`general/` 下绝大多数模块都由 `createApp` 内部实例化、通过 `ctx` 或 config callback 暴露给游戏；**游戏 JS 应当只 `import` 下列三个模块**，其余的不要直接 import（直接 import 会绕过 `createApp` 的生命周期管理和参数解析，迁移时容易踩坑）。
+
+| 模块 | 导出 | 何时用 |
+|------|------|------|
+| `general/app.js` | `createApp(config)` | **唯一**入口；游戏 JS 末尾调一次 |
+| `general/i18n.js` | `t(key, params?)` / `tList(key)` / `register(dict)` / `getLang()` / `setLang(lang)` | 文案翻译。游戏首屏调 `register({zh:{...},en:{...}})` 注入自己的字典，渲染时调 `t('ns.key', {a, b})`；`tList` 返回 `string[]`（用于多行说明） |
+| `general/api.js` | `apiGet(path)` / `apiPost(path, body)` / `API_BASE` | 只在游戏需要走标准 fetch 之外的特殊 API 调用时引入（目前仅 Quoridor 用到）。常规对局、AI、悔棋等都已封装在 `createApp` 内部，**不需要游戏自己 fetch** |
+
+`sidebar` / `modal` / `info_panel` / `replay` / `animate` / `layout` / `pipeline` 是 framework-internal——它们要么由 `createApp` 自己 `new` 一份再绑回 ctx（`ctx.sidebar.setOpsMsg(...)`、`ctx.infoPanel.setSuggest(...)`，见 §5 ctx 表），要么完全无需游戏触碰。直接 import 这些模块的代码不应进 review。
+
+### 12.2 游戏 JS 不要自己操作 sidebar / info_panel DOM
+
+`sidebar.setOpsMsg` / `sidebar.setStartMsg` / `infoPanel.setTurn` / `infoPanel.setMessage` / `infoPanel.setWinrate` / `infoPanel.setSuggest` 等方法**全部在 framework 内部由 `app.js` 调用**——例如悔棋后写 ops-msg、AI 思考中改 turn pill、smart-hint 写 suggest pill。游戏 JS **不应**自己 import 这些模块或拿它们的实例操作 DOM。游戏想要影响信息栏内容的合法通道有两个：
+
+1. **`config.extensions`**（[§5.1](#51-隐藏信息游戏的两个必备开关)）—— 把自定义 pill 注入信息栏第 5+ 行；framework 在每次 re-render 时调你的 `render(el, gameState)`。
+2. **`config.formatOpponentMove` / `config.formatSuggestedMove`** —— 返回的字符串会被 framework 写入 opp-move pill / suggest pill。
+
+如果出现"我的 setOpsMsg 不生效"、"我手写 infoPanel.setTurn 想替换框架文案"这类需求，那是设计偏离了——框架的 ops-msg 流是**唯一**瞬态文字通道（详见 [WEB_DESIGN_PRINCIPLES §5.3](WEB_DESIGN_PRINCIPLES.md)），改文案应该走 `i18n.register(...)` 覆盖对应 key（例如 `app.undone`、`app.force_done`），而不是绕过 framework 直接写 DOM。
+
+**尚未开局提示**：`layout.css` 提供 `.not-started-placeholder` 样式类供游戏自由选用——但目前的参考实现（quoridor、azul、splendor、loveletter）都不依赖它，而是在 `gameState` 为空时直接 `renderEmptyBoard(container)` 渲染一份占位空盘（空网格 / 空 factory 区 / 空 tableau），让棋盘区域尺寸稳定。这个做法把"开局前的视觉占位"和"游戏专属的空盘语义"合在一起，省一层 DOM 注入。
 
 游戏的 `renderBoard()` 函数应在 `gameState` 为空时**返回一个空盘渲染**，而不是把 container 留空——后者会让侧边栏 / info 栏跟着塌缩，违反空间锚定原则（详见 `WEB_DESIGN_PRINCIPLES.md`）。
 

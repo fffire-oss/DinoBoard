@@ -1875,6 +1875,8 @@ popup 循环改用 `floorCounts[pi]`。逻辑等价于"在 prev 上模拟 do_act
 
 ## [BUG-036] LoveLetter `known_hand_[]` / `hand_override` 平行通道把 perspective 私人推断塞进 tracker 与 wire（§G.1 清理）
 
+> **后续（2026-05-14）**：原修复落点引用的 `viz::serialize_public` / `apply_public` walker + `owner_overlay` partial-reveal sidecar 已被「整张 viz 由 GT 传完全替换」的统一 wire protocol 取代——现在只有 `viz::serialize_public_snapshot` / `apply_public_snapshot`，每条 snapshot 在 `__viz__` key 下携带 perspective 的完整 viz slice，receiver 调 `viz::apply_full_slice` 字节级覆盖。`owner_overlay` / `__recv_perspective` / partial-reveal sidecar 这些名字今天都不存在；下文涉及它们的描述当作历史现场看。本 bug 的语义教训（rules 是 viz 唯一 writer、tracker 不持 perspective 私字段）仍然有效。
+
 ### 背景
 
 - 落地于 2026-05-12，详见 `docs/plans/LL_LANDING.md`。
@@ -1907,6 +1909,8 @@ CLAUDE.md 的「AI Pipeline Independence」第二条（session 公开字段被 m
 ---
 
 ## [BUG-037] LoveLetter `hand` 槽 hash 只 mix value 不 mix idx，dynamic-reveal 视野下两套 (idx,value) 序列哈希撞车 → DAG node legal-action mismatch
+
+> **后续（2026-05-14）**：本条目「副作用」段提到的 `apply_public_state` + `owner_overlay` 写回路径已不存在——统一 wire protocol 把 viz slice 整张随 snapshot ship 给 receiver，由 `viz::apply_full_slice` 字节级覆盖 `state.viz_[...,perspective]`，无需 receiver 做"全 -1 撤 viz"这类基于 owner_overlay 的特判。结构教训（hash mix 全三元组 + 不留 off-schema 后门）仍然有效。
 
 ### 背景
 

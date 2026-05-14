@@ -1,8 +1,8 @@
-"""Regression: feature encoder respects the public/private partition.
+"""Regression: feature encoder respects the hash scope.
 
-The ISMCTS architecture aligns encoder scope with the hash scope:
-encoder must only extract features from (public_fields + current
-player's private_fields). Opponents' private fields must NOT influence
+The ISMCTS architecture aligns encoder scope with the hash scope: the
+encoder reads only what the perspective can legally see (viz=1 slots
+on the MaskedState). Opponents' private fields must NOT influence the
 encoder output.
 
 This is the structural enforcement of "no info leak through features":
@@ -12,14 +12,8 @@ This is the structural enforcement of "no info leak through features":
   the same tree node, and its prior/value estimates become world-specific
   rather than info-set-specific → prior pollution under root sampling
 
-Test method: for each hidden-info game, construct two states that differ
-ONLY in opp private fields. Encoder output must be bit-identical.
-
-If this test fails, either:
-- The encoder is reading opp private (info leak)
-- The game's hash_private_fields declaration is wrong (wrong partition)
-
-Either way, we want to know.
+Test method: for each hidden-info game, drive two selfplay episodes
+with identical seeds. Their sample features must be bit-identical.
 """
 from __future__ import annotations
 
@@ -82,7 +76,6 @@ def test_encoder_output_invariant_under_opp_private_change(game_id):
     # it shouldn't if randomize_unseen is deterministic for the same seed),
     # we'd see differences. Since deterministic selfplay keeps opp state
     # identical too, this test mostly asserts selfplay reproducibility.
-    # For a STRONGER check, see Phase 6 (encode_public/private) tests.
     for i, (sa, sb) in enumerate(zip(ep_a["samples"], ep_b["samples"])):
         fa = np.asarray(sa["features"], dtype=np.float32)
         fb = np.asarray(sb["features"], dtype=np.float32)
@@ -119,56 +112,15 @@ def test_encoder_stable_within_info_set(game_id):
             f"does not match game_metadata feature_dim {expected_dim}")
 
 
-# ---------------------------------------------------------------------------
-# Phase 6: structural invariants of the public/private split.
-# These are STRONGER than the selfplay-reproducibility checks above — they
-# exercise `encode_public` / `encode_private` directly through the binding.
-# ---------------------------------------------------------------------------
-
 from conftest import enabled_games as _enabled_games
 ALL_GAMES = _enabled_games()
 
 
 @pytest.mark.parametrize("game_id", ALL_GAMES)
-def test_public_plus_private_equals_full(game_id):
-    """encode(state, p) must equal concat(encode_public(state, p),
-    encode_private(state, p)). This is the contract the base-class
-    `encode` implementation promises."""
-    enc = engine.encode_state(game_id, seed=42)
-    full = list(enc["features"])
-    public = list(enc["public_features"])
-    private = list(enc["private_features"])
-
-    assert enc["public_feature_dim"] == len(public), (
-        f"{game_id}: public_feature_dim={enc['public_feature_dim']} but "
-        f"actual public length={len(public)}")
-    assert enc["private_feature_dim"] == len(private), (
-        f"{game_id}: private_feature_dim={enc['private_feature_dim']} but "
-        f"actual private length={len(private)}")
-    assert len(public) + len(private) == len(full), (
-        f"{game_id}: public({len(public)}) + private({len(private)}) != "
-        f"full({len(full)})")
-    assert public + private == full, (
-        f"{game_id}: concat(public, private) does not equal full features")
-
-
-@pytest.mark.parametrize("game_id", ALL_GAMES)
-def test_feature_dim_split_matches_metadata(game_id):
-    """public_feature_dim + private_feature_dim == feature_dim, and the
-    latter matches game_metadata.feature_dim."""
+def test_feature_dim_matches_metadata(game_id):
+    """encode(state).feature_dim matches game_metadata.feature_dim, and
+    the actual feature vector length matches that dim."""
     meta = engine.game_metadata(game_id)
     enc = engine.encode_state(game_id, seed=42)
-    assert enc["public_feature_dim"] + enc["private_feature_dim"] == \
-        enc["feature_dim"]
     assert enc["feature_dim"] == meta["feature_dim"]
-
-
-@pytest.mark.parametrize("game_id", ["tictactoe", "quoridor", "azul"])
-def test_fully_observable_games_have_zero_private_dim(game_id):
-    """Games with no non-symmetric hidden info advertise private_feature_dim=0.
-    TicTacToe / Quoridor are deterministic; Azul has symmetric random (bag
-    order) but no per-player hidden fields."""
-    enc = engine.encode_state(game_id, seed=42)
-    assert enc["private_feature_dim"] == 0, (
-        f"{game_id} is fully observable but reports "
-        f"private_feature_dim={enc['private_feature_dim']}")
+    assert len(enc["features"]) == enc["feature_dim"]

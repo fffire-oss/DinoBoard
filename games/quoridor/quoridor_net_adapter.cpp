@@ -3,7 +3,7 @@
 
 namespace board_ai::quoridor {
 
-void QuoridorFeatureEncoder::encode_public(
+void QuoridorFeatureEncoder::encode_features(
     const IGameState& state,
     int perspective_player,
     const IBeliefTracker* /*tracker*/,

@@ -1,4 +1,4 @@
-"""I6 over-permission regression for Splendor (Phase 3.3 schema-driven hash).
+"""I6 over-permission regression for Splendor.
 
 The schema declares `reserved[player][slot]` with `viz::owner_only_first_axis`:
 the first axis (player) gates visibility — only the owning player sees that
@@ -6,11 +6,10 @@ slot's card_id at base. Reserve-from-tableau actions reveal the slot publicly
 via `viz::reveal_slot`; reserve-from-deck does NOT reveal (owner-only base
 is correct), so opponents never learn the cid of a blind reserve.
 
-After the schema-driven hash migration:
-
-  hash_private_fields(perspective=0) walks the schema and only emits
-  reserved[p][i] when `viz_["reserved"][p, i, 0] == 1`. For an opp's
-  blind-reserved slot, that gate is 0 → my hash never observes the cid.
+`state_hash_for_perspective(0)` walks the schema and only mixes the slot
+value for reserved[p][i] when `viz_["reserved"][p, i, 0] == 1`; hidden
+slots get a fixed sentinel. For an opp's blind-reserved slot the gate
+is 0 → my hash never observes the cid.
 
 This test pins that property directly: drive two API sessions through the
 SAME observation trace but with different session seeds (so `randomize_unseen`
@@ -19,9 +18,8 @@ samples a different cid into opp's blind-reserved slot in each). My
 trace must actually exercise an opp reserve-from-deck (otherwise the test
 trivially passes without testing anything).
 
-Failure here is the canonical info-leak signature for Splendor under the
-new schema-driven path: my hash is observing data that depends on opp's
-private reserved cid.
+Failure here is the canonical info-leak signature for Splendor: my hash
+is observing data that depends on opp's private reserved cid.
 """
 from __future__ import annotations
 
@@ -127,8 +125,8 @@ def test_opp_blind_reserve_change_does_not_leak_to_my_hash():
             f"action={step['action']}] state_hash_for_perspective({perspective}) "
             f"diverged: {h_a:#x} vs {h_b:#x}\n"
             f"  events={step['events']}\n"
-            f"This means hash_private_fields(perspective={perspective}) is "
-            f"emitting a value that depends on data the schema marks as "
+            f"This means state_hash_for_perspective({perspective}) is "
+            f"mixing a value that depends on data the schema marks as "
             f"owner-only for a different player. The most likely cause is a "
             f"`reserved` slot at {{p, i}} (p != {perspective}) being walked "
             f"despite viz_['reserved'][p, i, {perspective}] == 0, or "

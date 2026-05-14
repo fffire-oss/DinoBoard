@@ -1,14 +1,12 @@
-"""Phase 3 (splendor): pin splendor's visibility schema surface.
+"""Pin splendor's visibility schema surface.
 
 Splendor partitions:
   - all_public: bank, tableau, nobles, scores, bonuses, points,
     reserved_visible (the public face-up flag), counts, stage.
   - owner_only_first_axis: reserved[N][3] (card ids — face-down by
-    default; rules will reveal_slot when a reserve becomes face-up.
-    Reveal-wiring is a follow-on PR; this test only locks the base
-    declaration).
+    default; rules reveal_slot when a reserve becomes face-up).
   - decks (variable-length per-tier vectors): NOT a schema slot.
-    Public size + hidden contents already handled by hash_public_fields
+    Public size + hidden contents already handled by state_hash_for_perspective
     + randomize_unseen.
 """
 from __future__ import annotations
@@ -66,7 +64,7 @@ def test_source_partitions_fields_correctly() -> None:
     ), (
         "decks must NOT be a schema slot — variable-length per-tier "
         "vectors with hidden contents and public size; handled by "
-        "hash_public_fields / randomize_unseen instead"
+        "state_hash_for_perspective / randomize_unseen instead"
     )
 
 

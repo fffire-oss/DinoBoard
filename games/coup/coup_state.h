@@ -82,23 +82,18 @@ struct CoupConfig {
   // See coup_revival plan §"Encoder 设计". Per-player public 23: alive,
   // coins, 2× influence_slot{revealed + char-OH(5)}=12, role one-hot
   // (active/target/blocker/challenger)=4, signals(5).
-  static constexpr int kPerPlayerPublicFeatures = 23;
-  // Per-player private 22: 2× own influence char-OH (5+5=10) +
-  // 2× exchange_drawn{occupied + char-OH(5)}=12. Self-block only on
-  // perspective; other players' private blocks zero-filled by encoder.
-  static constexpr int kPerPlayerPrivateFeatures = 22;
-  static constexpr int kPerPlayerFeatures =
-      kPerPlayerPublicFeatures + kPerPlayerPrivateFeatures;  // 45
+  // Per-player 45: alive(1) + coins norm(1) + coins-bucket OH(13) +
+  // self-flag(1) + revealed slot OH(2*5)=10 + claim history(... see
+  // encoder) = 23 (observer-visible) + 2× own influence char-OH (5+5=10)
+  // + 2× exchange_drawn{occupied + char-OH(5)}=12 (observer-private,
+  // non-self slots arrive as kPlaceholder via MaskedState) = 45.
+  static constexpr int kPerPlayerFeatures = 45;
   // Global: stage(11) + declared_action_type(7) + claimed_char(5) +
   // block_char(5) + pending_claimer relative-OH(N) + pending_challenged
   // (1) + deck_size/15(1) + ply/200(1) + revealed multiset per role(5)
   // = 36 + N.
   static constexpr int kGlobalFeatures = 36 + NPlayers;
   static constexpr int kFeatureDim = kPerPlayerFeatures * NPlayers + kGlobalFeatures;
-  static constexpr int kPublicFeatureDim =
-      kPerPlayerPublicFeatures * NPlayers + kGlobalFeatures;
-  static constexpr int kPrivateFeatureDim =
-      kPerPlayerPrivateFeatures * NPlayers;
 };
 
 template <int NPlayers>

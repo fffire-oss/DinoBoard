@@ -6,10 +6,8 @@
 - **玩家数**：2–4
 - **动作空间**：32
 - **隐藏信息**：有（每人 2 张 influence 卡 + deck 剩余卡序列）
-- **公开事件**：
-  - `card_revealed`（post）：某玩家揭示一张牌（被挑战失败、lose influence 或成功 reveal 自证）
-  - `exchange_complete`（post）：Ambassador 换牌流程结束
-- **特点**：AI 用**启发式概率 sampler**（而非均匀采样）来采样对手暗牌——基于 claim/challenge 历史推断。接入方不需要操心这一层，只要正确发事件即可
+- **公开事件**：当前 Coup 的 `public_event_extractor` **不发任何 events**（`out.events` 始终为空）。所有"对手揭示一张牌"、"Ambassador 换牌完成"等语义都通过 `(actor, action_id)` + `public_snapshot` 的 `influences[*].revealed/character` 槽位 + `viz` 切片来表达——`reveal_slot_to` 把 viz=1 翻给所有人，walker 把真值塞进 snapshot
+- **特点**：AI 用**启发式概率 sampler**（而非均匀采样）来采样对手暗牌——tracker 在 `observe_public_event(actor, action, events=[])` 的 phase 1 中根据 claim/challenge 动作累积信号，无需游戏端额外发事件
 
 ---
 
@@ -45,34 +43,9 @@
 
 ## 公开事件
 
-### `card_revealed`（post）
+Coup 协议下 `events` 始终是 `[]`。所有可见信息——揭示的角色身份、Ambassador 换牌后手牌发生重洗——都体现在 `public_snapshot`：rules 端在 `do_action_fast` 里调 `reveal_slot_to(...)` 把 `influences[player][slot]` 的 `revealed/character` 槽位的 viz 翻成对所有人 1，walker 自动把这些槽位的真值序列化进 snapshot。
 
-任何角色被**公开**揭示时发——包括：
-- 挑战失败方揭示一张非 claim 的牌（lose influence）
-- 挑战成功方揭示 claim 对应的角色（证实 claim，然后该牌洗回 deck + 新抽）
-- Coup / Assassinate 导致 target lose influence
-
-```json
-{
-  "kind": "card_revealed",
-  "payload": {"player": 1, "role": 2}
-}
-```
-
-- `role` 值：0=Duke, 1=Assassin, 2=Captain, 3=Ambassador, 4=Contessa
-
-**何时发**：无论是 reveal 成功（自证）还是失败（丢牌），只要这张牌被当众揭示过，都要发。AI 侧需要这个信号来更新 tracker 的 signal count（"玩家 p 的某角色已经亮过了")。
-
-### `exchange_complete`（post）
-
-Ambassador 的 exchange 流程（claim → 若不被挑战 → 抽 2 张 → 从手里选保留 → 把其余的还回 deck）全部结束后发一次。AI 侧据此**清空该玩家的所有 claim 信号**（因为他的手牌已经被部分重洗了）。
-
-```json
-{
-  "kind": "exchange_complete",
-  "payload": {"player": 0}
-}
-```
+接入方不需要构造任何 PublicEvent payload；tracker 的 `observe_public_event` 通过 `(actor, action_id)` 自身就能累积所有 claim/challenge/reveal 信号（见下文 "Coup 特有：启发式 belief"）。
 
 ---
 
@@ -90,9 +63,10 @@ Ambassador 的 exchange 流程（claim → 若不被挑战 → 抽 2 张 → 从
 import requests
 BASE = "http://localhost:8000"
 
+initial_observation = gt_session.extract_initial_observation(3)
 sess = requests.post(f"{BASE}/ai/sessions", json={
     "game_id": "coup_4p", "seed": 555, "my_seat": 3,
-    "simulations": 1000, "temperature": 0.0,
+    "initial_observation": initial_observation,
 }).json()
 sid = sess["session_id"]
 
@@ -132,14 +106,14 @@ Coup 的 tracker 不是 uniform 采样。它在内部维护每个对手对每个
 
 采样时权重 = `pool_remaining × (1 + 0.5 × signal_count)`，加硬约束保证全局守恒（每角色总共 ≤ 3 张）。
 
-**接入方什么都不用做**，只要正确发 `card_revealed` / `exchange_complete` 事件，AI 的启发式自己就工作。
+**接入方什么都不用做**——tracker 的 `observe_public_event` 在 `events=[]` 情况下也会从 `(actor, action_id)` 推出所有 claim 类、challenge、allow 动作，自己累积信号。
 
-详见 `docs/guide/GAME_DEVELOPMENT_GUIDE.md` §11.4 的 Coup 子节。
+详见 `games/coup/coup_net_adapter.cpp::CoupBeliefTracker::observe_public_event`。
 
 ---
 
 ## 常见踩坑
 
-- **多阶段回合要逐 action 喂**：一次出招 → 挑战 → reveal → 丢牌 是 4 个连续的 action。不能只喂第一个然后想靠事件补齐后面——每个 action 都必须 observe 一次
-- **挑战成功时的 reveal 要发 `card_revealed`**：即使那张 card 没进 discard pile（被洗回 deck 了），也还是被公开过，信号需要更新
-- **`exchange_complete` 要独立事件**：不能只靠 action ID 推断——因为 exchange 是几个 action 组成的复合流程
+- **多阶段回合要逐 action 喂**：一次出招 → 挑战 → reveal → 丢牌 是 4 个连续的 action。每个 action 都必须 `observe` 一次，每次都带最新的 `public_snapshot`，不能跳过
+- **被揭示的牌靠 `viz` + snapshot 自动同步**：rules 在 `do_action_fast` 里调 `reveal_slot_to(everyone, "influences", {p, slot})` 后，walker 把 `influences[p][slot].character/revealed` 写进 snapshot；observer 整体覆写后 viz=1，无需任何额外事件
+- **不要尝试自己构造 `card_revealed` / `exchange_complete` payload**：tracker 不消费这两个 kind（旧文档的描述已过时）。换牌完成后的"信号清零"逻辑也已迁移到 `(actor, action_id)` 驱动，不需要游戏端额外标记

@@ -74,10 +74,11 @@ def test_hash_perspective_invariant_for_fully_public_games(game_id: str) -> None
     """Fully-public games (tictactoe, quoridor) have no private fields.
     state_hash_for_perspective(p) MUST be identical across every viewer p.
 
-    If any of these games' hash_private_fields(p, h) ever starts hashing
-    something that depends on `p`, this test will catch it — and would
-    indicate either a leak of opp private info into the perspective hash
-    or an unannounced asymmetry that breaks the fully-public contract.
+    If any of these games' schema walk ever starts emitting something
+    that depends on `p` (a per-perspective field that shouldn't exist
+    in a fully-public game), this test catches it — that indicates
+    either an opp-private leak into the perspective hash or an
+    unannounced asymmetry that breaks the fully-public contract.
     """
     seed = 31337
     sess = _make_session(game_id, seed)
@@ -91,5 +92,5 @@ def test_hash_perspective_invariant_for_fully_public_games(game_id: str) -> None
             f"[{game_id}] state_hash_for_perspective differs across "
             f"perspectives in a fully-public game: p=0 {h0:#x} vs "
             f"p={p} {hp:#x}. Fully-public games have no private fields; "
-            f"hash_private_fields must be a no-op for every perspective."
+            f"schema walk must yield identical digests for every perspective."
         )

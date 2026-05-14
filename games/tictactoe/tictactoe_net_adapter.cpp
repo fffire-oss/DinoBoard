@@ -2,7 +2,7 @@
 
 namespace board_ai::tictactoe {
 
-void TicTacToeFeatureEncoder::encode_public(
+void TicTacToeFeatureEncoder::encode_features(
     const IGameState& state,
     int perspective_player,
     const IBeliefTracker* /*tracker*/,

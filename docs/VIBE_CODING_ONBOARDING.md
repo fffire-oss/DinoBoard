@@ -42,10 +42,9 @@ games/<g>/
 **Never reimplement C++ logic in Python.**
 - The whole pipeline (selfplay, arena, MCTS, tail solver) lives in C++. If something Python-side needs C++ behavior, expose it through pybind11. "Same thing but slower in Python" is always a bug.
 
-**Public/private partition is a structural constraint, not a guideline.**
+**Visibility scope is a structural constraint, not a guideline.**
 - `IBeliefTracker::init` and `observe_public_event` signatures **do not take `IGameState*`** — never add one. The tracker physically cannot peek at truth.
-- `IFeatureEncoder::encode_public` cannot read any player's private fields.
-- `IFeatureEncoder::encode_private(p)` only reads p's own private.
+- `IFeatureEncoder::encode_features(masked, perspective, tracker, out)` reads only `MaskedState`. viz=0 slots arrive as `kPlaceholder*` — encoder branches on the placeholder, **never** queries `viz` directly and **never** dereferences any other player's private field through a back door.
 - `state_hash_for_perspective(p)` walks the visibility schema and calls `hash_field_slot(h, name, idx)` for every slot with `viz[..., p] = 1`. Anything no player can observe — internal RNG state, unrevealed deck order — must not be reachable from any schema slot's viz=1 path; if it is, the DAG splits along an invisible axis and search silently weakens. (BUG-028 is the canonical violation: hashing the deck-shuffle seed; symptom is "AI is mysteriously weak/inconsistent," never a crash.)
 
 **Value head is N-dim perspective-relative.**
@@ -83,7 +82,7 @@ You do not need to read `../ALGORITHM_OVERVIEW.md` unless you are modifying the 
 |------|---------|----------------------|
 | Public + deterministic | TicTacToe, Quoridor | state / rules / encoder only |
 | Public + symmetric random | Azul | state / rules / encoder; no tracker (physical randomness lives on public counts, sim_rng samples on the fly inside `do_action_fast`) |
-| Asymmetric hidden info | Splendor, Love Letter, Coup | + `belief_tracker` + visibility schema with owner-only fields + per-slot `hash_field_slot` / `mask_field_slot` / `read_field_slot` / `write_field_slot` dispatchers. Wire protocol unifies opening and per-ply on one walker: opening = `viz::serialize_public` (all_public slots) + `tracker.pack_init_payload` (perspective-private bootstrap) → applied via `viz::apply_public` + `tracker.init`; per-ply = `public_event_extractor` / `public_state_applier` + `tracker.observe_public_event`. |
+| Asymmetric hidden info | Splendor, Love Letter, Coup | + `belief_tracker` + visibility schema with owner-only fields + per-slot `hash_field_slot` / `mask_field_slot` / `read_field_slot` / `write_field_slot` dispatchers. Wire protocol unifies opening and per-ply on one walker: opening = `viz::serialize_public_snapshot` (full slot set; emits `(idx, value)` pairs for viz=1 slots and the perspective's viz slice under `__viz__`) + `tracker.pack_init_payload` (perspective-private bootstrap) → applied via `viz::apply_public_snapshot` + `tracker.init`; per-ply = `public_event_extractor` / `public_state_applier` + `tracker.observe_public_event`. |
 
 ---
 

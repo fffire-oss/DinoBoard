@@ -1,14 +1,13 @@
-"""Phase 3 (coup): pin coup's visibility schema surface.
+"""Pin coup's visibility schema surface.
 
 Coup is a hidden-info game. Schema partitions:
   - all_public: stage / coins / alive / revealed-flags / current_player /
     declared_action / claimed_character / etc.
   - owner_only_first_axis: influence[N][2] (face-down hand cards).
   - all_hidden: exchange_drawn[2] (rules-side reveal_slot_to active_player
-    on draw, reset_to_base on return; reveal wiring is a follow-on PR —
-    the surface test only pins the base declaration).
+    on draw, reset_to_base on return).
   - court_deck: NOT a slot field. Variable-length vector; size is public,
-    contents hidden, both already handled by hash_public_fields /
+    contents hidden, both already handled by state_hash_for_perspective /
     randomize_unseen.
 """
 from __future__ import annotations
@@ -77,7 +76,7 @@ def test_source_partitions_fields_correctly() -> None:
     ), (
         "court_deck must NOT be a schema slot — variable-length vector "
         "with hidden contents and public size; handled by "
-        "hash_public_fields / randomize_unseen instead"
+        "state_hash_for_perspective / randomize_unseen instead"
     )
 
 

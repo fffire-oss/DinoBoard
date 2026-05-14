@@ -698,7 +698,7 @@ python -m pytest tests/<your_game>/ -v -k api
 
 ### 10.2 Belief 等价测试（随机游戏必做）
 
-如果游戏有 `belief_tracker`（随机或信息不对称），必须实现 public-event 协议并通过 belief 等价测试。详见 GAME_DEVELOPMENT_GUIDE.md §17。
+如果游戏有 `belief_tracker`（随机或信息不对称），必须实现 public-event 协议并通过 belief 等价测试。详见 [GAME_DEVELOPMENT_GUIDE.md §10](GAME_DEVELOPMENT_GUIDE.md#10-隐藏信息与-belief-tracker含物理随机性) 和 §14。
 
 ```bash
 # 实现 public_event_extractor / public_state_applier 并在 GameBundle 注册
@@ -716,7 +716,7 @@ python -m pytest tests/<your_game>/ -v -k belief
 
 ### 10.2-bis. Public hash 不能含内部 RNG（强制，BUG-028 回归）
 
-新游戏接入时**必须**让 `tests/framework/test_public_hash_excludes_internal_rng.py` 在你的 `game_id` 上跑过。把游戏 id 加到 `HIDDEN_INFO_GAMES` 列表里（如果是隐藏信息游戏；纯公开信息游戏结构上不会触发）。
+新游戏接入时**必须**让 `tests/framework/test_public_hash_excludes_internal_rng.py` 在你的 `game_id` 上跑过。该测试通过 `games_with_capability("hidden_info", "snapshot")` 自动从 `games/manifest.json` 拉取参数化列表——只要你的 `manifest.json` 条目正确声明了 `capabilities: ["hidden_info", "snapshot"]`，就会自动覆盖，**不需要手动改测试代码**。
 
 ```bash
 python -m pytest tests/framework/test_public_hash_excludes_internal_rng.py -v -k <your_game>
@@ -842,7 +842,19 @@ python -m pytest tests/ -x -q
 | `belief_tracker` | | ✓ | ✓ |
 | schema 含 `owner_only_first_axis` / `all_hidden` 字段 | | | ✓ |
 
-> **作为新游戏开发者，你不需要修改 `tests/framework/`。** 框架层用 `FRAMEWORK_GAMES` 这三个固定游戏来验证框架本身——这是项目维护者的工具。如果你的新游戏带来了一个**新的结构特征**（既不是 quoridor 也不是 azul/loveletter 的子集），再考虑是否需要把它加进 `FRAMEWORK_GAMES` 或某个子集列表（`FRAMEWORK_HIDDEN_INFO_GAMES`、`FRAMEWORK_TAIL_SOLVER_GAMES` 等），这是项目维护者的决定。
+> **作为新游戏开发者，你不需要修改 `tests/framework/`。** 框架层用两套参数化方式：
+>
+> 1. **固定 carrier `FRAMEWORK_GAMES = ["quoridor", "azul", "loveletter"]`**：通用回归（do/undo / action history / API separation 等），三个游戏覆盖核心结构特征，加新游戏没有必要。
+> 2. **manifest-driven `games_with_capability(...)`**：跟着 `games/manifest.json.capabilities` 走的不变量测试自动覆盖你的新游戏，无须改测试代码——只要 manifest 条目正确声明就行。当前 capability-driven 的框架测试包括：
+>    - `test_public_snapshot_round_trip`（capability `snapshot`）：每步 truth → snapshot → observer hash 必须 byte-equal
+>    - `test_public_hash_excludes_internal_rng`（`hidden_info` + `snapshot`，60-seed × N-game sweep）：BUG-028 回归
+>    - `test_encoder_respects_hash_scope`（`hidden_info`）：encoder 输出在对手私信变化时必须 bit-equal
+>    - `test_api_belief_matches_selfplay`（目前固定 `["loveletter"]`，未来 capability-驱动）：belief / 公开 state / legal actions 三层等价
+>    - `test_selfplay_no_truth_in_ai_path`：guard 当前 5 个 manifest live 游戏的 per-seat session 路径
+>    - `test_rules_sole_viz_writer`：lint `games/<id>/*.cpp,*.h`，禁止游戏端二次写 `viz_[...]`（I1）
+>    - `test_dag_reuse`：`TRANSPOSITION_PRONE_GAMES = ["tictactoe","quoridor","splendor","loveletter"]` 手挑，新游戏一般不需要加
+>
+> 如果你的新游戏带来了一个**新的结构特征**（既不是 quoridor / azul / loveletter 的子集），再考虑是否需要把它加进 `FRAMEWORK_GAMES`——这是项目维护者的决定。
 
 ### 第二层：`tests/<game>/` —— 单游戏完备清单
 

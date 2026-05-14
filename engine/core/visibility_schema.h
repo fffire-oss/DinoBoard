@@ -10,14 +10,20 @@
 // per-seat patterns sit in between. The framework derives:
 //   - state_hash_for_perspective(p) (hash all slots with viz[..., p]==1)
 //   - encoder feature scope via MaskedState placeholders
-//   - serialize_public / apply_public (filter by viz)
+//   - serialize_public_snapshot / apply_public_snapshot (filter by viz)
 //
 // Declaration surface only: schema data structures + base-viz builder
-// helpers. No "overlay" / "reveal-when" closure machinery — golden
-// standard I1 makes `do_action_fast` the sole viz writer; dynamic
-// visibility changes happen via the rules-side helpers
+// helpers. No "overlay" / "reveal-when" closure machinery — game-side
+// viz writes belong exclusively to `do_action_fast` (golden standard I1):
+// dynamic visibility changes happen via the rules-side helpers
 // `reveal_slot / reveal_slot_to / reset_to_base`. Putting "what flips
-// when" into the schema would create a second viz writer and break I1.
+// when" into the schema would create a second game-side viz writer and
+// break I1. (The framework helper `viz::apply_full_slice` — invoked
+// from `viz::apply_public_snapshot` on the receiver — overwrites
+// `viz_[name][..., perspective]` byte-for-byte from the wire's
+// `__viz__` slice. That is receiver-side reconstruction of GT-side viz,
+// not a new writer, and is the only permitted exception.
+// test_rules_sole_viz_writer enforces I1 game-side.)
 //
 // The viz tensor is rank N+1 where N is the data tensor's rank
 // (rank=0 for a scalar). Trailing axis is the viewer (NPlayers wide).

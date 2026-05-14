@@ -1,4 +1,4 @@
-"""Phase 3 (quoridor): pin quoridor's visibility schema surface.
+"""Pin quoridor's visibility schema surface.
 
 Quoridor is fully observable — pawn positions, wall placements, and
 remaining-wall counts are all public. Same all_public-only pattern as

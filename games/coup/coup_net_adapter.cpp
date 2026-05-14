@@ -59,7 +59,7 @@ int action_type_index(ActionId action) {
 // slots without any explicit placeholder branch.
 
 template <int NPlayers>
-void CoupFeatureEncoder<NPlayers>::encode_public(
+void CoupFeatureEncoder<NPlayers>::encode_features(
     const IGameState& state,
     int perspective_player,
     const IBeliefTracker* tracker,
@@ -70,7 +70,15 @@ void CoupFeatureEncoder<NPlayers>::encode_public(
   const auto* bt =
       dynamic_cast<const CoupBeliefTracker<NPlayers>*>(tracker);
 
-  // Per-player public (23 each). Order rotated so perspective is index 0.
+  // Per-player block (45 each), rotated so perspective is index 0:
+  //   - 23 observer-visible: alive(1) + coins/12(1) + 2×{revealed?(1) +
+  //     char-OH(5)}(12) + role one-hots (4) + tracker.signals(5)
+  //   - 22 perspective-private: 2×own influence char-OH on UNREVEALED
+  //     slots (10) + 2×exchange_drawn{occupied + char-OH(5)}(12).
+  // Non-self private slots arrive on the MaskedState as kPlaceholder*
+  // (INT8_MIN), so `card == c` is structurally false — char-OH zeros
+  // out without an explicit placeholder branch. The `is_self` gate
+  // below is kept for clarity.
   for (int pi = 0; pi < NPlayers; ++pi) {
     const int pid = (perspective_player + pi) % NPlayers;
 
@@ -167,29 +175,15 @@ void CoupFeatureEncoder<NPlayers>::encode_public(
     }
     out->push_back(static_cast<float>(count));
   }
-}
 
-template <int NPlayers>
-void CoupFeatureEncoder<NPlayers>::encode_private(
-    const IGameState& state,
-    int player,
-    const IBeliefTracker* /*tracker*/,
-    std::vector<float>* out) const {
-  const auto* s = dynamic_cast<const CoupState<NPlayers>*>(&state);
-  if (!s || !out || player < 0 || player >= NPlayers) return;
-  const auto& d = s->data;
-
-  // Per-player private (22 each):
+  // ---- Per-player perspective-private block (22 each, NPlayers loops) ----
   //   2 × own influence char-OH on UNREVEALED slots (5 + 5 = 10)
   //   2 × exchange_drawn { occupied?(1) + char-OH(5) }     = 12
-  // Self block populated only on perspective; other player blocks
-  // zero-filled. The MaskedState was built for `player` so non-self
-  // slots are placeholder — `card == c` is structurally false there
-  // and would naturally zero-out, but we keep the explicit `is_self`
-  // gate for clarity.
+  // Non-self slots arrive on the MaskedState as kPlaceholder*; the
+  // `is_self` gate below mirrors that and keeps the layout explicit.
   for (int pi = 0; pi < NPlayers; ++pi) {
-    const int pid = (player + pi) % NPlayers;
-    const bool is_self = (pid == player);
+    const int pid = (perspective_player + pi) % NPlayers;
+    const bool is_self = (pid == perspective_player);
 
     for (int sl = 0; sl < 2; ++sl) {
       const bool unrevealed = is_self && !d.revealed[pid][sl];
@@ -201,12 +195,12 @@ void CoupFeatureEncoder<NPlayers>::encode_private(
 
     // exchange_drawn { occupied?(1) + char-OH(5) } × 2.
     // exchange_drawn is all_hidden base; rules call
-    // reveal_slot_to(active_player) only during exchange. For
-    // perspective `player`, the slot is real iff player == active_player
-    // and stage is one of the exchange-return stages — outside that
-    // window the fields are placeholder/-1 and naturally encode as 0.
+    // reveal_slot_to(active_player) only during exchange. For the
+    // perspective the slot is real iff perspective == active_player and
+    // stage is one of the exchange-return stages — outside that window
+    // the fields are placeholder/-1 and naturally encode as 0.
     const bool show_drawn =
-        is_self && d.active_player == player &&
+        is_self && d.active_player == perspective_player &&
         (d.stage == CoupStage::kExchangeReturn1 ||
          d.stage == CoupStage::kExchangeReturn2);
     for (int i = 0; i < kExchangeDrawSlots; ++i) {
@@ -224,13 +218,13 @@ template <int NPlayers>
 void CoupBeliefTracker<NPlayers>::init(
     IGameState& /*state*/, int perspective,
     const AnyMap& /*payload*/) {
-  // Walker-driven init: `viz::apply_public` + `viz::apply_partial_reveals`
-  // already wrote the public projection and the perspective's owner_only
-  // influence slots into `state` before this call. The tracker has no
-  // perspective-private bootstrap to seed (Coup's only owner-private slots
-  // are `influence[perspective, *]` and they ride the partial-reveal
-  // sidecar, not a tracker payload). Just remember perspective for
-  // `randomize_unseen` and reset signal memory.
+  // Walker-driven init: `viz::apply_public_snapshot` already wrote the
+  // public projection (every viz=1 slot's value, plus the perspective's
+  // full viz slice) into `state` before this call — including the
+  // perspective's owner_only influence slots, which ride directly on the
+  // wire's per-slot value pairs. The tracker has no perspective-private
+  // bootstrap to seed; just remember perspective for `randomize_unseen`
+  // and reset signal memory.
   perspective_player_ = perspective;
   for (auto& row : signals_) row.fill(0);
   pending_claimer_ = -1;
@@ -387,7 +381,7 @@ void CoupBeliefTracker<NPlayers>::randomize_unseen(
   // Exchange in-flight count comes from the public fields `stage` +
   // `exchange_held_count` rather than from `d.exchange_drawn[i]` itself.
   // Per DEC-003, viz=0 slots hold semantically-undefined bytes (stale
-  // values left over from prior ply's apply_partial_reveals). Reading
+  // values left over from prior ply's apply_public_snapshot). Reading
   // `d.exchange_drawn[i] >= 0` on a viz=0 slot to decide if it's
   // "occupied" violates the contract: e.g. after kExchangeReturn1
   // sets the truth slot to -1 and resets viz, the session's stored
@@ -473,42 +467,11 @@ void CoupBeliefTracker<NPlayers>::randomize_unseen(
   if (total_remaining != static_cast<int>(slots.size())) {
     // No silent fallback: an inconsistent pool means upstream snapshot
     // application or rules are broken. Throw with context per CLAUDE.md.
-    std::string detail;
-    detail += "  deck_size=" + std::to_string(deck_size) + "\n";
-    detail += "  ply=" + std::to_string(d.ply) + "\n";
-    detail += "  stage=" + std::to_string(static_cast<int>(d.stage)) + "\n";
-    detail += "  active=" + std::to_string(d.active_player) +
-              " held=" + std::to_string(static_cast<int>(d.exchange_held_count)) + "\n";
-    detail += "  drawn_in_flight=" + std::to_string(drawn_in_flight) +
-              " visible_drawn=" + std::to_string(visible_drawn_count) + "\n";
-    detail += "  deck_count=[";
-    for (int c = 0; c < kCharacterCount; ++c) {
-      if (c) detail += ",";
-      detail += std::to_string(static_cast<int>(d.deck_count[c]));
-    }
-    detail += "]\n";
-    for (int p = 0; p < NPlayers; ++p) {
-      detail += "  player " + std::to_string(p) + ":";
-      for (int sl = 0; sl < 2; ++sl) {
-        detail += " inf[" + std::to_string(sl) + "]=";
-        detail += std::to_string(static_cast<int>(d.influence[p][sl]));
-        detail += "(rev=" + std::to_string(d.revealed[p][sl] ? 1 : 0);
-        detail += ",viz=" + std::to_string(influence_visible(p, sl) ? 1 : 0);
-        detail += ")";
-      }
-      detail += "\n";
-    }
-    for (int i = 0; i < kExchangeDrawSlots; ++i) {
-      detail += "  exchange_drawn[" + std::to_string(i) + "]=";
-      detail += std::to_string(static_cast<int>(d.exchange_drawn[i]));
-      detail += "(viz=" + std::to_string(exchange_visible(i) ? 1 : 0);
-      detail += ")\n";
-    }
     throw std::logic_error(
         "CoupBeliefTracker::randomize_unseen: pool inconsistency "
         "(remaining=" + std::to_string(total_remaining) +
         ", slots=" + std::to_string(slots.size()) +
-        ", observer=" + std::to_string(observer) + ").\n" + detail);
+        ", observer=" + std::to_string(observer) + ")");
   }
 
   std::shuffle(slots.begin(), slots.end(), rng);

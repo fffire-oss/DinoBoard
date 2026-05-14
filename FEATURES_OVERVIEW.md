@@ -7,15 +7,14 @@
 
 ## 核心组件
 
-一个完整的游戏 = `state.cpp` + `rules.cpp` + `visibility.cpp` +
-`net_adapter.cpp` + `register.cpp` + `config/game.json` + `web/`
+一个完整的游戏 = `state.cpp` + `rules.cpp` + `net_adapter.cpp` +
+`register.cpp` + `config/game.json` + `web/`
 
 | 文件 | 接口 | 职责 |
 |------|-----|------|
-| `<game>_state.cpp` | `IGameState` | 状态、当前玩家、终局；schema-driven `hash_field_slot` / `mask_field_slot` / `read_field_slot` / `write_field_slot` 分发器；`schema_ref()` 返回静态 schema |
-| `<game>_visibility.cpp` | `viz::VisibilitySchema` | 字段 declare（name + 数据 shape + base viz tensor），是 hash / encoder / snapshot scope 的单一事实源 |
+| `<game>_state.cpp` | `IGameState` | 状态、当前玩家、终局；schema-driven `hash_field_slot` / `mask_field_slot` / `read_field_slot` / `write_field_slot` 分发器；静态 `schema()` 函数声明字段（name + 数据 shape + base viz tensor），是 hash / encoder / snapshot scope 的单一事实源 |
 | `<game>_rules.cpp` | `IGameRules` | 合法动作、`do_action_fast`（含 viz 维护，`reveal_slot` / `reveal_slot_to` / `reset_to_base`；不支持 undo——MCTS / selfplay / arena / web 都丢弃用完的 state）；想接 tail solver 才额外实现 `do_action_deterministic` + `undo_action`（这两个配对工作） |
-| `<game>_net_adapter.cpp` | `IFeatureEncoder` + `IBeliefTracker` | encoder 入参锁 `const MaskedState&`（`encode_public` + `encode_private(p)` 拆分）；tracker(有非对称隐藏信息 / 需要 sim 入口对 viz=0 槽位 determinization 的游戏才需要;纯公开物理随机由 `do_action_fast` 中的 `sim_rng` 处理,不需要 tracker) |
+| `<game>_net_adapter.cpp` | `IFeatureEncoder` + `IBeliefTracker` | encoder 入参锁 `const MaskedState&`（单一 `encode_features(masked, perspective, tracker, out)`；viz=0 槽位天然是 placeholder）；tracker(有非对称隐藏信息 / 需要 sim 入口对 viz=0 槽位 determinization 的游戏才需要;纯公开物理随机由 `do_action_fast` 中的 `sim_rng` 处理,不需要 tracker) |
 | `<game>_register.cpp` | `GameBundle` 工厂 + `GameRegistrar` | 组件打包注册，配变体（如 `splendor_3p`）和可选组件 |
 | `config/game.json` | — | 训练超参（simulations / lr / 网络结构等） |
 | `web/<game>.js` | `createApp(...)` | 玩家交互界面 |
@@ -46,8 +45,14 @@ DinoBoard 把"推游戏"和"AI 决策"彻底分离。这是整个框架的心智
 - **VisibilitySchema 是单一事实源**：每个字段声明 name + 数据 shape +
   base viz tensor。可见性完全由 viz 承载。RNG 由调用方持有：
   `reset_with_seed` 用一次性 mt19937 即弃，`do_action_fast` 的 rng 走入参
-- **rules 是 viz 的唯一 writer**：`do_action_fast` 在改业务字段的同时调
-  `reveal_slot` / `reveal_slot_to` / `reset_to_base` 维护 `state.viz_`
+- **rules 是 viz 的唯一游戏侧 writer**：`do_action_fast` 在改业务字段的同
+  时调 `reveal_slot` / `reveal_slot_to` / `reset_to_base` 维护
+  `state.viz_`。Receiver 侧 GT 把 perspective 的整张 viz 切片连同
+  `__viz__` 键一起写到 wire；框架 helper `viz::apply_full_slice`
+  （由 `viz::apply_public_snapshot` 调用）把 `state.viz_[name][..., perspective]`
+  按字节整张覆盖。没有第二个游戏侧 writer，没有 per-game viz 推导 hook；
+  `test_rules_sole_viz_writer` 仅守游戏侧 I1（框架 helper 在
+  `engine/core/` 下，不在它的扫描范围内）
 - **walker 一次产出 MaskedState**：`make_masked_state(state, schema,
   perspective)` 按 schema 遍历每槽——viz=1 复制真值，否则写
   `kPlaceholder` sentinel。snapshot（GT 端序列化）/ hash（sim 内每步）/
@@ -80,9 +85,9 @@ DinoBoard 把"推游戏"和"AI 决策"彻底分离。这是整个框架的心智
 - **Step counter 防环**：`step_count_` 单调递增，DAG 结构性 acyclic
 - **每个 descent 步只 mask 一次**：`make_masked_state` 出来的 MaskedState
   喂给（hash 和）encoder，同一份副本不重复遍历
-- **Encoder 对齐 hash scope**：encoder 拆分成 `encode_public` +
-  `encode_private(p)`，结构性禁止读其他玩家 private（`test_encoder_respects_hash_scope`
-  守护）
+- **Encoder 对齐 hash scope**：encoder 入参锁 `const MaskedState&`，viz=0
+  槽位结构性是 placeholder，物理上无法读出对手 private
+  （`test_encoder_respects_hash_scope` 守护）
 
 主要配置：`simulations` / `c_puct` / `temperature`（支持 schedule）/
 Dirichlet 噪声。
@@ -250,10 +255,10 @@ vs best，胜率 ≥ 阈值更新 best）。N 人游戏 candidate 轮坐每个�
 ## 新游戏开发步骤
 
 1. 定义状态结构（继承 `CloneableState<T>`）
-2. 写 `<game>_visibility.cpp`：declare 每个字段 name + 数据 shape +
-   base viz tensor（`all_public` / `owner_only_first_axis` / `all_hidden`
-   等 builder 覆盖大部分情形）；schema 是 hash / encoder / snapshot scope
-   的单一事实源
+2. 在 `<game>_state.cpp` 写一个 `static const viz::VisibilitySchema& schema()`：
+   declare 每个字段 name + 数据 shape + base viz tensor（`all_public` /
+   `owner_only_first_axis` / `all_hidden` 等 builder 覆盖大部分情形）；
+   schema 是 hash / encoder / snapshot scope 的单一事实源
 3. 实现规则（`legal_actions` / `do_action_fast`；`do_action_fast` **不支持 undo**，
    `UndoToken` 是和 `do_action_deterministic` 共享签名的 vestige，不要在
    `do_action_fast` 里 push undo_stack / 拍快照）；要接 tail solver 才额
@@ -263,8 +268,8 @@ vs best，胜率 ≥ 阈值更新 best）。N 人游戏 candidate 轮坐每个�
 4. 在 state 实现 schema-driven 分发器：`hash_field_slot` /
    `mask_field_slot` / `read_field_slot` / `write_field_slot` /
    `schema_ref`（按 schema 列字段答 typed value）
-5. 实现特征编码器（`encode_public` + `encode_private(p)`，入参
-   `const MaskedState&`，读 placeholder 分流）
+5. 实现特征编码器（单一 `encode_features(masked, perspective, tracker, out)`，
+   入参 `const MaskedState&`，viz=0 槽位读 placeholder 分流）
 6. 写 `register.cpp` 组装 GameBundle
 7. 写 `game.json` 配置
 8. **在 `games/manifest.json` 追加一条**：`{ "id": ..., "enabled": true, "framework_whitelist": <bool>, "capabilities": [...], "sources": [...] }` —— 这是 **CMake 编译 / setup.py 编译 / `engine.available_games()` / web 列表 / framework 测试矩阵** 这五层的唯一事实源；漏了这一步 = 编译过但 register 不上 = web 看不见 = 测试不覆盖。临时下线一个游戏只要把 `enabled: false`（源码留在 disk 上但所有层都跳过它）
@@ -290,7 +295,7 @@ vs best，胜率 ≥ 阈值更新 best）。N 人游戏 candidate 轮坐每个�
 |------|---------|
 | TicTacToe | 最小闭环；schema 全 all_one，不需要任何 optional 组件 |
 | Quoridor | 完全信息确定游戏；heuristic_picker / tail_solver / adjudicator / auxiliary_scorer / training_action_filter 全配齐 |
-| Splendor | **端到端 walker 化参考实现**：reserve owner-only viz、`mask_field_slot` 走 COW shared_ptr 一次 detach、snapshot 走 `serialize_public(MaskedState)` walker 路径、`do_action_deterministic` 用 `forced_draw_override = -2` 占位符 |
+| Splendor | **端到端 walker 化参考实现**：reserve owner-only viz、`mask_field_slot` 走 COW shared_ptr 一次 detach、snapshot 走 `viz::serialize_public_snapshot` walker 路径（GT 整张 viz 切片随 wire 同传）、`do_action_deterministic` 用 `forced_draw_override = -2` 占位符 |
 | Azul | 纯对称物理随机；schema 全 all_public（袋子和 box_lid 在 schema 里以 per-color counts 体现），不注册 `belief_tracker`——sim 入口没东西可 determinize，物理随机走 `do_action_fast` 里 `sim_rng` 即时抽 |
 | Love Letter | 非对称隐藏 + viz reveal 槽位承载确定信息（rules 通过 `reveal_slot_to` / `swap_slot_owned` 写入），tracker stateless 只做剩余牌池均匀采样 |
 | Coup | **自定义 randomize_unseen** 范例：claim/challenge 历史驱动加权联合采样，避免诈唬游戏的 uniform 退化均衡 |
@@ -416,10 +421,12 @@ vs best，胜率 ≥ 阈值更新 best）。N 人游戏 candidate 轮坐每个�
     前 selfplay 只跟"latest vs best"对打、训练目标是击败当前 best。如
     果游戏存在"A 克 B、B 克 C、C 克 A"的非传递结构，AI 容易陷入局部循
     环：训出克制当前 best 的 A，下一轮 best 变 A、再训出克 A 的 C，循
-    环往复，平均强度不上升。根治需要维护**对手池**（PSRO / fictitious
-    self-play / league training）—— selfplay 同时跟历史多个 checkpoint
-    对打、用 meta-solver 计算混合策略权重。当前 gating eval 只是一对一
-    胜率比较，没有对手池机制，未实现
+    环往复，平均强度不上升。框架已经实现了**简单的 frozen-checkpoint 对
+    手池**（`opponent_pool_enabled` + `opponent_pool_self_ratio`，让一部
+    分 selfplay worker 把对手换成历史 `model_step_*.onnx`），可以缓解最
+    严重的策略坍缩；但**完整的 PSRO / fictitious self-play / league
+    training**（用 meta-solver 给历史 checkpoint 算混合策略权重）尚未实
+    现。当前 gating eval 也只做一对一胜率比较，没有元博弈求解
 
 **关于裸 PPO**：回合制桌游决策频率低、分支因子有限，正是 MCTS 强项。裸
 PPO 更适合实时游戏（星际、Dota），不在本框架目标范围。

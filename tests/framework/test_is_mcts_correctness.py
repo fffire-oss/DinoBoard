@@ -17,11 +17,11 @@ import pytest
 
 from conftest import get_test_model
 
-# Coup is temporarily disabled (see FEATURES_OVERVIEW.md "Future Work：
-# 概率化 Belief Tracking") pending the probabilistic belief network. Skip coup-
-# specific tests until it re-lands.
+# Dynamic guard: skip coup-specific tests if coup isn't compiled in (manifest
+# `enabled: false`). When Coup is re-enabled but its tracker rewrite is still
+# being debugged this still runs — ride the manifest's source-of-truth.
 _coup_disabled = "coup" not in dinoboard_engine.available_games()
-_skip_coup = pytest.mark.skipif(_coup_disabled, reason="coup is disabled")
+_skip_coup = pytest.mark.skipif(_coup_disabled, reason="coup not built (manifest disabled)")
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +112,27 @@ class TestLoveLetterRandomizeUnseen:
 
 @_skip_coup
 class TestCoupEncoderInfoBarrier:
-    """Verify that Coup encoder features for opponents contain no hidden info."""
+    """Verify that Coup encoder features for opponents contain no hidden info.
+
+    Layout (perspective-rotated, see games/coup/coup_net_adapter.cpp):
+      Public (23 × N + 36 + N): per-player block of 23 features × N players,
+        then global. Per-player: alive(1) + coins(1) + 2×{revealed(1)+OH(5)}
+        = 12 + role(4) + signals(5) = 23. Influence-OH only fires when
+        revealed (mirroring public projection); unrevealed self cards
+        live in the private half, not here.
+      Private (22 × N): per-player block of 22 features. For player==self
+        (block 0): 2 × influence char-OH on UNREVEALED slots (5+5=10) +
+        2 × exchange_drawn{occupied(1)+OH(5)}=12. For non-self blocks
+        every entry is 0 (encoder structurally cannot read truth).
+    """
+
+    PER_PLAYER_PUBLIC = 23
+
+    def _public_dim(self, num_players: int) -> int:
+        return self.PER_PLAYER_PUBLIC * num_players + 36 + num_players
+
+    def _self_private_offset(self, num_players: int) -> int:
+        return self._public_dim(num_players)
 
     def _play_and_encode(self, seed, plies=3):
         gs = dinoboard_engine.GameSession("coup", seed=seed)
@@ -123,35 +143,38 @@ class TestCoupEncoderInfoBarrier:
             gs.apply_action(legal[0])
         return gs.get_state_dict(), dinoboard_engine.encode_state("coup", seed=seed)
 
-    def test_known_hand_block_zero_for_all_opponents(self):
-        """For a 2p game, the opponent's known_hand features (5 values) must all be 0."""
-        features_per_player = 18
-        known_hand_offset = 9
-        known_hand_size = 5
+    def test_opponent_private_block_all_zeros(self):
+        """Non-self per-player private blocks (22 features each) must be
+        all zeros — encoder cannot encode opponent hidden state."""
+        per_player_private = 22
 
         for seed in range(10):
             state, enc = self._play_and_encode(seed, plies=0)
             f = enc["features"]
-            for pi in range(1, state["num_players"]):
-                start = pi * features_per_player + known_hand_offset
-                opp_hand = f[start : start + known_hand_size]
-                assert all(v == 0.0 for v in opp_hand), (
-                    f"Seed {seed}, opponent {pi}: known_hand features = {opp_hand}, "
+            num_players = state["num_players"]
+            self_private_offset = self._self_private_offset(num_players)
+            for pi in range(1, num_players):
+                start = self_private_offset + pi * per_player_private
+                opp_block = f[start : start + per_player_private]
+                assert all(v == 0.0 for v in opp_block), (
+                    f"Seed {seed}, opp {pi}: private block = {opp_block}, "
                     "should be all zeros"
                 )
 
     def test_self_hand_reflects_actual_cards(self):
-        """Player 0's known_hand should have exactly the right nonzero entries."""
-        known_hand_offset = 9
-        known_hand_size = 5
-
+        """Player 0's own influence char-OH (first 10 of self-private) should
+        encode exactly two unrevealed cards at game start (one per slot)."""
         for seed in [42, 100, 200]:
             enc = dinoboard_engine.encode_state("coup", seed=seed)
             f = enc["features"]
-            self_hand = f[known_hand_offset : known_hand_offset + known_hand_size]
+            num_players = 2  # default coup is 2p
+            self_private_offset = self._self_private_offset(num_players)
+            self_hand = f[self_private_offset : self_private_offset + 10]
             total = sum(self_hand)
-            assert total > 0, f"Seed {seed}: self hand is all zeros"
-            assert total <= 2, f"Seed {seed}: self hand sum={total}, max should be 2"
+            assert total == 2.0, (
+                f"Seed {seed}: self hand sum={total}, expected exactly 2 "
+                "(one OH per slot at game start)"
+            )
 
 
 class TestLoveLetterEncoderInfoBarrier:

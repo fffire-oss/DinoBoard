@@ -40,9 +40,8 @@ const viz::VisibilitySchema& LoveLetterState<NPlayers>::schema() {
     // hand_exposed[p] flips, consumers gate on that public flag
     // rather than mutating hand's viz — same convention as Coup's
     // revealed[] / influence[]. Baron-compare temporarily reveals
-    // both compared hands to BOTH involved players; rules will use
-    // viz::reveal_slot_to(hand, {p}, viewer) for that targeted peek
-    // (follow-on PR; this commit only locks the base).
+    // both compared hands to BOTH involved players via
+    // viz::reveal_slot_to(hand, {p}, viewer).
     viz::declare_field(
         schema, "hand",
         viz::owner_only_first_axis({Cfg::kPlayers}, Cfg::kPlayers));
@@ -303,7 +302,7 @@ void LoveLetterState<NPlayers>::hash_field_slot(
   if (name == "deck_size") {
     // First-class field — read d.deck_size directly. Rules maintain
     // it at every draw/refill site; observers receive it via
-    // apply_public from the snapshot. Do NOT sum d.deck_count here:
+    // apply_public_snapshot from the wire. Do NOT sum d.deck_count here:
     // deck_count is hidden, summing it forces observers to
     // re-randomize the multiset every ply just to recover this hash
     // value (the bug Plan A surfaced).

@@ -32,22 +32,6 @@ class SplendorRules final : public IGameRules {
   void undo_action_impl(IGameState& state, const UndoToken& token) const override;
 };
 
-// Re-derive state.viz_["reserved"] from data.reserved_visible. Called by
-// the public_state_applier after it overwrites reserved_visible from the
-// snapshot. The API path skips do_action_fast (so the rules-side
-// reveal_slot/reset_to_base transitions never run on observer state); this
-// helper keeps viz_ in sync with the just-applied public flag so the
-// schema-driven hash agrees with truth.
-//
-// Lives in rules.cpp to keep `viz::reveal_slot` / `viz::reset_to_base`
-// out of register.cpp (golden standard I1: rules is the sole viz writer).
-template <int NPlayers>
-void sync_splendor_reserved_viz(IGameState& state);
-
-extern template void sync_splendor_reserved_viz<2>(IGameState&);
-extern template void sync_splendor_reserved_viz<3>(IGameState&);
-extern template void sync_splendor_reserved_viz<4>(IGameState&);
-
 extern template class SplendorRules<2>;
 extern template class SplendorRules<3>;
 extern template class SplendorRules<4>;

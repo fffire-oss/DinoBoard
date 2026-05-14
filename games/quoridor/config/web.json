@@ -13,7 +13,7 @@
       "tail_solve_depth_limit": 10,
       "tail_solve_node_budget": 200000,
       "tail_solve_margin_weight": 0.0,
-      "ai_use_action_filter": false,
+      "ai_use_action_filter": true,
       "cover_root_edges": false
     },
     "web_casual": {
@@ -23,7 +23,8 @@
     },
     "analysis": {
       "inherits": "web_expert",
-      "cover_root_edges": true
+      "cover_root_edges": true,
+      "ai_use_action_filter": false
     }
   }
 }

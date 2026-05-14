@@ -66,10 +66,11 @@ using TailSolveTrigger = std::function<bool(const IGameState& state, int ply)>;
 //
 // Initial observation handshake (the perspective-specific facts the AI
 // knows at game start, e.g. own starting hand) is NOT a per-game hook —
-// it is walker-driven via viz::serialize_public / viz::apply_public, the
-// same path the per-ply public_snapshot uses. Games only have to declare
-// schema visibility correctly for game-start; the framework walker
-// handles serialization in both directions.
+// it is walker-driven via viz::serialize_public_snapshot /
+// viz::apply_public_snapshot, the same path the per-ply public_snapshot
+// uses. Games only have to declare schema visibility correctly for
+// game-start; the framework walker handles serialization in both
+// directions.
 //
 // PublicEvent / PublicEventTrace are declared in game_interfaces.h (so
 // belief_tracker.h can reference them without a circular include).
@@ -88,10 +89,10 @@ using PublicEventExtractor = std::function<PublicEventTrace(
 // `do_action_fast(state_)` computed from its sampled hidden fields.
 //
 // Contract:
-//   - Applier OVERWRITES every public field that hash_public_fields
+//   - Applier OVERWRITES every public field that state_hash_for_perspective
 //     depends on. Fields absent from the snapshot are left unchanged
 //     (but see `test_public_snapshot_round_trip` — every field that
-//     hash_public_fields reads must round-trip through snapshot+applier).
+//     state_hash_for_perspective reads must round-trip through snapshot+applier).
 //   - Applier MUST NOT touch hidden fields. Those are left for
 //     tracker.randomize_unseen to fill.
 //
@@ -99,9 +100,10 @@ using PublicEventExtractor = std::function<PublicEventTrace(
 // quoridor) do not register one — there is no hidden for do_action_fast
 // to read wrong, so the public side is already tamper-proof.
 // receiver_seat: the perspective whose session this state belongs to.
-// Needed by partial-reveal sidecar appliers to toggle viz=1 on the right
-// viewer axis. Pass -1 from contexts where the seat is unknown / N/A
-// (fully-public games whose appliers don't consult it).
+// Needed by `viz::apply_public_snapshot` to overwrite the receiver's
+// viz slice (`viz_[name][..., receiver_seat]`) byte-for-byte from the
+// wire's `__viz__` payload. Pass -1 from contexts where the seat is
+// unknown / N/A (fully-public games whose appliers don't consult it).
 using PublicStateApplier = std::function<void(
     IGameState& state,
     const AnyMap& snapshot,

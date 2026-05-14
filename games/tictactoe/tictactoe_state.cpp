@@ -61,8 +61,9 @@ void TicTacToeState::hash_field_slot(
     Hasher& h, const std::string& name,
     const std::vector<int>& idx) const {
   // Mirrors the field declaration order in schema(): walker iterates,
-  // we answer per slot. All values shifted to match the legacy
-  // hash_public_fields encoding so the digest stays byte-equal.
+  // we answer per slot. Value shifts match the original
+  // state_hash_for_perspective encoding so the digest stays byte-equal
+  // across past test snapshots.
   if (name == "current_player") { h.add(current_player_); return; }
   if (name == "winner") { h.add(winner_ + 1); return; }
   if (name == "terminal") { h.add(terminal ? 1 : 0); return; }

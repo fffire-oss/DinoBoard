@@ -11,10 +11,8 @@ Coup is asymmetric-hidden-info with bluffing. It exercises:
   - uniform-random heuristic_picker (web 'heuristic' fallback)
   - no tail_solver, no training_filter, no adjudicator, no aux_scorer
 
-Build status: Coup is temporarily disabled at the build level (see
-CMakeLists.txt / setup.py / FEATURES_OVERVIEW.md "诈唬核心游戏"
-Future Work). The whole file skips gracefully when the engine wasn't
-built with Coup. Once the build is restored, all tests should run.
+Build status: Coup is gated by `games/manifest.json` (`enabled` flag).
+The whole file skips gracefully when the engine wasn't built with Coup.
 """
 import dinoboard_engine
 import pytest
@@ -38,7 +36,7 @@ def _coup_available() -> bool:
 # Skip the whole file if Coup is not built — applied per-class below for
 # clear reasons in test output.
 coup_skip = pytest.mark.skipif(
-    not _coup_available(), reason="Coup temporarily disabled in build")
+    not _coup_available(), reason="coup not built (manifest disabled)")
 
 
 GAME = "coup"
@@ -103,58 +101,16 @@ class TestGameSession:
 
 @coup_skip
 class TestEncoder:
-    """Coup feature layout per player (18 features):
-      [0] alive
-      [1] coins/12
-      [2-3] influence_count (2)
-      [4-8] revealed_cards (5, one per character)
-      [9-13] known_hand (5, one per character) ← must be all-zero for opponents
-      [14-17] is_active, is_target, is_blocker, is_challenger
-    """
-    FEATURES_PER_PLAYER = 18
-    KNOWN_HAND_OFFSET = 9
-    KNOWN_HAND_SIZE = 5
+    """Encoder dim sanity. Information-barrier invariants (opponent private
+    block all-zero, self hand reflects truth) live in
+    tests/framework/test_is_mcts_correctness.py::TestCoupEncoderInfoBarrier
+    against the current schema-driven layout."""
 
     def test_encode_state_correct_dim(self):
         cfg = load_game_config(GAME)
         info = dinoboard_engine.encode_state(GAME, seed=42)
         assert len(info["features"]) == cfg["feature_dim"]
         assert len(info["legal_mask"]) == cfg["action_space"]
-
-    def test_opponent_known_hand_is_zero(self):
-        enc = dinoboard_engine.encode_state(GAME, seed=100)
-        f = enc["features"]
-        opp_start = self.FEATURES_PER_PLAYER
-        opp_hand = f[
-            opp_start + self.KNOWN_HAND_OFFSET :
-            opp_start + self.KNOWN_HAND_OFFSET + self.KNOWN_HAND_SIZE
-        ]
-        assert all(v == 0.0 for v in opp_hand), (
-            f"Opponent known_hand should be all-zero, got {opp_hand}"
-        )
-
-    def test_self_known_hand_nonzero(self):
-        enc = dinoboard_engine.encode_state(GAME, seed=100)
-        f = enc["features"]
-        self_hand = f[
-            self.KNOWN_HAND_OFFSET :
-            self.KNOWN_HAND_OFFSET + self.KNOWN_HAND_SIZE
-        ]
-        assert any(v > 0.0 for v in self_hand), (
-            f"Self known_hand should be non-zero, got {self_hand}"
-        )
-
-    def test_perspectives_hide_different_info(self):
-        gs = dinoboard_engine.GameSession(GAME, seed=200)
-        gs.apply_action(gs.get_legal_actions()[0])
-        enc = dinoboard_engine.encode_state(GAME, seed=200)
-        f = enc["features"]
-        opp_start = self.FEATURES_PER_PLAYER
-        p0_self = f[self.KNOWN_HAND_OFFSET : self.KNOWN_HAND_OFFSET + self.KNOWN_HAND_SIZE]
-        p0_opp = f[opp_start + self.KNOWN_HAND_OFFSET :
-                   opp_start + self.KNOWN_HAND_OFFSET + self.KNOWN_HAND_SIZE]
-        assert all(v == 0.0 for v in p0_opp)
-        assert p0_self != p0_opp
 
 
 # ---------------------------------------------------------------------------

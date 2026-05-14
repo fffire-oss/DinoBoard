@@ -67,9 +67,8 @@ wall_col = v_wall_id % 8
 
 | 字段 | 说明 |
 |------|------|
-| `pawn_row` | `[pos_p0, pos_p1]`，0..8 |
-| `pawn_col` | 同上 |
-| `h_walls` / `v_walls` | 长度 64 的 int 数组，1 = 该槽有墙 |
+| `pawns` | 长度 2 的 dict 数组，每项 `{player, row, col}`（0..8） |
+| `horizontal_walls` / `vertical_walls` | dict 数组，每项 `{row, col}`，仅列出已放置的墙（8×8 槽位） |
 | `walls_remaining` | `[remaining_p0, remaining_p1]`，每人开局 10 堵 |
 | `current_player` | 0 或 1 |
 | `first_player` | 开局先手（0 或 1） |
@@ -104,7 +103,7 @@ while True:
         if info["type"] == "move":
             print(f"AI 移到 ({info['row']},{info['col']})")
         else:
-            print(f"AI 放{'水平' if info['type']=='h_wall' else '垂直'}墙 at ({info['row']},{info['col']})")
+            print(f"AI 放{'水平' if info['type']=='hwall' else '垂直'}墙 at ({info['row']},{info['col']})")
     else:
         # 对手输入
         action_id = int(input("Your move (0-208): "))

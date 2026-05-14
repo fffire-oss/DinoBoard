@@ -31,7 +31,7 @@ def test_disabled_when_decay_end_negative():
 
 
 def test_no_hold_linear_decay():
-    # hold=0 → step 1 already starts decaying. Matches legacy behaviour.
+    # hold=0 → step 1 already starts decaying.
     assert compute_schedule_ratio(0, 10, 1.0, hold_steps=0) == pytest.approx(1.0)
     assert compute_schedule_ratio(5, 10, 1.0, hold_steps=0) == pytest.approx(0.5)
     assert compute_schedule_ratio(9, 10, 1.0, hold_steps=0) == pytest.approx(0.1)

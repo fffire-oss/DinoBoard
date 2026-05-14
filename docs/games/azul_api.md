@@ -48,14 +48,14 @@ target = action_id % TARGETS                  # 0..4 = pattern line 0..4；5 = f
 {
   "kind": "factory_refill",
   "payload": {
-    "factories": [[...], [...], [...], [...], [...]],
-    "bag_remaining_counts": [8, 5, 10, 2, 4]
+    "factories": [[...], [...], [...], [...], [...]]
   }
 }
 ```
 
 - `factories`：长度 = factories_count 的二维数组，`factories[i][c]` = 工厂 i 上色 c 的瓷砖数
-- `bag_remaining_counts`：长度 5（每色），袋里剩余的对称总数（公开）
+
+袋中剩余的逐色计数（`bag_counts`）随 `public_snapshot` 整体覆写，不在事件 payload 里重复。
 
 **何时发**：当 `round_index` 增加时，即新一 round 刚开始。普通动作（取瓷砖）之间**不发**。
 
@@ -74,7 +74,8 @@ target = action_id % TARGETS                  # 0..4 = pattern line 0..4；5 = f
 | `players[i].score` | 当前分数 |
 | `round_index` | 当前 round |
 | `current_player` / `is_terminal` / `winner` |  |
-| `bag_size` | 袋中总瓷砖数（公开） |
+| `bag_counts` | 长度 5 的 int 数组，袋中各色剩余数（公开） |
+| `bag_total` | 袋中总瓷砖数（即 `sum(bag_counts)`） |
 
 ---
 
@@ -84,9 +85,10 @@ target = action_id % TARGETS                  # 0..4 = pattern line 0..4；5 = f
 import requests
 BASE = "http://localhost:8000"
 
+initial_observation = gt_session.extract_initial_observation(2)
 sess = requests.post(f"{BASE}/ai/sessions", json={
     "game_id": "azul_3p", "seed": 42, "my_seat": 2,
-    "simulations": 1200, "temperature": 0.0,
+    "initial_observation": initial_observation,
 }).json()
 sid = sess["session_id"]
 

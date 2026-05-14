@@ -52,9 +52,10 @@ inline std::uint64_t murmur3_fmix64(std::uint64_t k) {
 }
 
 // Accumulator for building a StateHash64 from game-defined fields. Used by
-// IGameState::hash_public_fields / hash_private_fields so the framework can
-// structurally derive `state_hash_for_perspective(p) = hash(public + priv_p)`.
-// Games call `combine(v)` once per field they want included.
+// IGameState::hash_field_slot — the framework walker visits each visible
+// (name, idx) and dispatches into the game's hash_field_slot, which calls
+// `add(value)` for each typed slot value. Hidden slots get a fixed sentinel
+// mixed by the framework (no game call).
 class Hasher {
  public:
   void combine(std::uint64_t v) {

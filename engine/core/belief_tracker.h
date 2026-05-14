@@ -49,16 +49,18 @@ class IBeliefTracker {
   // Initialize at game start.
   //
   // Two-step initialization protocol (the per-ply path's parallel):
-  //   - per-ply: walker `apply_public` overwrites every all_public slot,
-  //     then `observe_public_event` updates tracker memory from the event
+  //   - per-ply: walker `apply_public_snapshot` overwrites every viz=1
+  //     slot and the perspective's `__viz__` slice, then
+  //     `observe_public_event` updates tracker memory from the event
   //     stream;
-  //   - opening: walker `apply_public` overwrites every all_public slot,
-  //     then `init` is called with a `payload` AnyMap carrying any
-  //     perspective-private bootstrap that all_public broadcast can't
-  //     reach (e.g. Love Letter's `hand[perspective]`, Coup's two own
-  //     influence cids). The tracker (a) writes those private values
-  //     into `state` (and toggles `state.viz_` if needed), and (b) seeds
-  //     its own internal memory by reading public facts from `state`.
+  //   - opening: walker `apply_public_snapshot` does the same wholesale
+  //     replace from the opening snapshot, then `init` is called with a
+  //     `payload` AnyMap carrying any perspective-private bootstrap that
+  //     the public broadcast can't reach (e.g. Love Letter's
+  //     `hand[perspective]`, Coup's two own influence cids). The tracker
+  //     (a) writes those private values into `state` (and toggles
+  //     `state.viz_` if needed), and (b) seeds its own internal memory
+  //     by reading public facts from `state`.
   //
   // payload's shape is game-specific and produced by `pack_init_payload`
   // on the GT side. For fully-public / symmetric-random games and games
@@ -74,13 +76,14 @@ class IBeliefTracker {
   virtual void init(IGameState& state, int perspective,
                     const AnyMap& payload) = 0;
 
-  // GT-side: package the perspective-private bootstrap that walker's
-  // all_public broadcast cannot reach. Called once on the GT state when
+  // GT-side: package the perspective-private bootstrap that the walker's
+  // public broadcast cannot reach. Called once on the GT state when
   // building the wire `initial_observation` (paired with
-  // `viz::serialize_public` for the public part). Default: empty —
-  // override in games whose opening reveals owner-private slots
+  // `viz::serialize_public_snapshot` for the public part). Default:
+  // empty — override in games whose opening reveals owner-private slots
   // (LL hand, Coup own influences). The output is fed back as `payload`
-  // to a peer session's `init` after walker `apply_public` has run.
+  // to a peer session's `init` after walker `apply_public_snapshot` has
+  // run.
   virtual AnyMap pack_init_payload(
       const IGameState& /*gt_state*/, int /*perspective*/) const {
     return {};

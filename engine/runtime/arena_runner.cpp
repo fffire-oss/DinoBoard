@@ -105,9 +105,9 @@ ArenaMatchResult run_arena_match(
         ? ArenaPlayerConfig{} : player_configs[cfg_idx];
     const search::IPolicyValueEvaluator& eval = evaluator_for_player(player);
 
-    // MCTS tracker source: prefer per-seat trackers (in-scope games),
-    // otherwise fall back to legacy per-ply re-init of singular tracker
-    // (Coup pre-§G.2).
+    // MCTS tracker source: per-seat trackers when supplied; otherwise the
+    // optional singular tracker (re-init each ply for callers that didn't
+    // pre-allocate per-seat).
     IBeliefTracker* mcts_tracker = nullptr;
     if (use_per_perspective && player >= 0 &&
         player < static_cast<int>(per_perspective_trackers.size())) {

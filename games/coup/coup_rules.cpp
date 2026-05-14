@@ -260,16 +260,33 @@ void enter_counter_or_resolve(CoupState<NPlayers>& s, std::mt19937_64& rng) {
 }
 
 template <int NPlayers>
-std::vector<CharId> get_exchange_hand(const CoupData<NPlayers>& d) {
+std::vector<CharId> get_exchange_hand(const CoupState<NPlayers>& s) {
+  const auto& d = s.data;
   std::vector<CharId> hand;
   int actor = d.active_player;
-  for (int s = 0; s < 2; ++s) {
-    if (!d.revealed[actor][s]) {
-      hand.push_back(d.influence[actor][s]);
+  if (actor < 0 || actor >= NPlayers) return hand;
+  for (int sl = 0; sl < 2; ++sl) {
+    if (!d.revealed[actor][sl] && d.influence[actor][sl] >= 0) {
+      hand.push_back(d.influence[actor][sl]);
     }
   }
-  for (int i = 0; i < 2; ++i) {
-    if (d.exchange_drawn[i] >= 0) {
+  // Gate on viz, not `>= 0`. After kExchangeReturn1 a consumed drawn slot
+  // is reset_to_base on truth (data=-1, viz back to all_hidden); the
+  // active player's session mirrors via apply_public_snapshot which
+  // overwrites the slot's viz from the wire `__viz__` slice but leaves
+  // the stale data byte intact (DEC-003 — viz=0 slots carry
+  // semantically-undefined data). Reading `d.exchange_drawn[i] >= 0` on
+  // the session would resurrect the consumed slot's prior char and
+  // inflate the legal-action set.
+  const auto& xviz = viz::viz_get(s, "exchange_drawn");
+  const int n_viewers = xviz.viewer_count();
+  for (int i = 0; i < kExchangeDrawSlots; ++i) {
+    if (actor >= n_viewers) break;
+    const std::size_t base = viz::flat_offset_data_only(
+        xviz.shape, std::vector<int>{i});
+    const bool visible_to_actor =
+        xviz.data[base + static_cast<std::size_t>(actor)] != 0;
+    if (visible_to_actor && d.exchange_drawn[i] >= 0) {
       hand.push_back(d.exchange_drawn[i]);
     }
   }
@@ -379,7 +396,7 @@ std::vector<ActionId> CoupRules<NPlayers>::legal_actions(const IGameState& state
 
     case CoupStage::kExchangeReturn1:
     case CoupStage::kExchangeReturn2: {
-      auto hand = get_exchange_hand(d);
+      auto hand = get_exchange_hand(s);
       std::array<bool, kCharacterCount> seen{};
       for (auto c : hand) {
         if (c >= 0 && c < kCharacterCount && !seen[static_cast<size_t>(c)]) {

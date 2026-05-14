@@ -1,9 +1,9 @@
-"""BUG-028 regression: hash_public_fields must NOT hash internal RNG state.
+"""BUG-028 regression: state_hash_for_perspective must NOT hash internal RNG state.
 
 Background (see CLAUDE.md "Public ≠ every state member that isn't a hand"
 and KNOWN_ISSUES BUG-028):
 
-  hash_public_fields() defines what makes two states share the same MCTS
+  state_hash_for_perspective() defines what makes two states share the same MCTS
   DAG node. If a game accidentally hashes internal RNG salt, mt19937
   snapshots, deck-shuffle order, or pre-draw bag/box_lid vector ordering
   into the public hash, then two states that ARE the same public info set
@@ -24,13 +24,13 @@ Test method (catches BUG-028 by construction):
     4. Assert state_hash_for_perspective(perspective) is bit-equal between
        them after every applied observation.
 
-  If hash_public_fields hashes any internal RNG state — directly (rng_salt,
+  If state_hash_for_perspective hashes any internal RNG state — directly (rng_salt,
   mt19937 snapshot) or indirectly (vector order of cards in bag, deck,
   box_lid that no player can derive) — the two hashes diverge and the
   test fails immediately.
 
 This is the strongest preventative we have for BUG-028: any new game that
-slips a private/internal field into hash_public_fields breaks CI.
+slips a private/internal field into state_hash_for_perspective breaks CI.
 """
 from __future__ import annotations
 
@@ -81,7 +81,7 @@ def test_public_hash_invariant_under_internal_rng(game_id):
     one bucket vs another — itself random per (seed_a, seed_b). A single
     pair can hash-equal even on a buggy build by luck. We want CI to
     deterministically (or near-deterministically) catch any new game's
-    `hash_public_fields` slipping in unobservable randomness.
+    `state_hash_for_perspective` slipping in unobservable randomness.
 
     Failure modes this catches by construction:
       - Hashing internal RNG state directly (rng_salt, mt19937 snapshot)
@@ -144,8 +144,8 @@ def test_public_hash_invariant_under_internal_rng(game_id):
         f"under different API session RNG seeds.\n"
         f"First few drifts:\n  " +
         "\n  ".join(f"seed_truth={s} ply={p}: {d}" for s, p, d in drifts[:5]) +
-        f"\n\nThis means hash_public_fields (or hash_private_fields for "
-        f"perspective={perspective}) is hashing state that varies under "
+        f"\n\nThis means state_hash_for_perspective(perspective={perspective}) "
+        f"is hashing state that varies under "
         f"`randomize_unseen` but is NOT derivable from the observation "
         f"history. Common causes: (1) rng_salt / mt19937 snapshot; (2) "
         f"pre-draw deck/bag/box_lid vector ordering; (3) a size/count "
@@ -164,7 +164,7 @@ def test_mcts_dag_reuses_under_different_sampled_worlds(game_id):
     same information set hash to the same DAG node and share visits.
     This produces non-trivial `dag_reuse_hits`.
 
-    If hash_public_fields hashes internal RNG state, every sim's hash
+    If state_hash_for_perspective hashes internal RNG state, every sim's hash
     chain becomes unique (each randomize_unseen seed is different),
     DAG reuse collapses to ~0, and the search tree degenerates into N
     disjoint thin chains. This is the silent failure mode of BUG-028:
@@ -190,7 +190,7 @@ def test_mcts_dag_reuses_under_different_sampled_worlds(game_id):
         f"dag_reuse_hits={reuse}. With root determinization on a hidden-info "
         f"game, every sim samples a different unseen world but they should "
         f"merge by information set in the DAG. Zero reuse means every sim "
-        f"hashes uniquely — almost certainly because hash_public_fields is "
+        f"hashes uniquely — almost certainly because state_hash_for_perspective is "
         f"reading internal RNG state (rng_salt, deck/bag ordering, mt19937 "
         f"snapshot). See BUG-028. Effective search depth has collapsed to 1 "
         f"per sim — the AI is silently MUCH weaker than the simulation count "

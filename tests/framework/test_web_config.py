@@ -41,7 +41,7 @@ class TestWebProfilesResolve:
 
     @pytest.mark.skipif(
         "coup" not in __import__("dinoboard_engine").available_games(),
-        reason="coup is disabled",
+        reason="coup not built (manifest disabled)",
     )
     def test_coup_web_casual_simulations(self):
         p = resolve_profile("coup", "web_casual")
@@ -49,7 +49,7 @@ class TestWebProfilesResolve:
 
     @pytest.mark.skipif(
         "coup" not in __import__("dinoboard_engine").available_games(),
-        reason="coup is disabled",
+        reason="coup not built (manifest disabled)",
     )
     def test_coup_web_casual_temperature(self):
         p = resolve_profile("coup", "web_casual")
@@ -57,7 +57,7 @@ class TestWebProfilesResolve:
 
     @pytest.mark.skipif(
         "coup" not in __import__("dinoboard_engine").available_games(),
-        reason="coup is disabled",
+        reason="coup not built (manifest disabled)",
     )
     def test_coup_web_expert_temperature(self):
         p = resolve_profile("coup", "web_expert")
@@ -65,7 +65,7 @@ class TestWebProfilesResolve:
 
     @pytest.mark.skipif(
         "coup" not in __import__("dinoboard_engine").available_games(),
-        reason="coup is disabled",
+        reason="coup not built (manifest disabled)",
     )
     def test_coup_analysis_simulations(self):
         p = resolve_profile("coup", "analysis")
@@ -138,7 +138,7 @@ class TestSessionCreation:
 
     @pytest.mark.skipif(
         "coup" not in __import__("dinoboard_engine").available_games(),
-        reason="coup is disabled",
+        reason="coup not built (manifest disabled)",
     )
     def test_coup_casual_session_simulations(self):
         _, sess = self._create_session("coup", "casual")
@@ -146,7 +146,7 @@ class TestSessionCreation:
 
     @pytest.mark.skipif(
         "coup" not in __import__("dinoboard_engine").available_games(),
-        reason="coup is disabled",
+        reason="coup not built (manifest disabled)",
     )
     def test_coup_casual_session_temperature(self):
         _, sess = self._create_session("coup", "casual")
@@ -154,7 +154,7 @@ class TestSessionCreation:
 
     @pytest.mark.skipif(
         "coup" not in __import__("dinoboard_engine").available_games(),
-        reason="coup is disabled",
+        reason="coup not built (manifest disabled)",
     )
     def test_coup_expert_session_temperature(self):
         _, sess = self._create_session("coup", "expert")
@@ -162,7 +162,7 @@ class TestSessionCreation:
 
     @pytest.mark.skipif(
         "coup" not in __import__("dinoboard_engine").available_games(),
-        reason="coup is disabled",
+        reason="coup not built (manifest disabled)",
     )
     def test_coup_session_analysis_sims(self):
         _, sess = self._create_session("coup", "casual")

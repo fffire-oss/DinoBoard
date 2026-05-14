@@ -244,7 +244,7 @@ def _validate_resolved(name: str, game_id: str, merged: dict[str, Any]) -> None:
             f"{merged['opponent_selection']!r}.")
     if merged["tail_solve_enabled"]:
         meta = dinoboard_engine.game_metadata(game_id)
-        if not meta.get("has_tail_solve_trigger", False):
+        if not meta["has_tail_solve_trigger"]:
             raise ValueError(
                 f"profile {name!r} for game {game_id!r}: tail_solve_enabled=true "
                 f"but no tail_solve_trigger is registered in the GameBundle.")

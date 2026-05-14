@@ -13,28 +13,20 @@
 namespace board_ai::splendor {
 
 // Splendor has non-symmetric hidden info (blind reserved cards). The
-// public half encodes tableau, bank, nobles, all players' public state
-// (gems, bonuses, scores, visible reserved). The private half encodes
-// the player's own blind reserved cards — observer cannot see other
-// players' blind reserved.
+// encoder reads the perspective's MaskedState — observer-visible
+// fields (tableau, bank, nobles, all players' gems/bonuses/scores/
+// visible reserved) plus the perspective's own blind reserved cards.
+// Other players' blind reserved arrive as kPlaceholder*.
 template <int NPlayers>
 class SplendorFeatureEncoder final : public IFeatureEncoder {
  public:
   using Cfg = SplendorConfig<NPlayers>;
   int action_space() const override { return Cfg::kActionSpace; }
   int feature_dim() const override { return Cfg::kFeatureDim; }
-  int public_feature_dim() const override;
-  int private_feature_dim() const override;
 
-  void encode_public(
+  void encode_features(
       const IGameState& state,
       int perspective_player,
-      const IBeliefTracker* tracker,
-      std::vector<float>* out) const override;
-
-  void encode_private(
-      const IGameState& state,
-      int player,
       const IBeliefTracker* tracker,
       std::vector<float>* out) const override;
 };

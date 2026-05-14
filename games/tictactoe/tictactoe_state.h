@@ -34,11 +34,10 @@ struct TicTacToeState final : public CloneableState<TicTacToeState> {
 
   TicTacToeState();
 
-  // Phase 3 — visibility schema. Tictactoe is fully public, so every
-  // field declares all_public viz. Keeps shape contracts in one place
-  // for future framework consumers (snapshot extractor, hash walker,
-  // encoder masker). Internal RNG/step_count is framework-managed and
-  // out of scope.
+  // Visibility schema. Tictactoe is fully public, so every field
+  // declares all_public viz. Keeps shape contracts in one place for
+  // framework consumers (snapshot extractor, hash walker, encoder
+  // masker). step_count is framework-managed and out of scope.
   static const viz::VisibilitySchema& schema();
 
   StateHash64 state_hash() const override;

@@ -465,6 +465,32 @@ def compute_schedule_ratio(
     return initial_ratio * (decay_end_step - step) / span
 
 
+def compute_lr(step: int, total_steps: int, base_lr: float, schedule: dict | None) -> float:
+    """LR schedule. Returns base_lr when schedule is None or disabled.
+
+    schedule = {"type": "cosine"|"step"|"constant", "lr_min": float, ...}
+    - cosine: half-cosine from base_lr at step=1 to lr_min at step=total_steps
+    - step: divide by `gamma` every `step_size` steps (default gamma=10, step_size=total_steps/3)
+    - constant / None: base_lr unchanged
+    """
+    if not schedule or schedule.get("type", "constant") == "constant":
+        return base_lr
+    sched_type = schedule["type"]
+    if sched_type == "cosine":
+        lr_min = schedule.get("lr_min", base_lr * 0.01)
+        if total_steps <= 1:
+            return base_lr
+        progress = (step - 1) / (total_steps - 1)
+        progress = max(0.0, min(1.0, progress))
+        return lr_min + (base_lr - lr_min) * 0.5 * (1.0 + math.cos(math.pi * progress))
+    if sched_type == "step":
+        gamma = schedule.get("gamma", 10.0)
+        step_size = schedule.get("step_size", max(1, total_steps // 3))
+        n_drops = (step - 1) // step_size
+        return base_lr / (gamma ** n_drops)
+    raise ValueError(f"unknown lr_schedule type: {sched_type!r}")
+
+
 def run_training_loop(
     game_id: str,
     game_config: dict,
@@ -479,6 +505,7 @@ def run_training_loop(
     learning_rate: float = 0.001,
     seed: int = 20260323,
     save_every: int = 0,
+    init_from: str | None = None,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     models_dir = output_dir / "models"
@@ -508,8 +535,22 @@ def run_training_loop(
 
     net = create_model_from_config(game_config)
     torch.manual_seed(seed)
+
+    if init_from:
+        init_path = Path(init_from)
+        if not init_path.exists():
+            raise FileNotFoundError(f"--init-from path does not exist: {init_path}")
+        ckpt = torch.load(str(init_path), map_location="cpu", weights_only=False)
+        if not isinstance(ckpt, dict) or "model_state_dict" not in ckpt:
+            raise ValueError(
+                f"init_from checkpoint must be a dict with 'model_state_dict' key; "
+                f"got top-level: {list(ckpt.keys()) if isinstance(ckpt, dict) else type(ckpt)}")
+        net.load_state_dict(ckpt["model_state_dict"])
+        logger.info(f"Initialized weights from {init_path} (optimizer state reset)")
+
     weight_decay = train_cfg.get("weight_decay", 1e-4)
     optimizer = torch.optim.AdamW(net.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    lr_schedule = train_cfg.get("lr_schedule")  # None = constant lr
 
     initial_onnx = models_dir / "model_init.onnx"
     export_onnx(net, initial_onnx, feature_dim)
@@ -559,9 +600,17 @@ def run_training_loop(
         f"self_ratio={opponent_pool_self_ratio}"
     )
     logger.info(f"  replay_buffer: maxlen={replay_buffer_size}")
+    if lr_schedule:
+        logger.info(f"  lr_schedule: {lr_schedule} (base_lr={learning_rate})")
+    else:
+        logger.info(f"  lr: {learning_rate} (constant)")
 
     for step in range(1, steps + 1):
         t0 = time.perf_counter()
+
+        current_lr = compute_lr(step, steps, learning_rate, lr_schedule)
+        for pg in optimizer.param_groups:
+            pg["lr"] = current_lr
 
         # Compute scheduled ratios (three-segment: hold → decay → zero)
         heuristic_ratio = compute_schedule_ratio(
@@ -700,6 +749,8 @@ def run_training_loop(
             ", ".join(f"p{p}={per_player_wins[p]}" for p in range(num_players)) + f", draw={draws_count}",
             f"sims={current_sims}",
         ]
+        if lr_schedule:
+            log_parts.append(f"lr={current_lr:.2e}")
         if heuristic_ratio > 0:
             log_parts.append(f"h_ratio={heuristic_ratio:.2f}")
         if filter_ratio > 0:
@@ -709,6 +760,20 @@ def run_training_loop(
         sps = step_samples / max(0.01, elapsed)
         mps = sps * current_sims
         log_parts.append(f"{sps:.0f}smp/s, {mps:.0f}mcts/s")
+        # Game-defined per-episode stats (averaged over the step's
+        # episodes). Splendor's extractor returns {"turns": main_actions
+        # / num_players}, which excludes return-token sub-actions and
+        # noble-pick sub-actions so the count reflects real game rounds,
+        # not raw plies.
+        custom_keys: dict[str, list[float]] = {}
+        for ep in episodes:
+            cs = ep.get("custom_stats")
+            if not cs:
+                continue
+            for k, v in cs.items():
+                custom_keys.setdefault(k, []).append(float(v))
+        for k, vs in sorted(custom_keys.items()):
+            log_parts.append(f"{k}={sum(vs) / len(vs):.1f}")
         log_parts.append(f"time={elapsed:.1f}s")
         logger.info(", ".join(log_parts))
 

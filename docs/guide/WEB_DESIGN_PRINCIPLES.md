@@ -1,6 +1,6 @@
 # Web 前端设计原则
 
-给游戏前端开发者的视觉与交互指引。技术实现细节（createApp API、ctx 对象、common.js 工具）见 [WEB_DEVELOPMENT_GUIDE.md](WEB_DEVELOPMENT_GUIDE.md)。
+给游戏前端开发者的视觉与交互指引。技术实现细节（createApp API、ctx 对象、`general/` 通用模块）见 [WEB_DEVELOPMENT_GUIDE.md](WEB_DEVELOPMENT_GUIDE.md)。
 
 ---
 
@@ -39,41 +39,13 @@
 
 每个动作（人类或 AI）都应有动画过渡，让玩家看清发生了什么。**不允许瞬间跳变到新局面**。
 
+**为什么**：AI 几秒钟内连走三四步的常态下，没有动画 = 玩家完全看不清是谁做了什么；而 popup / reveal 等"非位移"动画不仅是好看，更承担着"把信息留在屏幕上够久让玩家读完"的功能职责。复盘录像也走同一条管线，今天没动画，明天复盘时也是一串谜语。
+
 ### 框架支持
 
-在 `createApp(config)` 中提供可选的 `describeTransition` 函数：
+`createApp(config)` 的可选字段 `describeTransition(prevState, newState, actionInfo, actionId) → AnimStep[] | null` 由游戏 JS 提供，框架按序播放后再切换到新状态；返回 `null` / `[]` 或抛异常都会降级为直接切换。
 
-```js
-describeTransition(prevState, newState, actionInfo, actionId) → [AnimStep] | null
-```
-
-- 返回动画步骤数组，框架按顺序播放后再刷新到新状态
-- 返回 `null` 或空数组 → 直接切换（向后兼容）
-- 函数抛异常 → 自动降级为直接切换，不影响游戏功能
-
-### 动画步骤类型
-
-| type | 参数 | 说明 |
-|------|------|------|
-| `fly` | `from`, `to`, `createElement`, `width`/`height`, `onStart`, `hideFrom`, `onComplete`, `duration` | 创建飞行元素从 A 飞到 B |
-| `flyGroup` | `flights[]` | 一组 fly 并行播放（Promise.all） |
-| `group` | `children[]` | 一组任意 step 并行播放 |
-| `popup` | `target`, `content`, `className`, `duration` | 数字/文字气泡浮现再淡出（得分、扣分等） |
-| `run` | `fn` | 运行 DOM mutation 回调（阶段间改 DOM） |
-| `fadeOut` | `target`, `duration` | 淡出一个 DOM 元素 |
-| `highlight` | `target`, `className`, `duration` | 短暂高亮一个元素 |
-| `pause` | `duration` | 等待一段时间 |
-| `reveal` | `title`, `body`, `buttonText`, `className` | 阻塞式揭示弹窗，必须由玩家点击确认才继续（见 §3.7） |
-
-### 中间状态维护
-
-一个动作可能产生多步动画（如购买卡牌 = 宝石飞回 + 卡牌飞走）。每步动画结束后，上一步的 DOM 变化需要保持可见，否则视觉上会乱套。框架提供三个机制：
-
-- **`onStart(srcEl)` 回调**：fly 开始时把源 DOM 变成"取走后"的样子（参考 §3.5 的坑点），后续看到的是新状态
-- **`hideFrom: true`**：fly 结束后源元素设为 `visibility: hidden`（保持布局占位），后续步骤看到"东西已经不在了"
-- **`onComplete` 回调**：fly 结束后更新 DOM（比如修改计数器文字），后续步骤看到的数字是对的
-
-所有动画播完后框架自动恢复隐藏元素，然后重渲染到新状态。
+> **可用的 step 类型、字段、`data-*` 选择器约定、推荐时长，全部在 [`WEB_DEVELOPMENT_GUIDE.md` §5.3](WEB_DEVELOPMENT_GUIDE.md)。** 本文剩余章节只讨论**何时该用哪种 step、踩过的设计坑、每条动画链的最低要求**。
 
 ### 3.5 重要陷阱：不要用 hideFrom 隐藏"带空态背景"的容器
 
@@ -179,37 +151,15 @@ steps.push({
 
 动画不会增加等待时间。如果 AI 比动画先回来，动画播完后立刻播 AI 动画。
 
-### data 属性约定
+### 速度感觉
 
-`describeTransition` 用 CSS 选择器定位 DOM 元素。渲染函数需要在关键元素上加 `data-*` 属性。推荐命名：
+具体数值表见 [`WEB_DEVELOPMENT_GUIDE.md` §5.3 推荐时长](WEB_DEVELOPMENT_GUIDE.md)。这里只讲设计判据：**动画不要太快**（踩过的坑）。
 
-```
-data-bank-gem="0"          银行宝石（按颜色索引）
-data-tableau="2-1"         牌面卡（tier-slot）
-data-player="0"            玩家区域
-data-player-gem="0-3"      玩家宝石（player-color）
-data-reserved="0-1"        保留卡（player-slot）
-data-noble="2"             贵族卡（slot）
-data-deck="1"              牌堆（tier）
-```
-
-命名没有强制要求，只要 `describeTransition` 和渲染函数使用一致的选择器即可。
-
-### 速度建议
-
-| 动画类型 | 推荐时长 |
-|---------|---------|
-| 宝石/token 移动 | 350-450ms |
-| 卡牌移动 | 450-600ms |
-| 步骤间间隔 | 60ms |
-| 整体超时上限 | 5000ms（超时自动跳过剩余） |
-
-**动画不要太快**（踩过的坑）。默认 `DEFAULT_DURATION = 350ms` 对 token 勉强够,对卡牌就偏快——牌一晃而过玩家来不及看清从哪里飞到哪里,尤其第一次玩时会完全错过"哦这张牌是从牌堆来的"这类因果信息。**实践规律**:
-
-- token 类小元素在短距离移动(银行↔玩家区)`350-400ms` 合适;跨大距离(对角线)提到 `450ms`
-- 卡牌是视觉焦点,应该比 token 慢 **50-150ms** 才能让玩家跟上:`CARD_FLY_MS = 550` 是 Splendor 实测舒适的数
-- 出现"玩家反映看不清动画"的反馈,第一反应是把 duration 加 100-150ms,不要倾向于"节奏紧凑所以快"
-- `flyGroup` 里的多个 flight 应该用相同或相近的 duration,否则一部分已经到位、另一部分还在飞,视觉上很割裂
+- 默认 `fly` 用 350ms 对 token 勉强够，对卡牌就偏快——牌一晃而过玩家来不及看清"哦这张牌是从牌堆来的"这种因果信息
+- token 短距离移动 350–400ms；跨对角线大距离提到 450ms
+- 卡牌是视觉焦点，应该比 token 慢 50–150ms（Splendor 用 550ms）
+- "玩家反映看不清动画" 的反馈第一反应是把 duration 加 100–150ms，**不要**先想着"节奏紧凑所以快"
+- `flyGroup` 里的多条 flight 应该 duration 相近，否则一部分已到位另一部分还在飞，视觉上割裂
 
 ---
 

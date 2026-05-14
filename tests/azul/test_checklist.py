@@ -4,7 +4,8 @@ Azul is a public-information game with physical (symmetric) randomness:
 the bag is shuffled but every player sees what's drawn into factories.
 
   - belief_tracker: randomize_unseen shuffles the bag; no per-player
-    private fields (so hash_private_fields can stay empty)
+    private fields (schema is fully all_public, walker emits no hidden
+    sentinels)
   - multiplayer variants: 2p / 3p / 4p
   - uniform-random heuristic_picker (web 'heuristic' fallback)
   - tail_solver: AlphaBeta + custom trigger (some pattern-line >=4 AND

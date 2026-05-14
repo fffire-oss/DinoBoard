@@ -156,7 +156,7 @@ SplendorPersistentState<NPlayers> SplendorPersistentState<NPlayers>::root_from_s
     }
     // First-class public per-tier size — sync to decks[t] once at root.
     // Subsequent updates flow through draw_random_from_deck on the truth
-    // side; observers receive deck_sizes via apply_public from the wire.
+    // side; observers receive deck_sizes via apply_public_snapshot from the wire.
     data->deck_sizes[static_cast<size_t>(t)] =
         static_cast<std::int16_t>(deck.size());
   }
@@ -402,7 +402,7 @@ void SplendorState<NPlayers>::hash_field_slot(
   if (name == "deck_sizes") {
     // First-class field — read d.deck_sizes[t] directly. Rules
     // maintain it at draw_random_from_deck; observers receive it via
-    // apply_public. Do NOT read d.decks[t].size() here: decks are
+    // apply_public_snapshot. Do NOT read d.decks[t].size() here: decks are
     // hidden contents, and tying the hash to a hidden container's
     // size forces observers to re-randomize every ply just to
     // recover this value (the bug Plan A surfaced).
@@ -444,8 +444,8 @@ void SplendorState<NPlayers>::hash_field_slot(
 // Walker-driven snapshot wire I/O dispatchers. `read_field_slot`
 // returns std::any of int / bool. `write_field_slot` is gated behind
 // the COW persistent — register.cpp opens a `mutate_persistent` block
-// around `viz::apply_public(...)` so all per-slot writes land on the
-// detached writable copy.
+// around `viz::apply_public_snapshot(...)` so all per-slot writes land
+// on the detached writable copy.
 
 template <int NPlayers>
 std::any SplendorState<NPlayers>::read_field_slot(
@@ -508,8 +508,10 @@ std::any SplendorState<NPlayers>::read_field_slot(
   }
   if (name == "reserved") {
     // Only emitted when public — walker visits the slot iff its viewer
-    // bit is 1 for perspective. Caller (register.cpp) must keep viz_
-    // in sync with reserved_visible (sync_splendor_reserved_viz).
+    // bit is 1 for perspective. Rules maintain `viz_["reserved"]` in
+    // sync with `reserved_visible` via `viz::reveal_slot` /
+    // `viz::reset_to_base`; the receiver picks up the same bits via the
+    // wire's `__viz__` slice (no per-game derivation hook).
     return std::any(static_cast<int>(
         d.reserved[static_cast<size_t>(idx[0])][static_cast<size_t>(idx[1])]));
   }
@@ -534,8 +536,8 @@ void SplendorState<NPlayers>::write_field_slot(
   };
 
   // Detach a writable SplendorData and reseat once per write. (register.cpp
-  // wraps the whole apply_public call in a single mutate_persistent so
-  // typical N-write batch is still O(1) reseats; this code path is only
+  // wraps the whole apply_public_snapshot call in a single mutate_persistent
+  // so typical N-write batch is still O(1) reseats; this code path is only
   // hit when called outside a wrapping mutate_persistent — kept correct
   // either way.)
   SplendorData<NPlayers> data = persistent.data();
@@ -577,9 +579,10 @@ void SplendorState<NPlayers>::write_field_slot(
     // First-class public field. Write `deck_sizes[t]` directly; the
     // hidden `decks[t]` multiset is tracker territory (sim-entry
     // randomize_unseen fills it from belief). We still resize the
-    // observer's `decks[t]` to match so any session-side caller that
-    // reads `decks[t].size()` (legacy code) stays consistent — but the
-    // canonical hash source is `deck_sizes[t]`.
+    // observer's `decks[t]` to match so the legacy full-state
+    // `state_hash()` (used by tail solver / transposition debug) reads
+    // a consistent length — but the canonical schema-walker hash source
+    // is `deck_sizes[t]`.
     const int target = as_int();
     if (target >= 0) {
       d.deck_sizes[static_cast<size_t>(idx[0])] =

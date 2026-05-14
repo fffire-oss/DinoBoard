@@ -46,17 +46,7 @@ void encode_hidden_reserved_placeholder(std::vector<float>* out) {
 //     - perspective's own 3 reserved slots × 13 dims (real cards — visible
 //       AND hidden both carry the real card ID since perspective knows them)
 template <int NPlayers>
-int SplendorFeatureEncoder<NPlayers>::public_feature_dim() const {
-  return Cfg::kFeatureDim - Cfg::kPerPlayerReserves;
-}
-
-template <int NPlayers>
-int SplendorFeatureEncoder<NPlayers>::private_feature_dim() const {
-  return Cfg::kPerPlayerReserves;
-}
-
-template <int NPlayers>
-void SplendorFeatureEncoder<NPlayers>::encode_public(
+void SplendorFeatureEncoder<NPlayers>::encode_features(
     const IGameState& state,
     int perspective_player,
     const IBeliefTracker* /*tracker*/,
@@ -152,28 +142,17 @@ void SplendorFeatureEncoder<NPlayers>::encode_public(
   out->push_back(stage == SplendorTurnStage::kReturnTokens ? 1.0f : 0.0f);
   out->push_back(stage == SplendorTurnStage::kChooseNoble ? 1.0f : 0.0f);
   out->push_back(d.first_player == perspective_player ? 1.0f : 0.0f);
-}
 
-template <int NPlayers>
-void SplendorFeatureEncoder<NPlayers>::encode_private(
-    const IGameState& state,
-    int player,
-    const IBeliefTracker* /*tracker*/,
-    std::vector<float>* out) const {
-  const auto* s = dynamic_cast<const SplendorState<NPlayers>*>(&state);
-  if (!s || !out || player < 0 || player >= Cfg::kPlayers) return;
-  const SplendorData<NPlayers>& d = s->persistent.data();
-  const auto& cards = splendor_card_pool();
-
-  // Player's own 3 reserved slots, full card detail regardless of
-  // public visibility — `player` is the owner so they always know.
+  // Perspective's own 3 reserved slots, full card detail regardless of
+  // public visibility — perspective is the owner so they always know.
   for (int slot = 0; slot < 3; ++slot) {
-    const bool exists = slot < d.reserved_size[player];
+    const bool exists = slot < d.reserved_size[perspective_player];
     if (!exists) {
       out->insert(out->end(), 13, 0.0f);
       continue;
     }
-    const int cid = d.reserved[player][static_cast<size_t>(slot)];
+    const int cid =
+        d.reserved[perspective_player][static_cast<size_t>(slot)];
     if (cid < 0 || cid >= static_cast<int>(cards.size())) {
       out->insert(out->end(), 13, 0.0f);
     } else {

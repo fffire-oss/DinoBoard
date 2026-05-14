@@ -288,8 +288,8 @@ std::any CoupState<NPlayers>::read_field_slot(
         d.revealed[static_cast<size_t>(idx[0])][static_cast<size_t>(idx[1])]));
   }
   // owner_only_first_axis — walker reaches here only when viz=1 for
-  // the perspective. Truth is shipped through the partial-reveal
-  // sidecar.
+  // the perspective. Truth is shipped as a (idx, value) pair under
+  // `snap[name]` by `viz::serialize_public_snapshot`.
   if (name == "influence") {
     return std::any(static_cast<int>(
         d.influence[static_cast<size_t>(idx[0])][static_cast<size_t>(idx[1])]));

@@ -116,6 +116,42 @@ inline void reset_to_base(IGameState& state, const std::string& name,
   }
 }
 
+// apply_full_slice(state, "field", perspective, slice) — wholesale-replace
+// `viz_[name][..., perspective]` byte-for-byte from a flat per-data-slot
+// slice (length = product of data axes). Used ONLY by the framework
+// snapshot applier (engine/core/snapshot_io.h). Lives here because it
+// needs the concrete IGameState type; the I1 lint
+// (test_rules_sole_viz_writer) only scopes `games/<id>/`, so framework
+// callers are invisible to it.
+//
+// `slice[k]` (k = flat data offset) writes
+// `viz_data[k * n_viewers + perspective]`. Throws if perspective is out
+// of range or slice length doesn't match the data shape.
+inline void apply_full_slice(IGameState& state, const std::string& name,
+                             int perspective,
+                             const std::vector<int>& slice) {
+  auto& v = viz_get(state, name);
+  const int n_viewers = v.viewer_count();
+  if (perspective < 0 || perspective >= n_viewers) {
+    throw std::out_of_range(
+        "viz::apply_full_slice: perspective out of range on field '" +
+        name + "'");
+  }
+  const std::size_t row_stride = static_cast<std::size_t>(n_viewers);
+  const std::size_t total = v.data.size();
+  const std::size_t n_data_slots = total / row_stride;
+  if (slice.size() != n_data_slots) {
+    throw std::invalid_argument(
+        "viz::apply_full_slice: slice length " +
+        std::to_string(slice.size()) + " != data-slot count " +
+        std::to_string(n_data_slots) + " for field '" + name + "'");
+  }
+  for (std::size_t k = 0; k < n_data_slots; ++k) {
+    v.data[k * row_stride + static_cast<std::size_t>(perspective)] =
+        static_cast<std::uint8_t>(slice[k] != 0 ? 1 : 0);
+  }
+}
+
 // swap_slot(state, "field", {idx_a...}, {idx_b...}) — swap the entire
 // viewer-axis row between two slots. After the call, viz[a, :] holds
 // what was at viz[b, :] and vice versa. Used when rules swap the slot

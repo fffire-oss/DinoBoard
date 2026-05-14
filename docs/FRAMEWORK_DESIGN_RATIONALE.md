@@ -232,7 +232,9 @@ viz::reveal_slot_to(state, "hand", {target}, /*viewer=*/viewer);
 viz::reset_to_base(state, "hand", State::schema(), {q});
 
 // encoder 不知道有 peek：
-void encode_public(const MaskedState& m, vector<float>& out) {
+void encode_features(const MaskedState& m, int perspective,
+                     const IBeliefTracker* /*tracker*/,
+                     vector<float>* out) {
   for (int seat = 0; seat < num_players; ++seat) {
     encode_card(m.hand[seat], out);
   }

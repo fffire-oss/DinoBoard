@@ -44,7 +44,7 @@ Love Letter 的动作覆盖所有"打出某张牌 + 目标（若该牌需要目�
 
 LL 协议下 `events` 始终是 `[]`——所有 perspective-private 的 reveal 都通过 viz schema + walker 走 `public_snapshot` 通道，**不再有平行私人事件**。
 
-`public_snapshot` 由 GT 端的 schema walker（`viz::serialize_public(state, schema, perspective)`）每个 perspective 各产出一份。它包含该视角下 viz=1 槽位的所有真值：
+`public_snapshot` 由 GT 端的 schema walker（`viz::serialize_public_snapshot(state, schema, perspective, snap)`）每个 perspective 各产出一份。它走全字段集，对每个 viz[..., perspective]=1 的槽位写一对 `(idx, value)` 进 `snap[field_name]`，并把该视角的 viz 切片打包到 `snap["__viz__"][field_name]`；接收端 `viz::apply_public_snapshot` 整张 viz 切片字节级覆写后再回填值。它包含该视角下 viz=1 槽位的所有真值：
 
 - **自己手牌** (`hand[my_seat]`)：始终 viz=1
 - **自己当前抽到的牌** (`drawn_card`)：在自己回合 reveal 后 viz=1
@@ -53,7 +53,7 @@ LL 协议下 `events` 始终是 `[]`——所有 perspective-private 的 reveal 
 - **Baron 比较后**：分支 1（牌不等）loser 全员 viz=1；分支 2（平手）actor 与 target 互相 viz=1
 - **Prince 让 target 弃手**：target 原手牌进 discard pile，公开
 
-接入方只需要：rules 端按规则正确调用 `reveal_slot_to(viewer)` / `swap_slot_owned(a, b)` / `reset_to_base(slot)`，walker 自动把 viz=1 槽位序列化进 snapshot——不用单独发任何 `hand_override` / `drawn_override` 事件。
+接入方只需要：rules 端按规则正确调用 `reveal_slot_to(viewer)` / `swap_slot_owned(a, b)` / `reset_to_base(slot)`，walker 自动把 viz=1 槽位序列化进 snapshot——所有 perspective-private 的真值都跟随 `__viz__` 切片 + `(idx, value)` 对一起在线上传输，没有任何平行的私人事件协议。
 
 ---
 
@@ -71,10 +71,15 @@ LL 协议下 `events` 始终是 `[]`——所有 perspective-private 的 reveal 
 import requests
 BASE = "http://localhost:8000"
 
-# AI 扮演 3 人局的第 1 号玩家
+# AI 扮演 3 人局的第 1 号玩家。
+# initial_observation 必须由 GT 端通过
+# `gt_session.extract_initial_observation(my_seat=1)` 提供——
+# 它两节式 `{public_snapshot, tracker_init}` 携带初始 viz=1 槽位
+# (公共牌堆大小、discard 等) 加 perspective-private bootstrap (自己的初始手牌)。
+initial_observation = gt_session.extract_initial_observation(1)
 sess = requests.post(f"{BASE}/ai/sessions", json={
     "game_id": "loveletter_3p", "seed": 99, "my_seat": 1,
-    "simulations": 800, "temperature": 0.0,
+    "initial_observation": initial_observation,
 }).json()
 sid = sess["session_id"]
 

@@ -51,12 +51,26 @@
   "seed": 12345,
   "my_seat": 0,
   "initial_observation": {
-    "my_hand": 5,
-    "my_drawn_card": 3,
-    "face_up_count": [0, 0, 1, 0, 0, 1, 0, 0, 1]
+    "public_snapshot": {
+      "deck_size": 11,
+      "discard_piles": [[], []],
+      "hand": [[5], []],
+      "__viz__": {
+        "hand": [1, 1, 0, 0, ...],
+        "deck_size": [1],
+        "...": "..."
+      }
+    },
+    "tracker_init": {}
   }
 }
 ```
+
+`initial_observation` 的形状跟 per-ply `public_snapshot` 一致——两节式：
+- `public_snapshot`：开局时 perspective 的 viz=1 槽位真值 + `__viz__` 切片（同 per-ply snapshot 的格式）
+- `tracker_init`：tracker 在开局需要的、walker 公开广播覆盖不到的 perspective-private bootstrap（Love Letter 自己的初始手牌、Coup 自己 2 张 influence 角色），由 GT 端调 `IBeliefTracker::pack_init_payload(state, perspective)` 生成；fully-public 或不需要私密 bootstrap 的游戏（Azul）传 `{}`
+
+接入方拿 `initial_observation` 的标准方式：在 GT 端跑 `GameSession.extract_initial_observation(seat)`（pybind 绑定，见 `bindings/py_engine.cpp:1296-1315`），其内部走的就是 walker `serialize_public_snapshot` + `tracker.pack_init_payload`，结果 dict 直接当 `initial_observation` 传给 `POST /ai/sessions`。
 
 | 字段 | 说明 |
 |------|------|
@@ -192,6 +206,18 @@ curl -sX DELETE http://localhost:8000/ai/sessions/$SID
 - **`public_snapshot`**：动作之后 GT 端所有公开 slot 的值（按 schema field name 索引）。observer 收到后整体覆写自己 session 的公开部分——observer 路径上**没有 `do_action_fast`**，公开局面完全靠 snapshot 反向重建。
 
 具体每个游戏发什么事件、payload 格式、哪些 slot 在 snapshot 里，详见每个游戏的专属 `docs/games/<game>_api.md`。
+
+### 三种"可见性"不要混淆
+
+接入第三方时容易把以下三层揉在一起，调试经常踩坑——每一层服务的目的不同：
+
+| 名义 | 来自 | 谁消费 | 包含什么 |
+|------|------|--------|---------|
+| **Public**（线上正式契约） | `viz::serialize_public_snapshot` walker | AI session 的 `apply_public_snapshot` + belief tracker | 仅 `viz[..., perspective] == 1` 的 slot 真值 + `__viz__` 切片。**这是本 API 的全部输入/输出**——`POST /observe` 的 `public_snapshot`、`POST /sessions` 的 `initial_observation.public_snapshot` 都只能装这一层 |
+| **Perspective-revealed**（同样属于 Public） | 同上，`viz=1` 通过 rules 的 `reveal_slot` / `reveal_slot_to(viewer)` 动态产生 | 同上 | LL Priest 偷看后的对手手牌、Coup 失影后亮出的角色——它们仍然走 walker 同一条路径，只是 viz 是动态置 1 的，不是 schema base 就 1 |
+| **Test-only**（仅 `state_serializer` 输出） | C++ 的 `state_serializer` 函数 | `GET /games/{id}` 的 web 接口 + per-game checklist 的 `TestRuleInvariants` 守恒律断言 | 包括对所有人都隐藏的私密字段（牌堆完整顺序、对手手牌真值等）。**只用来给开发者 / 测试看真值**，不参与 belief tracker、不进 hash、不进 encoder——因为 AI 链结构上读不到 `state_serializer` 的输出。详见 [GAME_DEVELOPMENT_GUIDE §12.5](GAME_DEVELOPMENT_GUIDE.md) |
+
+接入 AI API 时**永远只发 Public 那一层**：把 `GameSession.extract_initial_observation(seat)` / `extract_events(...)` 的返回值原样穿过即可。如果你为了让 AI"看清"对手手牌而把 `state_serializer` 的私密字段塞进 `public_snapshot`，AI 的 belief 会被污染，`test_api_belief_matches_selfplay` 一类等价断言会立刻报警——这是设计意图，不是 bug。
 
 ---
 

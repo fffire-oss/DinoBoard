@@ -1,19 +1,11 @@
-"""Phase 1.2 surface tests for engine/core/visibility_schema.h +
-viz_runtime.h. These are static parse / inspection checks rather than
-runtime semantics — the runtime semantics test for state.viz_ /
-reveal_slot / init_viz lands in Phase 3 once a real game declares a
-schema and the rules-side helpers can be exercised end-to-end. Until
-then this file pins the API surface so Phase 1.5 / 3 don't accidentally
-remove or rename the primitives that the implementation plan promises.
+"""Surface tests for engine/core/visibility_schema.h + viz_runtime.h.
 
-Lifecycle:
-  - Phase 1.2 (this PR): file presence + symbol presence + no overlay
-    artifacts (the prior overlay design was deleted).
-  - Phase 1.5: walker body lands; this test is replaced/extended with a
-    real C++ unit test against a synthetic state struct.
-  - Phase 3: per-game schemas land; replaced with viz protocol /
-    encoder / hash round-trip tests at game level.
-"""
+Static parse / inspection checks: the schema header declares the locked
+vocabulary (`VizTensor`, `FieldDecl`, base-viz builders, `declare_field`),
+viz_runtime.h re-exports the rules-side mutation primitives, and
+IGameState carries the `viz_` member. Per-game schema details and
+runtime semantics are exercised by `test_<game>_visibility_schema.py`
+and the viz-protocol round-trip tests."""
 from __future__ import annotations
 
 import re
@@ -27,12 +19,12 @@ GAME_INTERFACES = PROJECT_ROOT / "engine" / "core" / "game_interfaces.h"
 
 
 def _read(p: Path) -> str:
-    assert p.exists(), f"{p} missing — Phase 1.2 implementation incomplete"
+    assert p.exists(), f"{p} missing"
     return p.read_text(encoding="utf-8")
 
 
-def test_schema_header_has_phase_1_2_surface() -> None:
-    """visibility_schema.h declares the locked Phase 1.2 vocabulary."""
+def test_schema_header_has_locked_surface() -> None:
+    """visibility_schema.h declares the locked schema vocabulary."""
     text = _read(SCHEMA_HEADER)
     # Core types.
     assert "struct VizTensor" in text
@@ -50,8 +42,8 @@ def test_schema_header_has_phase_1_2_surface() -> None:
 def test_schema_header_has_no_overlay_residue() -> None:
     """The overlay closure design (kRevealWhen / OverlayKind /
     reveal_when / custom_overlay / FieldDecl::overlay) was rolled back
-    in Phase 1.2 to enforce I1 (rules are sole viz writer). Prevent
-    accidental reintroduction."""
+    to enforce I1 (rules are sole viz writer). Prevent accidental
+    reintroduction."""
     text = _read(SCHEMA_HEADER)
     banned = (
         "OverlayKind",
@@ -70,12 +62,11 @@ def test_schema_header_has_no_overlay_residue() -> None:
     )
 
 
-def test_runtime_header_has_phase_1_2_helpers() -> None:
+def test_runtime_header_has_helpers() -> None:
     """viz_runtime.h carries the rules-side mutation primitives + the
-    SlotVisitor type alias. The `for_each_visible_slot` body itself
-    lives in viz_walker.h (Phase 1.5); runtime only re-exports the
-    callback type so encoder / snapshot headers can include the
-    smaller header."""
+    SlotVisitor type alias. The `for_each_visible_slot` body lives in
+    viz_walker.h; runtime only re-exports the callback type so encoder
+    / snapshot headers can include the smaller header."""
     text = _read(RUNTIME_HEADER)
     for sym in ("init_viz", "reveal_slot", "reveal_slot_to",
                 "reset_to_base", "swap_slot", "swap_slot_owned",
@@ -91,9 +82,8 @@ def test_igamestate_carries_viz_member() -> None:
         r"std::unordered_map<\s*std::string\s*,\s*viz::VizTensor\s*>\s*viz_",
         text,
     ), "IGameState must carry `std::unordered_map<std::string, viz::VizTensor> viz_`"
-    # Step-count base helper still in place. RNG helpers were removed in
-    # the "RNG out of IGameState" refactor (plan hazy-popping-wozniak.md);
-    # the runner owns the rng now.
+    # Step-count base helper still in place. RNG helpers are not on
+    # IGameState — the runner owns the rng.
     assert "reset_step_count_base" in text
 
 
