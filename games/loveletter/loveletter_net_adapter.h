@@ -5,6 +5,7 @@
 #include <random>
 #include <vector>
 
+#include "../../engine/core/belief_feature_extractor.h"
 #include "../../engine/core/belief_tracker.h"
 #include "../../engine/core/feature_encoder.h"
 #include "../../engine/core/game_interfaces.h"
@@ -55,11 +56,40 @@ class LoveLetterBeliefTracker final : public IBeliefTracker {
   AnyMap serialize() const override;
 };
 
+// Minimal Phase-1 carrier extractor for the belief network pipeline.
+// Inputs: per-player public discard counts (N × 8) + own viz=1 hand
+// one-hot (8) + alive flags (N). Output: (N-1) × kCardTypes opp-role
+// logits. The actual LL `randomize_unseen` is uniform-multiset and
+// does not consult the resulting pi posterior — this extractor exists
+// to exercise the engineering pipeline (extract → ONNX → cache pi)
+// before Coup needs it. The structural barrier is identical to
+// IFeatureEncoder: reads a perspective-masked state only, viz=0 slots
+// arrive as kPlaceholder.
+template <int NPlayers>
+class LoveLetterBeliefFeatureExtractor final : public IBeliefFeatureExtractor {
+ public:
+  using Cfg = LoveLetterConfig<NPlayers>;
+  static constexpr int kFeatureDim = NPlayers * kCardTypes + kCardTypes + NPlayers;
+  static constexpr int kLogitCount = (NPlayers - 1) * kCardTypes;
+
+  int feature_dim() const override { return kFeatureDim; }
+  int output_logit_count() const override { return kLogitCount; }
+
+  void extract(
+      const IGameState& masked_state,
+      int perspective_player,
+      const IBeliefTracker* tracker,
+      std::vector<float>* out) const override;
+};
+
 extern template class LoveLetterFeatureEncoder<2>;
 extern template class LoveLetterFeatureEncoder<3>;
 extern template class LoveLetterFeatureEncoder<4>;
 extern template class LoveLetterBeliefTracker<2>;
 extern template class LoveLetterBeliefTracker<3>;
 extern template class LoveLetterBeliefTracker<4>;
+extern template class LoveLetterBeliefFeatureExtractor<2>;
+extern template class LoveLetterBeliefFeatureExtractor<3>;
+extern template class LoveLetterBeliefFeatureExtractor<4>;
 
 }  // namespace board_ai::loveletter

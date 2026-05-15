@@ -16,6 +16,7 @@
 #include "../engine/core/feature_encoder.h"
 #include "../engine/core/masked_state.h"
 #include "../engine/core/snapshot_io.h"
+#include "../engine/infer/onnx_belief_evaluator.h"
 #include "../engine/infer/onnx_policy_value_evaluator.h"
 #include "../engine/runtime/selfplay_runner.h"
 #include "../engine/runtime/arena_runner.h"
@@ -178,6 +179,19 @@ py::dict sample_to_py(const runtime::SelfplaySample& s) {
   return d;
 }
 
+py::dict belief_sample_to_py(const runtime::BeliefSample& s) {
+  py::dict d;
+  d["ply"] = s.ply;
+  d["observer"] = s.observer;
+  d["features"] = s.features;
+  py::list hand_counts;
+  for (const auto& row : s.hand_counts) hand_counts.append(py::cast(row));
+  d["hand_counts"] = hand_counts;
+  d["remaining"] = s.remaining;
+  d["alive_per_opp"] = s.alive_per_opp;
+  return d;
+}
+
 py::dict result_to_py(const runtime::SelfplayEpisodeResult& result) {
   py::list samples;
   for (const auto& s : result.samples)
@@ -188,6 +202,11 @@ py::dict result_to_py(const runtime::SelfplayEpisodeResult& result) {
   out["draw"] = result.draw;
   out["total_plies"] = result.total_plies;
   out["samples"] = samples;
+  py::list belief_samples;
+  for (const auto& bs : result.belief_samples)
+    belief_samples.append(belief_sample_to_py(bs));
+  out["belief_samples"] = belief_samples;
+  out["belief_label_class_count"] = result.belief_label_class_count;
   out["tail_solve_attempts"] = result.tail_solve_attempts;
   out["tail_solve_completed"] = result.tail_solve_completed;
   out["tail_solve_successes"] = result.tail_solve_successes;
@@ -263,12 +282,14 @@ py::dict run_selfplay_episode_py(
     double heuristic_temperature,
     double training_filter_ratio,
     int trace_perspective,
-    const std::string& opponent_selection) {
+    const std::string& opponent_selection,
+    const std::string& belief_model_path) {
   // Validate before releasing the GIL — exception propagation is cleaner.
   const auto opp_sel = parse_opponent_selection(opponent_selection);
   py::gil_scoped_release release;
 
   auto bundle = GameRegistry::instance().create_game(game_id, seed);
+  if (!belief_model_path.empty()) bundle.belief_model_path = belief_model_path;
   // Public-event extractor feeds two consumers:
   //   - per-perspective trackers (pp_trackers below) — observe events
   //     each ply for every seat.
@@ -314,6 +335,26 @@ py::dict run_selfplay_episode_py(
       [eval_ptr](int /*player*/) -> const search::IPolicyValueEvaluator& {
     return *eval_ptr;
   };
+
+  // Belief plumbing: the extractor is always exposed when registered (so
+  // emit can produce BeliefSamples even before a belief.onnx is trained).
+  // The evaluator is only constructed when a model path is set; without
+  // it, the tracker's prepare_for_root is a no-op and randomize_unseen
+  // falls back to uniform sampling.
+  std::unique_ptr<infer::OnnxBeliefEvaluator> belief_evaluator;
+  const IBeliefFeatureExtractor* belief_extractor_ptr =
+      bundle.belief_feature_extractor.get();
+  const IBeliefEvaluator* belief_evaluator_ptr = nullptr;
+  if (bundle.belief_feature_extractor && !bundle.belief_model_path.empty()) {
+    belief_evaluator = std::make_unique<infer::OnnxBeliefEvaluator>(
+        bundle.belief_model_path);
+    if (!belief_evaluator->is_ready()) {
+      throw std::runtime_error(
+          "run_selfplay_episode: failed to load belief model '" +
+          bundle.belief_model_path + "': " + belief_evaluator->last_error());
+    }
+    belief_evaluator_ptr = belief_evaluator.get();
+  }
 
   runtime::SelfplayConfig cfg{};
   cfg.simulations = simulations;
@@ -382,7 +423,11 @@ py::dict run_selfplay_episode_py(
       bundle.episode_stats_extractor,
       trace_perspective,
       trace_bt,
-      trace_extractor);
+      trace_extractor,
+      bundle.events_only_extractor,
+      belief_extractor_ptr,
+      belief_evaluator_ptr,
+      bundle.belief_label_extractor.get());
 
   py::gil_scoped_acquire acquire;
   return result_to_py(result);
@@ -416,11 +461,13 @@ py::dict run_selfplay_episode_pool_py(
     double heuristic_temperature,
     double training_filter_ratio,
     int trace_perspective,
-    const std::string& opponent_selection) {
+    const std::string& opponent_selection,
+    const std::string& belief_model_path) {
   const auto opp_sel = parse_opponent_selection(opponent_selection);
   py::gil_scoped_release release;
 
   auto bundle = GameRegistry::instance().create_game(game_id, seed);
+  if (!belief_model_path.empty()) bundle.belief_model_path = belief_model_path;
   const int num_players = bundle.state->num_players();
 
   if (static_cast<int>(model_paths.size()) != num_players) {
@@ -475,6 +522,24 @@ py::dict run_selfplay_episode_pool_py(
       [&eval_ptrs, n_eval](int player) -> const search::IPolicyValueEvaluator& {
     return *eval_ptrs[static_cast<size_t>(player) % n_eval];
   };
+
+  // Belief plumbing: extractor exposed unconditionally for emit; evaluator
+  // only when a belief model path is set (see run_selfplay_episode for the
+  // full rationale).
+  std::unique_ptr<infer::OnnxBeliefEvaluator> belief_evaluator;
+  const IBeliefFeatureExtractor* belief_extractor_ptr =
+      bundle.belief_feature_extractor.get();
+  const IBeliefEvaluator* belief_evaluator_ptr = nullptr;
+  if (bundle.belief_feature_extractor && !bundle.belief_model_path.empty()) {
+    belief_evaluator = std::make_unique<infer::OnnxBeliefEvaluator>(
+        bundle.belief_model_path);
+    if (!belief_evaluator->is_ready()) {
+      throw std::runtime_error(
+          "run_selfplay_episode_pool: failed to load belief model '" +
+          bundle.belief_model_path + "': " + belief_evaluator->last_error());
+    }
+    belief_evaluator_ptr = belief_evaluator.get();
+  }
 
   runtime::SelfplayConfig cfg{};
   cfg.simulations = simulations;
@@ -535,7 +600,11 @@ py::dict run_selfplay_episode_pool_py(
       bundle.episode_stats_extractor,
       trace_perspective,
       trace_bt,
-      trace_extractor);
+      trace_extractor,
+      bundle.events_only_extractor,
+      belief_extractor_ptr,
+      belief_evaluator_ptr,
+      bundle.belief_label_extractor.get());
 
   py::gil_scoped_acquire acquire;
   return result_to_py(result);
@@ -552,7 +621,8 @@ py::dict run_arena_match_py(
     int tail_solve_depth_limit,
     std::int64_t tail_solve_node_budget,
     float tail_solve_margin_weight,
-    const std::vector<std::string>& opponent_selection_list) {
+    const std::vector<std::string>& opponent_selection_list,
+    const std::string& belief_model_path) {
   // Per-player opponent_selection. Empty list => all "puct". Non-empty
   // must match model_paths size.
   std::vector<search::OpponentSelection> opp_sel_per_player;
@@ -571,6 +641,7 @@ py::dict run_arena_match_py(
   py::gil_scoped_release release;
 
   auto bundle = GameRegistry::instance().create_game(game_id, seed);
+  if (!belief_model_path.empty()) bundle.belief_model_path = belief_model_path;
 
   if (model_paths.empty()) {
     throw std::invalid_argument("run_arena_match: model_paths must not be empty");
@@ -628,6 +699,21 @@ py::dict run_arena_match_py(
   IBeliefTracker* arena_bt = bundle.belief_tracker.get();
   const size_t n_eval = eval_ptrs.size();
 
+  std::unique_ptr<infer::OnnxBeliefEvaluator> belief_evaluator;
+  const IBeliefFeatureExtractor* belief_extractor_ptr = nullptr;
+  const IBeliefEvaluator* belief_evaluator_ptr = nullptr;
+  if (bundle.belief_feature_extractor && !bundle.belief_model_path.empty()) {
+    belief_evaluator = std::make_unique<infer::OnnxBeliefEvaluator>(
+        bundle.belief_model_path);
+    if (!belief_evaluator->is_ready()) {
+      throw std::runtime_error(
+          "run_arena_match: failed to load belief model '" +
+          bundle.belief_model_path + "': " + belief_evaluator->last_error());
+    }
+    belief_extractor_ptr = bundle.belief_feature_extractor.get();
+    belief_evaluator_ptr = belief_evaluator.get();
+  }
+
   // Per-seat session state + tracker for every game.
   std::vector<std::unique_ptr<GameBundle>> pp_bundles;
   std::vector<IBeliefTracker*> pp_trackers;
@@ -654,7 +740,10 @@ py::dict run_arena_match_py(
       bundle.public_event_extractor,
       pp_trackers,
       per_seat_states,
-      bundle.public_state_applier);
+      bundle.public_state_applier,
+      bundle.events_only_extractor,
+      belief_extractor_ptr,
+      belief_evaluator_ptr);
 
   py::gil_scoped_acquire acquire;
   py::dict out;
@@ -730,6 +819,10 @@ py::dict run_constrained_eval_vs_heuristic_py(
       mcts_cfg.opponent_selection = opp_sel;
       if (bt) {
         mcts_cfg.root_belief_tracker = bt;
+      }
+      // Sim-tracker descent maintenance — events-only flavor.
+      if (bundle.events_only_extractor) {
+        mcts_cfg.events_only_extractor = bundle.events_only_extractor;
       }
 
       if (bundle.tail_solver) {
@@ -984,16 +1077,31 @@ py::dict tail_solve_py(
 class GameSessionWrapper {
  public:
   GameSessionWrapper(const std::string& game_id, std::uint64_t seed,
-                     const std::string& model_path, bool use_filter)
+                     const std::string& model_path, bool use_filter,
+                     const std::string& belief_model_path = "")
       : game_id_(game_id), seed_(seed), model_path_(model_path) {
     py::gil_scoped_release release;
     bundle_ = std::make_unique<GameBundle>(
         GameRegistry::instance().create_game(game_id, seed));
+    if (!belief_model_path.empty()) {
+      bundle_->belief_model_path = belief_model_path;
+    }
     if (!model_path.empty()) {
       evaluator_ = std::make_unique<infer::OnnxPolicyValueEvaluator>(
           model_path, bundle_->encoder.get());
       if (!evaluator_->is_ready()) {
         throw std::runtime_error("GameSession: failed to load model: " + evaluator_->last_error());
+      }
+    }
+    if (bundle_->belief_feature_extractor &&
+        !bundle_->belief_model_path.empty()) {
+      belief_evaluator_ = std::make_unique<infer::OnnxBeliefEvaluator>(
+          bundle_->belief_model_path);
+      if (!belief_evaluator_->is_ready()) {
+        throw std::runtime_error(
+            "GameSession: failed to load belief model '" +
+            bundle_->belief_model_path + "': " +
+            belief_evaluator_->last_error());
       }
     }
     if (use_filter && bundle_->training_action_filter) {
@@ -1045,7 +1153,7 @@ class GameSessionWrapper {
   // seat — there is no snapshot to apply. The session's viz=0 slots are
   // intentionally NOT freshened: nothing on the decision side reads them
   // (MCTS sims sample at sim entry, hash uses kHiddenHashSentinel for viz=0,
-  // encoder reads MaskedState placeholders).
+  // encoder reads masked-state placeholders).
   void advance_ai_view_(int perspective, const IGameState& truth_before,
                         ActionId action) {
     if (perspective < 0 || perspective >= static_cast<int>(ai_views_.size())) return;
@@ -1180,7 +1288,7 @@ class GameSessionWrapper {
   //   - session state_'s viz=0 slots retain whatever was last written there;
   //     nothing on the decision side reads them. MCTS sims sample at sim
   //     entry on a cloned sim_tracker; the hash mixes kHiddenHashSentinel
-  //     for viz=0; the encoder reads MaskedState placeholders.
+  //     for viz=0; the encoder reads masked-state placeholders.
   //   - `state_hash_for_perspective(own)` on the session is byte-equal to
   //     running the same observation stream on any other seed
   //     (test_public_hash_excludes_internal_rng / test_api_belief_matches_selfplay).
@@ -1420,6 +1528,14 @@ class GameSessionWrapper {
     if (search_bt) {
       mcts_cfg.root_belief_tracker = search_bt;
     }
+    if (bundle_->belief_feature_extractor && belief_evaluator_) {
+      mcts_cfg.belief_extractor = bundle_->belief_feature_extractor.get();
+      mcts_cfg.belief_evaluator = belief_evaluator_.get();
+    }
+    // Sim-tracker descent maintenance — events-only flavor.
+    if (bundle_->events_only_extractor) {
+      mcts_cfg.events_only_extractor = bundle_->events_only_extractor;
+    }
 
     if (ts_enabled_ && bundle_->tail_solver) {
       int ply = static_cast<int>(ply_count_);
@@ -1539,12 +1655,104 @@ class GameSessionWrapper {
     return result;
   }
 
+  // Test-only: run MCTS with the on_sim_step callback enabled, capturing
+  // the cloned sim_tracker's serialize() at every descent step of every
+  // sim. Returns the root tracker snapshot taken at sim entry (before any
+  // descent step) plus a list of (sim, depth, sim_tracker_snapshot) tuples.
+  // Used by test_sim_tracker_descent_maintained to assert the sim_tracker
+  // actually evolves during descent (not frozen at root).
+  //
+  // This routes through the same `get_ai_action` MCTS config plumbing —
+  // no path divergence — but with `on_sim_step` set to a recorder. The
+  // returned action is discarded; callers care only about the traces.
+  py::dict _debug_run_mcts_with_sim_traces(int simulations) {
+    const IGameRules& rules = filtered_rules_ ? *filtered_rules_ : *bundle_->rules;
+    const int cp = bundle_->state->current_player();
+
+    const IGameState* search_state = nullptr;
+    const search::IPolicyValueEvaluator* eval_ptr = nullptr;
+    IBeliefTracker* search_bt = nullptr;
+    if (external_obs_mode_) {
+      search_state = bundle_->state.get();
+      eval_ptr = evaluator_.get();
+      search_bt = bt_;
+    } else {
+      if (cp < 0 || cp >= static_cast<int>(ai_views_.size()) || !ai_views_[cp]) {
+        throw std::runtime_error(
+            "_debug_run_mcts_with_sim_traces: ai_view for current player not initialized");
+      }
+      search_state = ai_views_[cp].get();
+      eval_ptr = ai_evaluators_[cp].get();
+      search_bt = ai_trackers_[cp].get();
+    }
+
+    if (!eval_ptr) {
+      throw std::runtime_error(
+          "_debug_run_mcts_with_sim_traces: no model loaded");
+    }
+    if (!search_bt) {
+      throw std::runtime_error(
+          "_debug_run_mcts_with_sim_traces: game has no belief tracker registered");
+    }
+
+    // Capture root tracker snapshot BEFORE the search call — this is
+    // what every sim's clone starts from after randomize_unseen seeds it.
+    AnyMap root_snapshot = search_bt->serialize();
+
+    // Recorder: appends (sim_index, step_index, serialize()) tuples.
+    struct Record { int sim; int step; AnyMap snap; };
+    std::vector<Record> records;
+
+    search::NetMctsConfig mcts_cfg{};
+    mcts_cfg.simulations = simulations;
+    mcts_cfg.c_puct = 1.4f;
+    mcts_cfg.root_belief_tracker = search_bt;
+    if (bundle_->events_only_extractor) {
+      mcts_cfg.events_only_extractor = bundle_->events_only_extractor;
+    }
+    mcts_cfg.on_sim_step = [&records](int sim, int step,
+                                       const IGameState&,
+                                       const IBeliefTracker* tr) {
+      if (!tr) return;
+      records.push_back(Record{sim, step, tr->serialize()});
+    };
+
+    {
+      py::gil_scoped_release release;
+      search::NetMcts mcts(mcts_cfg);
+      search::NetMctsStats stats{};
+      const std::uint64_t mcts_seed = board_ai::rng::derive_subseed(
+          seed_, "session.mcts.debug", static_cast<std::uint64_t>(ply_count_));
+      mcts.search_root(*search_state, rules, *bundle_->value_model,
+                        *eval_ptr, &stats, mcts_seed);
+    }
+
+    py::dict out;
+    py::dict root_dict;
+    for (const auto& [k, v] : root_snapshot) root_dict[py::cast(k)] = any_to_py(v);
+    out["root_tracker"] = root_dict;
+
+    py::list traces;
+    for (const auto& r : records) {
+      py::dict entry;
+      entry["sim"] = r.sim;
+      entry["step"] = r.step;
+      py::dict snap;
+      for (const auto& [k, v] : r.snap) snap[py::cast(k)] = any_to_py(v);
+      entry["tracker"] = snap;
+      traces.append(entry);
+    }
+    out["sim_traces"] = traces;
+    return out;
+  }
+
  private:
   std::string game_id_;
   std::uint64_t seed_;
   std::string model_path_;
   std::unique_ptr<GameBundle> bundle_;
   std::unique_ptr<infer::OnnxPolicyValueEvaluator> evaluator_;
+  std::unique_ptr<infer::OnnxBeliefEvaluator> belief_evaluator_;
   std::unique_ptr<runtime::FilteredRulesWrapper> filtered_rules_;
   IBeliefTracker* bt_ = nullptr;
   // Perspective seat that bt_ (the session-level tracker on bundle_->state)
@@ -1710,7 +1918,8 @@ PYBIND11_MODULE(dinoboard_engine, m) {
       py::arg("heuristic_temperature") = 0.0,
       py::arg("training_filter_ratio") = 1.0,
       py::arg("trace_perspective") = -1,
-      py::arg("opponent_selection") = std::string("puct"));
+      py::arg("opponent_selection") = std::string("puct"),
+      py::arg("belief_model_path") = std::string(""));
 
   m.def("run_selfplay_episode_pool", &run_selfplay_episode_pool_py,
       py::arg("game_id"),
@@ -1734,7 +1943,8 @@ PYBIND11_MODULE(dinoboard_engine, m) {
       py::arg("heuristic_temperature") = 0.0,
       py::arg("training_filter_ratio") = 1.0,
       py::arg("trace_perspective") = -1,
-      py::arg("opponent_selection") = std::string("puct"));
+      py::arg("opponent_selection") = std::string("puct"),
+      py::arg("belief_model_path") = std::string(""));
 
   m.def("run_arena_match", &run_arena_match_py,
       py::arg("game_id"),
@@ -1747,7 +1957,8 @@ PYBIND11_MODULE(dinoboard_engine, m) {
       py::arg("tail_solve_depth_limit") = 10,
       py::arg("tail_solve_node_budget") = std::int64_t{200000},
       py::arg("tail_solve_margin_weight") = 0.0f,
-      py::arg("opponent_selection_list") = std::vector<std::string>{});
+      py::arg("opponent_selection_list") = std::vector<std::string>{},
+      py::arg("belief_model_path") = std::string(""));
 
   m.def("run_constrained_eval_vs_heuristic", &run_constrained_eval_vs_heuristic_py,
       py::arg("game_id"),
@@ -1798,6 +2009,13 @@ PYBIND11_MODULE(dinoboard_engine, m) {
     const bool has_public_state_applier = static_cast<bool>(bundle.public_state_applier);
     const bool has_tail_solver = static_cast<bool>(bundle.tail_solver);
     const bool has_tail_solve_trigger = static_cast<bool>(bundle.tail_solve_trigger);
+    const bool has_belief_extractor =
+        static_cast<bool>(bundle.belief_feature_extractor);
+    const int belief_feature_dim =
+        has_belief_extractor ? bundle.belief_feature_extractor->feature_dim() : 0;
+    const int belief_logit_count =
+        has_belief_extractor ? bundle.belief_feature_extractor->output_logit_count()
+                             : 0;
     py::gil_scoped_acquire acquire;
     py::dict out;
     out["num_players"] = num_players;
@@ -1812,6 +2030,9 @@ PYBIND11_MODULE(dinoboard_engine, m) {
     out["has_public_state_applier"] = has_public_state_applier;
     out["has_tail_solver"] = has_tail_solver;
     out["has_tail_solve_trigger"] = has_tail_solve_trigger;
+    out["has_belief_extractor"] = has_belief_extractor;
+    out["belief_feature_dim"] = belief_feature_dim;
+    out["belief_logit_count"] = belief_logit_count;
     return out;
   }, py::arg("game_id"));
 
@@ -1821,11 +2042,13 @@ PYBIND11_MODULE(dinoboard_engine, m) {
   });
 
   py::class_<GameSessionWrapper>(m, "GameSession")
-      .def(py::init<const std::string&, std::uint64_t, const std::string&, bool>(),
+      .def(py::init<const std::string&, std::uint64_t, const std::string&, bool,
+                    const std::string&>(),
            py::arg("game_id"),
            py::arg("seed") = 0xC0FFEE,
            py::arg("model_path") = "",
-           py::arg("use_filter") = false)
+           py::arg("use_filter") = false,
+           py::arg("belief_model_path") = std::string(""))
       .def_property_readonly("is_terminal", &GameSessionWrapper::is_terminal)
       .def_property_readonly("is_turn_start", &GameSessionWrapper::is_turn_start)
       .def_property_readonly("current_player", &GameSessionWrapper::current_player)
@@ -1867,5 +2090,8 @@ PYBIND11_MODULE(dinoboard_engine, m) {
            py::arg("node_budget") = 200000LL)
       .def("apply_ai_action", &GameSessionWrapper::apply_ai_action,
            py::arg("simulations") = 200,
-           py::arg("temperature") = 0.0);
+           py::arg("temperature") = 0.0)
+      .def("_debug_run_mcts_with_sim_traces",
+           &GameSessionWrapper::_debug_run_mcts_with_sim_traces,
+           py::arg("simulations") = 16);
 }

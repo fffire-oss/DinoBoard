@@ -357,30 +357,10 @@ using board_ai::loveletter::kKingCount;
 using board_ai::loveletter::kCountessAction;
 using board_ai::loveletter::kPrincessAction;
 
-// Public-event extractor / applier — single unified call into the
-// schema-walker driven snapshot primitive. The wire carries (a) every
-// (idx, value) pair where viz[idx, perspective]=1 and (b) the
-// perspective's full viz slice; the receiver wholesale-replaces both.
-// LL emits no public events; `out.events` stays empty.
-template <int NPlayers>
-PublicEventTrace extract_events(
-    const IGameState& /*before*/,
-    ActionId /*action*/,
-    const IGameState& after,
-    int perspective) {
-  PublicEventTrace out;
-  board_ai::viz::serialize_public_snapshot(
-      after, LoveLetterState<NPlayers>::schema(), perspective,
-      out.public_snapshot);
-  return out;
-}
-
-template <int NPlayers>
-void apply_public_state(IGameState& state, const AnyMap& snap,
-                        int receiver_seat) {
-  board_ai::viz::apply_public_snapshot(
-      state, LoveLetterState<NPlayers>::schema(), receiver_seat, snap);
-}
+// LoveLetter emits no public events at all. Everything the tracker
+// learns flows through `init`'s pack_init_payload + state viz=1 reveals
+// (Priest peeks etc., handled by rules, not events). The wire-protocol
+// extractor and applier are auto-derived by GameBundle::install_event_protocol.
 
 }  // namespace loveletter_events
 
@@ -403,8 +383,11 @@ board_ai::GameBundle make_loveletter(const std::string& game_id, std::uint64_t s
   b.state_serializer = serialize_loveletter<NPlayers>;
   b.action_descriptor = describe_loveletter;
   b.heuristic_picker = loveletter_heuristic::pick<NPlayers>;
-  b.public_event_extractor = loveletter_events::extract_events<NPlayers>;
-  b.public_state_applier = loveletter_events::apply_public_state<NPlayers>;
+  b.install_event_protocol(
+      board_ai::viz::no_events_extractor,
+      []() -> const board_ai::viz::VisibilitySchema& {
+        return LoveLetterState<NPlayers>::schema();
+      });
   return b;
 }
 

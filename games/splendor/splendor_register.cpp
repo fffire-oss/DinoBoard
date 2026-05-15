@@ -263,7 +263,7 @@ void mutate_persistent(SplendorState<NPlayers>& s,
 }
 
 template <int NPlayers>
-PublicEventTrace extract_events(
+std::vector<PublicEvent> extract_events_only(
     const IGameState& before,
     ActionId action,
     const IGameState& after,
@@ -273,7 +273,7 @@ PublicEventTrace extract_events(
   const auto& sa = board_ai::checked_cast<SplendorState<NPlayers>>(after);
   const auto& db = sb.persistent.data();
   const auto& da = sa.persistent.data();
-  PublicEventTrace out;
+  std::vector<PublicEvent> events;
 
   const int actor = db.current_player;
 
@@ -292,7 +292,7 @@ PublicEventTrace extract_events(
       payload["player"] = std::any(actor);
       payload["slot"] = std::any(idx);
       payload["card_id"] = std::any(static_cast<int>(db.reserved[actor][static_cast<size_t>(idx)]));
-      out.events.emplace_back("opp_buy_reserved_reveal", std::move(payload));
+      events.emplace_back("opp_buy_reserved_reveal", std::move(payload));
     }
   }
 
@@ -307,7 +307,7 @@ PublicEventTrace extract_events(
         payload["tier"] = std::any(t);
         payload["slot"] = std::any(slot);
         payload["card_id"] = std::any(after_id);
-        out.events.emplace_back("deck_flip", std::move(payload));
+        events.emplace_back("deck_flip", std::move(payload));
       }
     }
   }
@@ -325,29 +325,12 @@ PublicEventTrace extract_events(
         payload["player"] = std::any(actor);
         payload["slot"] = std::any(slot);
         payload["card_id"] = std::any(after_id);
-        out.events.emplace_back("self_reserve_deck", std::move(payload));
+        events.emplace_back("self_reserve_deck", std::move(payload));
       }
     }
   }
 
-  // Full post-action public snapshot — walker-driven, single unified
-  // call. Carries every (idx, value) pair for slots viz=1 to perspective
-  // and the perspective's full viz slice. Receiver wholesale-replaces
-  // both halves; no per-game viz derivation needed.
-  board_ai::viz::serialize_public_snapshot(
-      after, SplendorState<NPlayers>::schema(), perspective,
-      out.public_snapshot);
-
-  return out;
-}
-
-// applier — single unified call. Hidden fields (face-down reserved ids,
-// deck contents) are left for randomize_unseen to fill at sim entry.
-template <int NPlayers>
-void apply_public_state(IGameState& state, const AnyMap& snap,
-                        int receiver_seat) {
-  board_ai::viz::apply_public_snapshot(
-      state, SplendorState<NPlayers>::schema(), receiver_seat, snap);
+  return events;
 }
 
 }  // namespace splendor_events
@@ -539,8 +522,11 @@ board_ai::GameBundle make_splendor(const std::string& game_id, std::uint64_t see
   b.state_serializer = serialize_splendor<NPlayers>;
   b.action_descriptor = describe_splendor<NPlayers>;
   b.heuristic_picker = splendor_heuristic::pick<NPlayers>;
-  b.public_event_extractor = splendor_events::extract_events<NPlayers>;
-  b.public_state_applier = splendor_events::apply_public_state<NPlayers>;
+  b.install_event_protocol(
+      splendor_events::extract_events_only<NPlayers>,
+      []() -> const board_ai::viz::VisibilitySchema& {
+        return board_ai::splendor::SplendorState<NPlayers>::schema();
+      });
 
   b.tail_solver = std::make_unique<board_ai::search::AlphaBetaTailSolver>();
   // SplendorRules::do_action_deterministic sets forced_draw_override = -2

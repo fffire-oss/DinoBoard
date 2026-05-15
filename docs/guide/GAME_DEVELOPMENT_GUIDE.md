@@ -334,7 +334,7 @@ void undo_action_impl(IGameState& state, const UndoToken& token) const override 
 
 ### 4.1 必须实现的方法
 
-Encoder 接口只有一个虚方法 `encode_features`，**结构性约束**和 walker 驱动的 `state_hash_for_perspective(p)` 完全对齐——encoder 输入是 `MaskedState`，slots 中 `viz[..., perspective]=0` 的位置已经被 framework 替换成 `kPlaceholder*`，encoder 物理上读不到 truth：
+Encoder 接口只有一个虚方法 `encode_features`，**结构性约束**和 walker 驱动的 `state_hash_for_perspective(p)` 完全对齐——encoder 入参锁 `const IGameState& masked_state`（已经 walker 化的 masked clone），slots 中 `viz[..., perspective]=0` 的位置已经被 framework 替换成 `kPlaceholder*`，encoder 物理上读不到 truth：
 
 ```cpp
 class MyGameFeatureEncoder final : public IFeatureEncoder {
@@ -342,7 +342,7 @@ class MyGameFeatureEncoder final : public IFeatureEncoder {
   int action_space() const override;          // 动作空间大小
   int feature_dim() const override;           // 特征总维度
 
-  void encode_features(const MaskedState& state,
+  void encode_features(const IGameState& masked_state,
                        int perspective_player,
                        const IBeliefTracker* tracker,
                        std::vector<float>* out) const override;
@@ -350,10 +350,10 @@ class MyGameFeatureEncoder final : public IFeatureEncoder {
 ```
 
 **硬约束**（`tests/framework/test_encoder_respects_hash_scope.py` 守护）：
-- `encode_features` 从 `MaskedState` 读字段；`viz[..., perspective]=0` 的 slot 已经是 `kPlaceholder*`，encoder 必须分支处理 placeholder，**禁止查询 viz、禁止访问任何玩家的 private 字段绕过 mask**
-- 其它玩家的 private slot 在 `MaskedState` 中天然是 placeholder——读它们结构上就是读 placeholder，不是泄露
+- `encode_features` 从 masked clone 读字段；`viz[..., perspective]=0` 的 slot 已经是 `kPlaceholder*`，encoder 必须分支处理 placeholder，**禁止查询 viz、禁止访问任何玩家的 private 字段绕过 mask**
+- 其它玩家的 private slot 在 masked clone 中天然是 placeholder——读它们结构上就是读 placeholder，不是泄露
 - `tracker` 可能为 nullptr（游戏没有注册 belief_tracker 时）；tracker 上只能读公开衍生统计（如 Coup 的 claim history、Splendor 的多重集统计），不要把"perspective 自己的 private 知识"塞到 tracker 里——那应该走 `state.viz_`
-- 不需要自己实现 `encode(...)`——基类提供默认实现，会自动 `make_masked_state` 一次、调用 `encode_features` 一次，并填充 `legal_mask`。游戏只需 override `encode_features`
+- 不需要自己实现 `encode(...)`——基类提供的非虚入口先 `make_masked_state` 一次、再 forward 到 `encode_features`，并填充 `legal_mask`。游戏只需 override `encode_features`
 
 #### `action_space() -> int`
 
@@ -371,7 +371,7 @@ class TicTacToeFeatureEncoder final : public IFeatureEncoder {
   int action_space() const override { return 9; }
   int feature_dim() const override { return 28; }
 
-  void encode_features(const MaskedState& state,
+  void encode_features(const IGameState& masked_state,
                        int perspective_player,
                        const IBeliefTracker* tracker,
                        std::vector<float>* out) const override;
@@ -379,10 +379,10 @@ class TicTacToeFeatureEncoder final : public IFeatureEncoder {
 
 // tictactoe_net_adapter.cpp
 void TicTacToeFeatureEncoder::encode_features(
-    const MaskedState& state, int perspective_player,
+    const IGameState& masked_state, int perspective_player,
     const IBeliefTracker* /*tracker*/,
     std::vector<float>* out) const {
-  const auto& s = checked_cast<TicTacToeState>(state);
+  const auto& s = checked_cast<TicTacToeState>(masked_state);
   const int opp = 1 - perspective_player;
   // 9 格 × 3 通道（是我的、是对手的、是空的）
   for (int i = 0; i < 9; ++i) {
@@ -395,7 +395,7 @@ void TicTacToeFeatureEncoder::encode_features(
 }
 ```
 
-**隐藏信息游戏的写法**：手牌、盲压牌、对手牌的私人确定知识（如 LL Priest 偷看后看到的 opp hand）这些都通过 `MaskedState` 的 `viz=1` 槽位读到——viz=0 槽位读到的就是 `kPlaceholder*`，encoder 自然 emit 全零 / 占位符特征即可，**不要**把这种 perspective-private 知识塞到 tracker 里。`encode_features` 按 schema 列字段顺序统一拼接：公开棋盘 / 弃牌区 / 当前玩家、tracker 公开聚合（如 Coup claim history、Splendor 多重集统计），以及自身手牌 + 通过 viz reveal 看到的 opp 槽位——layout 顺序由 game 自己定，固定即可，不再有 public / private 拆分。
+**隐藏信息游戏的写法**：手牌、盲压牌、对手牌的私人确定知识（如 LL Priest 偷看后看到的 opp hand）这些都通过 masked clone 的 `viz=1` 槽位读到——viz=0 槽位读到的就是 `kPlaceholder*`，encoder 自然 emit 全零 / 占位符特征即可，**不要**把这种 perspective-private 知识塞到 tracker 里。`encode_features` 按 schema 列字段顺序统一拼接：公开棋盘 / 弃牌区 / 当前玩家、tracker 公开聚合（如 Coup claim history、Splendor 多重集统计），以及自身手牌 + 通过 viz reveal 看到的 opp 槽位——layout 顺序由 game 自己定，固定即可，不再有 public / private 拆分。
 
 ### 4.2 视角处理
 
@@ -1227,7 +1227,7 @@ court-deck size 等)必须由 tracker 的 seen 信息**推导**出来,不能保�
 Stale 采样(opp hidden 字段的旧 cid 现在已经被公开看到)必须从当前未
 见池重采。
 
-**`randomize_unseen` 的唯一调用点**:MCTS sim 入口的 cloned `sim_tracker` 上一次调用(per-sim determinization)。**session 永远不调** `randomize_unseen`——session 的 viz=0 槽位是 unread bytes,不进 hash(`kHiddenHashSentinel`)、不进 encoder(`MaskedState` placeholder)、不进 sim 入口(sim 自己 clone tracker 重新采)。详见 [DEC-003](../KNOWN_ISSUES.md)。
+**`randomize_unseen` 的唯一调用点**:MCTS sim 入口的 cloned `sim_tracker` 上一次调用(per-sim determinization)。**session 永远不调** `randomize_unseen`——session 的 viz=0 槽位是 unread bytes,不进 hash(`kHiddenHashSentinel`)、不进 encoder(masked clone 上是 placeholder)、不进 sim 入口(sim 自己 clone tracker 重新采)。详见 [DEC-003](../KNOWN_ISSUES.md)。
 
 **开发者必须保证**：游戏的公开输出不依赖任何"只存在于 session state_ 里的隐藏字段"。做法是规范化的：`public_event_extractor` 把 post-action 的全部 public 字段 dump 进 `PublicEventTrace.public_snapshot`，`public_state_applier`（§5.1 项 8）把 snapshot 反向写回 session state_ 的 public 字段。**observer 路径上不调 `do_action_fast`** —— `apply_observation` 只走 `begin_step_for_session_observe → public_state_applier(snapshot) → tracker.observe_public_event(events)`,viz=0 hidden 槽位不被 freshen,公开部分完全由 message 重建。round-trip 测试 (`test_public_snapshot_round_trip`) + 60-seed drift 扫 (`test_public_hash_excludes_internal_rng`) 在 CI 里守这个契约。
 
@@ -1292,7 +1292,7 @@ Belief tracker 有两种不同定位，由游戏的信息结构决定：
 - `init(initial_obs)`：从 `initial_obs["face_up_removed"]` 等公开开局信息推断剩余牌池多重集
 - `observe_public_event(actor, action, events)`：根据弃牌堆增量、淘汰宣告等公开事件更新剩余牌池
 - `randomize_unseen(state, observer, rng)`：扣除 state 上 viz=1 槽位（自己手牌、Priest peek 后的对手槽位等）已经占用的 cid，对剩余 viz=0 槽位（牌堆、未 reveal 的对手 hand）从池子均匀采样
-- encoder 直接读 MaskedState：viz=1 槽位拿到真值（Priest peek 后的对手 hand），viz=0 槽位拿 placeholder——不用查 tracker
+- encoder 直接读 masked clone：viz=1 槽位拿到真值（Priest peek 后的对手 hand），viz=0 槽位拿 placeholder——不用查 tracker
 - 随机来源与 Azul 同属"状态可推导"模式：弃牌堆是完整历史，不需要 `seen_cards` 集合
 
 **Splendor（随机来源追踪——seen 需增量维护）**：
@@ -1332,7 +1332,7 @@ Encoder 的信息源有两个，地位等价：
 - **state**：公开局面信息（棋盘、弃牌堆、存活状态等）
 - **belief tracker**：通过 `observe_public_event` 积累的私有知识（Priest 偷看的手牌、Baron 比较的结果等）
 
-Encoder 直接读 `MaskedState`：viz=1 槽位拿到真值（被 Priest peek 后的对手 hand cid、King 交换后双方各自的新手牌等），viz=0 槽位拿 placeholder。这让网络直接获得游戏技能产生的信息，无需从弃牌历史自行推导，也不需要 encoder 查询 tracker——viz schema + walker 已经把"该看到什么"在数据层定下来了。
+Encoder 直接读 masked clone：viz=1 槽位拿到真值（被 Priest peek 后的对手 hand cid、King 交换后双方各自的新手牌等），viz=0 槽位拿 placeholder。这让网络直接获得游戏技能产生的信息，无需从弃牌历史自行推导，也不需要 encoder 查询 tracker——viz schema + walker 已经把"该看到什么"在数据层定下来了。
 
 以 Splendor 双人局为例，假设双方各有一张暗牌：
 
@@ -1365,7 +1365,7 @@ ISMCTS 根采样 + encoder 信息屏障在双人游戏中完全自洽；多人�
 ### 10.9 开发者 Checklist
 1. 确认游戏是否有非对称隐藏信息（玩家间知道的不一样）。**对称无知**（如 Azul 的 bag）不需要注册 `belief_tracker`——viz=0 槽位不存在，物理随机直接走 `do_action_fast` 里 `sim_rng` 即时抽。**只有非对称**才需要 tracker 来驱动 `randomize_unseen`
 2. 实现 `IBeliefTracker` 的五个方法（`init` / `observe_public_event` / `randomize_unseen` / `clone` / `serialize`），遵守"接口签名根本拿不到 `IGameState*`"的结构性约束（§10.4）
-3. Encoder 接受 `MaskedState`——viz=0 槽位由 framework 替换为 `kPlaceholder`，encoder 必须分支处理 placeholder（§10.7），不要查询 viz、不要绕过 mask 读 truth
+3. Encoder 入参锁 `const IGameState& masked_state`（已经 walker 化的 masked clone）——viz=0 槽位由 framework 替换为 `kPlaceholder`，encoder 必须分支处理 placeholder（§10.7），不要查询 viz、不要绕过 mask 读 truth
 4. **在 `<game>_state.cpp` 用 `viz::declare_field` 声明每个 state 字段的 name + data shape + base viz tensor**（`all_public` / `owner_only_first_axis` / `all_hidden`），实现 `hash_field_slot` / `read_field_slot` / `write_field_slot` / `mask_field_slot` 四个 per-slot dispatcher（§10.3b）。框架的 walker 按 schema 顺序遍历每个 slot——`viz[..., perspective]=1` 时调 `hash_field_slot` 把 truth mix 进 hash，`viz[..., perspective]=0` 时 mix `kPlaceholder` 哨兵——自动得到 `state_hash_for_perspective(p)` 作 DAG 节点键
 5. **`reset_with_seed` 第一行调 `reset_step_count_base()` 把 step_count_ 归零**。step_count_ 由框架的 `IGameRules` wrapper 在 `do_action_fast_impl` / `do_action_deterministic_impl` 前自动 +1，在 `undo_action_impl` 后自动 -1，**作者既看不到 step_count_ 也无法忘记 / 双 bump**（字段 protected + IGameRules friend）。step_count_ 单调递增保证 DAG 结构性 acyclic（回归测试见 `tests/framework/test_step_count_strict_increase.py`）
 6. **实现 message-driven snapshot 路径**：统一用 walker——`viz::serialize_public_snapshot` 走全部 schema 字段，对 `viz[..., perspective]=1` 的每个 slot 把 `(idx_path, value)` 追加到 `snap[name]`，并把 perspective 的整张 viz 切片以扁平 `vector<int>` 形式同传到 `snap["__viz__"][name]`（覆盖 base viz 全 1 的 slot 和 base viz 不是 all_public 但 runtime 已翻给 perspective 的 slot——owner-only hand、reveal_slot_to 翻给某个 viewer 的牌、被 reveal_slot 翻给所有人的影响牌等）。session 侧 `viz::apply_public_snapshot` 先按字节整张覆盖 viz 切片（framework helper `viz::apply_full_slice`），再逐 `(idx, value)` 写回 state——truth 端的 `reset_to_base`（轮间洗牌、Prince 弃牌等）通过整张 viz 同传自动同步,无需 per-game viz 推导 hook。tracker 需要的私有/对手知识增量通过 `events` 列表（`PublicEventTrace.events`）增量传递。详见 §14 事件协议章节（参考 `games/splendor/splendor_register.cpp`、`games/loveletter/loveletter_register.cpp`、`games/azul/azul_register.cpp`——三家 register 都收敛到一行 `serialize_public_snapshot` + 一行 `apply_public_snapshot`，差别只在是否传 `skip={...}`）
@@ -1392,6 +1392,65 @@ ISMCTS 让开发者**不需要在游戏规则里做任何防御性代码**（没
 | encoder 对 placeholder 的分支 | viz=0 slot 已经被 framework 替换成 `kPlaceholder`，encoder 物理上读不到 truth |
 
 这套"schema + per-slot dispatchers + tracker（可选）+ message protocol"加起来是"观察者视角"的完整规格。ISMCTS 的行为完全从这个规格推导——相同的 framework code 处理所有游戏，不需要 per-game 的 MCTS 特判。
+
+### 10.10 可选：网络化 belief（learned posterior）
+
+诈唬 / 推理重的游戏（Coup、Werewolf、未来的 Resistance 等）里，hand-craft `randomize_unseen` 用 uniform 或简单加权采对手隐藏槽位会丢掉关键信号——claim/challenge 历史、对手出牌时机、行动序列暗示的角色概率。**网络化 belief** 用一个独立小网络从公开历史推断 `pi[opp][R]`（对手 opp 持有角色 R 的后验），再让 ISMCTS sim 入口的 Wallenius noncentral hypergeometric 采样按 `weight[R] = remaining[R] × pi[opp][R]` 抽——保留"剩余池约束"的同时把先验从 uniform 拉向网络后验。当前唯一启用的游戏是 Coup，hand-craft tracker 仍可作为 fallback（不注册 belief_*** 字段就走 hand-craft 路径）。
+
+三个 extractor + 一个 evaluator + GameBundle 三个字段，物理上分离 GT label 路径和 AI inference 路径：
+
+```cpp
+// engine/core/belief_evaluator.h —— 框架已提供 OnnxBeliefEvaluator
+class IBeliefEvaluator {
+  virtual bool evaluate(const std::vector<float>& features,
+                        std::vector<float>* logits) const = 0;
+};
+
+// engine/core/belief_feature_extractor.h —— AI 侧 inference 输入
+class IBeliefFeatureExtractor {
+  virtual int feature_dim() const = 0;
+  virtual int output_logit_count() const = 0;
+  virtual void extract(const IGameState& masked_state, int perspective_player,
+                       const IBeliefTracker* tracker,
+                       std::vector<float>* out) const = 0;
+
+  // 非虚入口；由框架在 forward 前 make_masked_state，子类 override 拿不到 raw state
+  bool extract_from_state(const IGameState& state, int perspective_player,
+                          const IBeliefTracker* tracker,
+                          std::vector<float>* out) const;
+};
+
+// engine/core/belief_label_extractor.h —— GT 侧 selfplay emit 路径，AI session / wire 拿不到
+class IBeliefLabelExtractor {
+  virtual int label_class_count() const = 0;
+  virtual void extract(const IGameState& truth_state, int observer,
+                       std::vector<std::vector<int>>* out_hand_counts,
+                       std::vector<int>* out_remaining,
+                       std::vector<int>* out_alive) const = 0;
+};
+```
+
+GameBundle 字段（`engine/core/game_registry.h`）：
+
+| 字段 | 何时设置 |
+|------|---------|
+| `belief_feature_extractor` | 启用网络化 belief 必填；AI inference 用 |
+| `belief_model_path` | 启用网络化 belief 必填；指向 `models/<game>_belief_<variant>.onnx`，框架自动 load 成 `OnnxBeliefEvaluator` 注入 tracker |
+| `belief_label_extractor` | 训练 belief 网络才需要；selfplay runner emit `BeliefSample` 用，AI session 物理上拿不到 |
+
+调用流（`engine/search/net_mcts.cpp::search_root`）：
+
+1. **Root 一次推理**：`tracker->prepare_for_root(masked_state, root_player, feature_extractor, evaluator)` —— 默认 no-op，注册网络后框架默认实现 extract → evaluate → softmax(temperature) → 缓存 `pi[opp][R]`
+2. **每个 sim 入口**：`sim_tracker = tracker->clone(); sim_tracker->randomize_unseen(sim_state, root_player, sim_rng)` —— sim_tracker 复用 root cache 的 `pi[opp][R]`，按 `weight[R] = remaining[R] × pi[opp][R]` 采 Wallenius
+
+关键性质：
+
+- **Root-cache 不是 per-sim**：网络推理 200μs / 决策一次，不是 200μs × simulations。simulations=200 时 inference 总开销 < 1% 决策时间
+- **不破坏信息屏障**：feature_extractor 入参锁 `masked_state`（viz=0 槽位天然 placeholder），label_extractor 入参锁 `truth_state` 但只在 selfplay runner emit 路径调，AI session / wire / web / API 没有任何路径能调它
+- **Temperature 在 tracker 端做**：`pi = softmax(logits / temperature)`，`temperature → ∞` 退化成 uniform `pi`，等价于 hand-craft `randomize_unseen` 不加权——这条决定了网络化 belief 是 hand-craft 的严格泛化
+- **训练数据生成**：selfplay runner 每个决策点调 `label_extractor` 产 `BeliefSample{features, hand_counts, remaining, alive}`，跟 PV 训练异步训 belief 网络，参考 [ALGORITHM_OVERVIEW §8.4](../../ALGORITHM_OVERVIEW.md#84-可选网络化-belieflearned-posterior)
+
+`game.json` 的 `belief` 块字段（架构 / 激活 / batch_norm / temperature / 训练超参）见 [CONFIG_REFERENCE.md](CONFIG_REFERENCE.md#belief-网络可选)。
 
 ---
 

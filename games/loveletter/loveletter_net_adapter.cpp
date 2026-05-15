@@ -62,8 +62,8 @@ void LoveLetterFeatureEncoder<NPlayers>::encode_features(
                    static_cast<float>(kCardCounts[static_cast<size_t>(c)]));
   }
 
-  // Per-perspective hand / drawn-card features. Encoder reads
-  // MaskedState directly: viz=1 slots carry truth, viz=0 slots carry
+  // Per-perspective hand / drawn-card features. Encoder reads the
+  // masked state directly: viz=1 slots carry truth, viz=0 slots carry
   // kPlaceholderInt8 (INT8_MIN), which never equals any legitimate cid
   // in 1..8 — the one-hot naturally encodes as all-zero for hidden
   // slots without any explicit placeholder branch.
@@ -318,11 +318,58 @@ AnyMap LoveLetterBeliefTracker<NPlayers>::serialize() const {
   return AnyMap{};
 }
 
+template <int NPlayers>
+void LoveLetterBeliefFeatureExtractor<NPlayers>::extract(
+    const IGameState& masked_state,
+    int perspective_player,
+    const IBeliefTracker* /*tracker*/,
+    std::vector<float>* out) const {
+  const auto* s = dynamic_cast<const LoveLetterState<NPlayers>*>(&masked_state);
+  if (!s || !out || perspective_player < 0 || perspective_player >= NPlayers) {
+    return;
+  }
+  const auto& d = s->data;
+  out->reserve(static_cast<size_t>(kFeatureDim));
+
+  // Per-player public discard counts (N × kCardTypes), normalized by
+  // each card's full-deck multiplicity. Identical to encoder's discard
+  // block (own-perspective rotation).
+  for (int pi = 0; pi < NPlayers; ++pi) {
+    const int pid = (perspective_player + pi) % NPlayers;
+    for (int c = 1; c <= kCardTypes; ++c) {
+      const int count =
+          d.discard_count[static_cast<size_t>(pid)][static_cast<size_t>(c)];
+      out->push_back(static_cast<float>(count) /
+                     static_cast<float>(kCardCounts[static_cast<size_t>(c)]));
+    }
+  }
+
+  // Own viz=1 hand one-hot (kCardTypes). Per encoder convention,
+  // dynamic_cast'd state is the placeholder-rewritten clone, so other
+  // perspectives' `hand` slots are kPlaceholderInt8 — irrelevant here
+  // since we only read perspective_player's slot, which is always
+  // viz=1 to itself.
+  const std::int8_t own_card =
+      d.hand[static_cast<size_t>(perspective_player)];
+  for (int c = 1; c <= kCardTypes; ++c) {
+    out->push_back(own_card == c ? 1.0f : 0.0f);
+  }
+
+  // Alive flags (N), rotated to own-first.
+  for (int pi = 0; pi < NPlayers; ++pi) {
+    const int pid = (perspective_player + pi) % NPlayers;
+    out->push_back(d.alive[pid] ? 1.0f : 0.0f);
+  }
+}
+
 template class LoveLetterFeatureEncoder<2>;
 template class LoveLetterFeatureEncoder<3>;
 template class LoveLetterFeatureEncoder<4>;
 template class LoveLetterBeliefTracker<2>;
 template class LoveLetterBeliefTracker<3>;
 template class LoveLetterBeliefTracker<4>;
+template class LoveLetterBeliefFeatureExtractor<2>;
+template class LoveLetterBeliefFeatureExtractor<3>;
+template class LoveLetterBeliefFeatureExtractor<4>;
 
 }  // namespace board_ai::loveletter

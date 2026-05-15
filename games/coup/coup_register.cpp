@@ -153,30 +153,121 @@ board_ai::HeuristicResult heuristic_random(
 
 namespace coup_events {
 
-// Public-event extractor / applier — single unified call into the
-// schema-walker driven snapshot primitive. Coup emits no public events
-// of its own; tracker signal accrual happens inside
-// `CoupBeliefTracker::observe_public_event` driven by `(actor, action)`.
+// Events-only extractor — diffs (before, after) and emits a typed event
+// stream that CoupBeliefTracker consumes to maintain its claim/role
+// signals. Public-state replication on the wire is handled by the
+// framework's `viz::serialize_public_snapshot` (auto-derived inside
+// `GameBundle::install_event_protocol`); we never serialize a snapshot
+// here. Sim path consumes only this events vector — so it's the cheap
+// path that keeps sim_tracker in sync with descent.
+//
+// Events emitted (all payloads are int / bool only; no truth leak):
+//   - card_revealed { player, slot, role }
+//       Any slot whose `revealed` flag flipped false→true. Covers
+//       lose-influence (Coup / failed action / failed block / counter
+//       lost) and bluff-caught reveals.
+//   - claim_resolved_truthful { claimer, role }
+//       In kResolveChallengeAction the claimer revealed the claimed
+//       role, so they're holding it for real → card reshuffles back to
+//       deck. Detected by `after.action_challenge_succeeded == false`.
+//   - block_resolved_truthful { blocker, role }
+//       In kResolveChallengeCounter the blocker revealed the block
+//       role; mirror of the above.
+//   - claim_unchallenged { claimer, role }
+//       Challenge phase ended without anyone challenging. Detected by
+//       transition out of kChallengeAction without entering
+//       kResolveChallengeAction.
+//   - block_unchallenged { blocker, role }
+//       Counter-challenge phase ended without anyone challenging.
+//   - exchange_complete { player }
+//       Transition out of kExchangeReturn2 (Ambassador draws done,
+//       hand reshuffled — all prior claim signals on this player
+//       are stale).
 template <int NPlayers>
-PublicEventTrace extract_events(
-    const IGameState& /*before*/,
+std::vector<board_ai::PublicEvent> extract_events_only(
+    const IGameState& before,
     ActionId /*action*/,
     const IGameState& after,
-    int perspective) {
+    int /*perspective*/) {
   using namespace board_ai::coup;
-  PublicEventTrace out;
-  board_ai::viz::serialize_public_snapshot(
-      after, CoupState<NPlayers>::schema(), perspective,
-      out.public_snapshot);
-  return out;
-}
+  const auto& sb = board_ai::checked_cast<CoupState<NPlayers>>(before);
+  const auto& sa = board_ai::checked_cast<CoupState<NPlayers>>(after);
+  const auto& db = sb.data;
+  const auto& da = sa.data;
+  std::vector<board_ai::PublicEvent> events;
 
-template <int NPlayers>
-void apply_public_state(IGameState& state, const AnyMap& snap,
-                        int receiver_seat) {
-  using namespace board_ai::coup;
-  board_ai::viz::apply_public_snapshot(
-      state, CoupState<NPlayers>::schema(), receiver_seat, snap);
+  // 1. card_revealed: any (p, slot) whose `revealed` flipped false→true.
+  for (int p = 0; p < NPlayers; ++p) {
+    for (int sl = 0; sl < 2; ++sl) {
+      if (!db.revealed[p][sl] && da.revealed[p][sl]) {
+        AnyMap payload;
+        payload["player"] = std::any(p);
+        payload["slot"] = std::any(sl);
+        payload["role"] = std::any(static_cast<int>(da.influence[p][sl]));
+        events.emplace_back("card_revealed", std::move(payload));
+      }
+    }
+  }
+
+  // 2. claim_resolved_truthful: kResolveChallengeAction → action_challenge
+  //    failed (claim was real). before.claimed_character holds the role.
+  if (db.stage == CoupStage::kResolveChallengeAction &&
+      da.stage != CoupStage::kResolveChallengeAction) {
+    if (!da.action_challenge_succeeded && db.claimed_character >= 0) {
+      AnyMap payload;
+      payload["claimer"] = std::any(db.active_player);
+      payload["role"] = std::any(static_cast<int>(db.claimed_character));
+      events.emplace_back("claim_resolved_truthful", std::move(payload));
+    }
+  }
+
+  // 3. block_resolved_truthful: kResolveChallengeCounter → counter
+  //    challenge failed (block was real).
+  if (db.stage == CoupStage::kResolveChallengeCounter &&
+      da.stage != CoupStage::kResolveChallengeCounter) {
+    if (!da.counter_challenge_succeeded && db.block_character >= 0) {
+      AnyMap payload;
+      payload["blocker"] = std::any(db.blocker);
+      payload["role"] = std::any(static_cast<int>(db.block_character));
+      events.emplace_back("block_resolved_truthful", std::move(payload));
+    }
+  }
+
+  // 4. claim_unchallenged: kChallengeAction → out without entering
+  //    kResolveChallengeAction (everyone Allowed).
+  if (db.stage == CoupStage::kChallengeAction &&
+      da.stage != CoupStage::kChallengeAction &&
+      da.stage != CoupStage::kResolveChallengeAction) {
+    if (db.claimed_character >= 0) {
+      AnyMap payload;
+      payload["claimer"] = std::any(db.active_player);
+      payload["role"] = std::any(static_cast<int>(db.claimed_character));
+      events.emplace_back("claim_unchallenged", std::move(payload));
+    }
+  }
+
+  // 5. block_unchallenged: kChallengeCounter → out without entering
+  //    kResolveChallengeCounter.
+  if (db.stage == CoupStage::kChallengeCounter &&
+      da.stage != CoupStage::kChallengeCounter &&
+      da.stage != CoupStage::kResolveChallengeCounter) {
+    if (db.block_character >= 0) {
+      AnyMap payload;
+      payload["blocker"] = std::any(db.blocker);
+      payload["role"] = std::any(static_cast<int>(db.block_character));
+      events.emplace_back("block_unchallenged", std::move(payload));
+    }
+  }
+
+  // 6. exchange_complete: kExchangeReturn2 → out.
+  if (db.stage == CoupStage::kExchangeReturn2 &&
+      da.stage != CoupStage::kExchangeReturn2) {
+    AnyMap payload;
+    payload["player"] = std::any(db.active_player);
+    events.emplace_back("exchange_complete", std::move(payload));
+  }
+
+  return events;
 }
 
 }  // namespace coup_events
@@ -193,11 +284,18 @@ board_ai::GameBundle make_coup(const std::string& game_id, std::uint64_t seed) {
   b.value_model = std::make_unique<board_ai::DefaultStateValueModel>();
   b.encoder = std::make_unique<CoupFeatureEncoder<NPlayers>>();
   b.belief_tracker = std::make_unique<CoupBeliefTracker<NPlayers>>();
+  b.belief_feature_extractor =
+      std::make_unique<CoupBeliefFeatureExtractor<NPlayers>>();
+  b.belief_label_extractor =
+      std::make_unique<CoupBeliefLabelExtractor<NPlayers>>();
   b.state_serializer = serialize_coup<NPlayers>;
   b.action_descriptor = describe_coup;
   b.heuristic_picker = heuristic_random;
-  b.public_event_extractor = coup_events::extract_events<NPlayers>;
-  b.public_state_applier = coup_events::apply_public_state<NPlayers>;
+  b.install_event_protocol(
+      coup_events::extract_events_only<NPlayers>,
+      []() -> const board_ai::viz::VisibilitySchema& {
+        return CoupState<NPlayers>::schema();
+      });
   return b;
 }
 

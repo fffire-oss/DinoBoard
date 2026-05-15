@@ -271,7 +271,7 @@ OnnxPolicyValueEvaluator::~OnnxPolicyValueEvaluator() {
 }
 
 bool OnnxPolicyValueEvaluator::evaluate(
-    const MaskedState& masked,
+    const IGameState& masked_state,
     int perspective_player,
     const IBeliefTracker* tracker,
     const std::vector<ActionId>& legal_actions,
@@ -283,11 +283,11 @@ bool OnnxPolicyValueEvaluator::evaluate(
   if (!encoder_) {
     throw std::runtime_error("OnnxPolicyValueEvaluator::evaluate: encoder is null");
   }
-  const int num_players = masked.num_players();
+  const int num_players = masked_state.num_players();
 
   std::vector<float> features;
   std::vector<float> legal_mask;
-  if (!encoder_->encode_with_masked(masked, perspective_player, tracker, legal_actions, &features, &legal_mask)) {
+  if (!encoder_->encode_with_masked(masked_state, perspective_player, tracker, legal_actions, &features, &legal_mask)) {
     throw std::runtime_error("OnnxPolicyValueEvaluator::evaluate: encoder.encode_with_masked() failed");
   }
 

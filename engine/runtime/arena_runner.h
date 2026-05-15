@@ -53,7 +53,7 @@ ArenaMatchResult run_arena_match(
     GameAdjudicator adjudicator = nullptr,
     // Tracker input adapter: needed when belief_tracker is set. The
     // tracker receives events from public_event_extractor and its
-    // bootstrap MaskedState from `make_masked_state(state, schema, p)` —
+    // bootstrap state from `make_masked_state(state, schema, p)` —
     // state reads never pass through the tracker interface.
     PublicEventExtractor public_event_extractor = nullptr,
     // Per-seat trackers for hidden-info games. Size == num_players for
@@ -72,6 +72,12 @@ ArenaMatchResult run_arena_match(
     // freshened — see selfplay_runner.h for the structural-unreachability
     // argument.
     std::vector<IGameState*> per_seat_states = {},
-    PublicStateApplier public_state_applier = nullptr);
+    PublicStateApplier public_state_applier = nullptr,
+    // Sim-only events-extractor — see selfplay_runner.h.
+    EventsOnlyExtractor events_only_extractor = nullptr,
+    // Belief network plumbing. Both must be non-null to activate; nullptr
+    // either side → tracker prepare_for_root no-op + uniform sampling.
+    const IBeliefFeatureExtractor* belief_extractor = nullptr,
+    const IBeliefEvaluator* belief_evaluator = nullptr);
 
 }  // namespace board_ai::runtime

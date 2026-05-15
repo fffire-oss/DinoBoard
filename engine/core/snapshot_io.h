@@ -215,5 +215,52 @@ inline void apply_public_snapshot(
   }
 }
 
+// Wrap a game's events-only extractor (game-specific events diff) into
+// a full PublicEventExtractor (events + wholesale public_snapshot). The
+// snapshot half is framework work — schema-walker driven — so games
+// only have to author the diff. Registration sites should prefer this
+// helper over hand-writing both extractors.
+//
+// `schema_provider` lets the caller hand in a per-instance schema (e.g.
+// templated per NPlayers) without forcing the helper to be templated.
+//
+// Returned functor closes over the events-only callable and the schema
+// provider; lifetime = the bundle that holds it.
+template <typename EventsOnlyFn, typename SchemaProviderFn>
+inline auto make_public_event_extractor_from_events_only(
+    EventsOnlyFn events_only,
+    SchemaProviderFn schema_provider) {
+  return [events_only = std::move(events_only),
+          schema_provider = std::move(schema_provider)](
+      const IGameState& before, ActionId action,
+      const IGameState& after, int perspective) -> PublicEventTrace {
+    PublicEventTrace out;
+    out.events = events_only(before, action, after, perspective);
+    serialize_public_snapshot(after, schema_provider(),
+                              perspective, out.public_snapshot);
+    return out;
+  };
+}
+
+// Default public-state applier: pure schema-walker invocation. Every
+// hidden-info game's applier is identical modulo schema, so the helper
+// captures the schema provider and produces a ready-to-register functor.
+template <typename SchemaProviderFn>
+inline auto make_public_state_applier(SchemaProviderFn schema_provider) {
+  return [schema_provider = std::move(schema_provider)](
+      IGameState& state, const AnyMap& snap, int receiver_seat) {
+    apply_public_snapshot(state, schema_provider(), receiver_seat, snap);
+  };
+}
+
+// Always-no-op events-only extractor — for games whose tracker carries
+// nothing event-derived (e.g. LoveLetter, where everything the tracker
+// learns flows through pack_init_payload + state.viz=1 reveals).
+inline std::vector<PublicEvent> no_events_extractor(
+    const IGameState& /*before*/, ActionId /*action*/,
+    const IGameState& /*after*/, int /*perspective*/) {
+  return {};
+}
+
 }  // namespace viz
 }  // namespace board_ai

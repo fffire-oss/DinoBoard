@@ -302,23 +302,23 @@ ActionId NetMcts::search_root(
   // hash would separate states from different sessions anyway).
   std::unordered_map<StateHash64, int> node_index;
 
-  // Per-step MaskedState: clone live state with hidden slots overwritten
-  // by kPlaceholder for the acting perspective. ALGORITHM_OVERVIEW §5.2
+  // Per-step masked-state clone: overwrite every hidden slot with
+  // kPlaceholder for the acting perspective. ALGORITHM_OVERVIEW §5.2
   // contract — sim descent every step masks once, then both the DAG
   // hash lookup and (if the resulting node is unexpanded) the encoder
-  // read from the SAME MaskedState copy.
+  // read from the SAME clone.
   //
   // The schema walker visits the FULL slot set: viz=1 slots route to
   // game's `hash_field_slot` (truth value), viz=0 slots emit
-  // `kHiddenHashSentinel`. Hashing the live state and hashing its
-  // MaskedState clone produce the same digest — viz=0 slots in the
-  // clone hold kPlaceholder, but the walker's visible-flag check fires
+  // `kHiddenHashSentinel`. Hashing the live state and hashing the
+  // masked clone produce the same digest — viz=0 slots in the clone
+  // hold kPlaceholder, but the walker's visible-flag check fires
   // sentinel mode for them either way (BUG-037 postmortem).
-  auto materialize_masked = [](const IGameState& s) -> std::unique_ptr<MaskedState> {
+  auto materialize_masked = [](const IGameState& s) -> std::unique_ptr<IGameState> {
     return make_masked_state(s, s.schema_ref(), s.current_player());
   };
 
-  auto hash_masked = [](const MaskedState& m) -> StateHash64 {
+  auto hash_masked = [](const IGameState& m) -> StateHash64 {
     return m.state_hash_for_perspective(m.current_player());
   };
 
@@ -329,12 +329,12 @@ ActionId NetMcts::search_root(
   node_index[root_hash] = 0;
 
   // Leaf expansion. Caller passes the live `state` (for legal_actions
-  // and terminal_values, which need ground truth), a MaskedState
+  // and terminal_values, which need ground truth), a masked clone
   // already built for the acting player (for the encoder), and the
   // tracker for the same perspective (or null when no tracker is
   // registered for the game).
   auto expand_node = [&](Node& node, const IGameState& state,
-                         const MaskedState& masked,
+                         const IGameState& masked,
                          const IBeliefTracker* tracker) -> std::vector<float> {
     const auto legal = rules.legal_actions(state);
     if (legal.empty()) {
@@ -392,6 +392,19 @@ ActionId NetMcts::search_root(
     return values;
   };
 
+  // Per-decision belief-net hook. Run once before any sim — the cached
+  // pi posterior is then inherited by every sim's clone. const_cast is
+  // safe: the tracker pointer is `const` for the read-only sim path
+  // (clone()/randomize_unseen) but `prepare_for_root` is the one
+  // intended write site, gated on this caller-owned per-decision flow.
+  if (cfg_.root_belief_tracker && cfg_.belief_extractor &&
+      cfg_.belief_evaluator) {
+    auto* mutable_tracker =
+        const_cast<IBeliefTracker*>(cfg_.root_belief_tracker);
+    mutable_tracker->prepare_for_root(
+        root, root_player, cfg_.belief_extractor, cfg_.belief_evaluator);
+  }
+
   // Root expansion uses the session-shared tracker directly — no sim is
   // active yet, so there's nothing to clone.
   (void)expand_node(nodes[0], root, *root_masked, cfg_.root_belief_tracker);
@@ -425,8 +438,10 @@ ActionId NetMcts::search_root(
     std::mt19937_64 sim_rng(board_ai::rng::derive_subseed(
         parent_seed, "mcts.sim", static_cast<std::uint64_t>(sim)));
 
-    // Clone tracker so descent-time observe_public_event (if added later)
-    // doesn't pollute the session-shared root tracker.
+    // Clone tracker so descent-time observe_public_event (below, after
+    // each do_action_fast) doesn't pollute the session-shared root
+    // tracker. The clone is a sim-local stack variable; it dies with the
+    // sim and the next sim re-clones from the same root tracker.
     std::unique_ptr<IBeliefTracker> sim_tracker;
     if (cfg_.root_belief_tracker != nullptr) {
       sim_tracker = cfg_.root_belief_tracker->clone();
@@ -453,12 +468,12 @@ ActionId NetMcts::search_root(
     // sqrt argument (equals sim count so far).
     int incoming_edge_visits = nodes[0].visit_count;
 
-    // MaskedState for the current sim_state. §5.2: one mask per step,
+    // Masked clone of the current sim_state. §5.2: one mask per step,
     // shared by the DAG hash lookup and (if the node turns out
     // unexpanded) the encoder. Materialized lazily because the very
     // first iteration of each sim sits on the root, which was already
     // hashed + expanded above before this loop began.
-    std::unique_ptr<MaskedState> step_masked;
+    std::unique_ptr<IGameState> step_masked;
 
     while (depth < cfg_.max_depth) {
       if (sim_state->is_terminal()) {
@@ -467,10 +482,11 @@ ActionId NetMcts::search_root(
       }
       if (!nodes[cur_idx].expanded) {
         if (!step_masked) step_masked = materialize_masked(*sim_state);
-        // Sim-local tracker (clone of root) is what the encoder reads —
-        // pollution from descent-time observe_public_event stays inside
-        // this sim. Falls back to the session-shared tracker if no clone
-        // exists (game has no tracker registered).
+        // Sim-local tracker (clone of root + descent-time observe_public_event
+        // updates) is what the encoder reads. The encoder therefore sees
+        // tracker state that matches the sim's actual depth — not the root
+        // snapshot frozen at sim entry. Falls back to the session-shared
+        // tracker if no clone exists (game has no tracker registered).
         const IBeliefTracker* encoder_tracker = sim_tracker
             ? sim_tracker.get() : cfg_.root_belief_tracker;
         leaf_values = expand_node(nodes[cur_idx], *sim_state, *step_masked,
@@ -568,9 +584,46 @@ ActionId NetMcts::search_root(
             " hash_full=" + std::to_string(h_full));
       }
       const ActionId final_action = nodes[cur_idx].edges[best_edge].action;
+
+      // Snapshot the actor + state-before for sim-local tracker
+      // maintenance — the events_only_extractor diff requires both.
+      // Skipped when the game registers no extractor (fully-public
+      // games) or no tracker — short-circuit before the clone so the
+      // perf cost is exactly zero on those paths.
+      const int actor_for_event = sim_state->current_player();
+      std::unique_ptr<IGameState> state_before;
+      if (sim_tracker && cfg_.events_only_extractor) {
+        state_before = sim_state->clone_state();
+      }
+
       rules.do_action_fast(*sim_state, final_action, sim_step_rng);
 
-      // After do_action: rebuild MaskedState for the new state, then
+      // Sim-local tracker maintenance: feed the cloned sim_tracker the
+      // events from this descent step so the next iteration's encoder
+      // (and any subsequent observe_public_event) sees up-to-date
+      // public-derived state. Perspective is the root acting player —
+      // tracker content is perspective-agnostic by contract
+      // (test_tracker_perspective_invariance). This sim_tracker is
+      // discarded when the sim ends; cfg_.root_belief_tracker is never
+      // written.
+      //
+      // Uses events_only_extractor (not the full PublicEventExtractor)
+      // — the sim path doesn't need the wholesale public_snapshot half
+      // of the wire protocol; sim_state.viz is already maintained by
+      // do_action_fast and node-player masking happens via
+      // make_masked_state directly.
+      if (state_before) {
+        std::vector<PublicEvent> events = cfg_.events_only_extractor(
+            *state_before, final_action, *sim_state, root_player);
+        sim_tracker->observe_public_event(
+            actor_for_event, final_action, events);
+      }
+
+      if (cfg_.on_sim_step) {
+        cfg_.on_sim_step(sim, depth, *sim_state, sim_tracker.get());
+      }
+
+      // After do_action: rebuild masked clone for the new state, then
       // hash it (§5.2 — one mask per step, shared with the encoder).
       // The same masked copy is reused if the resulting node turns
       // out to be unexpanded — expand_node reads it next iteration.

@@ -99,6 +99,11 @@ def _extract_snapshot_keys(register_text: str, schema_fields: set[str]) -> set[s
       the schema field name as written; for non-all_public fields, only a
       subset of slots ride the value half but the name is still keyed in
       `snap[name]`, so we record it the same way.
+    - Framework auto-derived: `b.install_event_protocol(events_only,
+      schema_provider)` — the helper internally wraps `events_only` with
+      `serialize_public_snapshot(after, schema_provider(), ...)` so every
+      schema field rides the value half plus the `__viz__` slice. Treat
+      it the same as a direct walker call.
 
     The lint cares about *what keys end up in the snapshot*, not about the
     syntactic shape of the write."""
@@ -108,7 +113,8 @@ def _extract_snapshot_keys(register_text: str, schema_fields: set[str]) -> set[s
         r'\bput_(?:int|bool|vec)\s*\(\s*m\s*,\s*"([^"]+)"',
         register_text,
     ))
-    if re.search(r'\bviz::serialize_public_snapshot\s*\(', register_text):
+    if (re.search(r'\bviz::serialize_public_snapshot\s*\(', register_text)
+            or re.search(r'\binstall_event_protocol\s*\(', register_text)):
         # Walker writes every schema field (the value half is sparse —
         # only viz=1 slots — but the field name still appears as a key).
         keys.update(schema_fields)

@@ -9,7 +9,7 @@
 // viz tensor. all-1 = fully public; all-0 (or empty) = fully hidden;
 // per-seat patterns sit in between. The framework derives:
 //   - state_hash_for_perspective(p) (hash all slots with viz[..., p]==1)
-//   - encoder feature scope via MaskedState placeholders
+//   - encoder feature scope via masked-state placeholders (see masked_state.h)
 //   - serialize_public_snapshot / apply_public_snapshot (filter by viz)
 //
 // Declaration surface only: schema data structures + base-viz builder

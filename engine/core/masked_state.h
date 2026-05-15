@@ -1,18 +1,38 @@
 #pragma once
 
-// MaskedState — the encoder input contract (golden standard §2.5).
+// Perspective-masked state — encoder/extractor input contract (golden
+// standard §2.5).
 //
 // `make_masked_state(state, schema, perspective)` clones `state` and
 // overwrites every slot whose `viz[..., perspective] == 0` with the
-// kPlaceholder sentinel for that slot's element type.
+// kPlaceholder sentinel for that slot's element type. Callers feed
+// the clone — never the original truth state — into encoder /
+// belief-feature-extractor `extract_features`-style methods.
 //
-// MaskedState is the SINGLE encoder-input type — encoders read it with
-// the same field-by-field syntax they always have, with no viz query
-// needed. A slot whose value equals kPlaceholder is hidden; anything
-// else is truth. The walker over schema × viz lives in viz_walker.h and
-// feeds three consumers: hash, snapshot serializer, and (via this
-// MaskedState) encoder. They share one definition of "visible to
-// perspective p."
+// **There is no distinct C++ MaskedState type**, by design. The signature
+// `const IGameState&` on encoder and extractor entry points is what
+// games already understand; introducing a phantom type would propagate
+// through every game's net_adapter, every pybind binding, and every
+// optional-component interface for a marginal gain in compile-time
+// safety. The structural barrier instead is:
+//
+//   1. Encoder/extractor public entry points (`encode`,
+//      `extract_from_state`) always go through `make_masked_state`
+//      before forwarding to the virtual `encode_features` /
+//      `extract`. The `*_with_masked` overload exists only so an MCTS
+//      sim that already masked once for hashing can reuse the result.
+//   2. Every viz=0 slot is overwritten with `kPlaceholder*` — values
+//      outside any legitimate range. Any code reading the masked state
+//      and seeing kPlaceholder knows the slot is hidden; it can never
+//      read another perspective's truth from those slots.
+//   3. `test_encoder_respects_hash_scope` (changing opp private must
+//      leave encoder output bit-equal) and
+//      `test_public_hash_excludes_internal_rng` (60 seeds, hash must
+//      not depend on hidden-side bytes) are the regression guards.
+//
+// In short: the discipline is "always go through `make_masked_state`",
+// enforced by the only public encoder/extractor entry points doing so
+// themselves, plus tests. There is no `class MaskedState` to forge.
 
 #include <cstdint>
 #include <limits>
@@ -21,11 +41,6 @@
 #include "game_interfaces.h"
 
 namespace board_ai {
-
-// MaskedState is structurally identical to IGameState (typedef alias) —
-// the game's own concrete subclass, with a placeholder-only pass over
-// hidden slots. No new vtable.
-using MaskedState = IGameState;
 
 // kPlaceholder sentinels — encoders treat any slot whose value equals
 // the corresponding sentinel as "hidden." Values are outside legitimate

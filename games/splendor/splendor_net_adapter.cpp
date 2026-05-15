@@ -109,7 +109,7 @@ void SplendorFeatureEncoder<NPlayers>::encode_features(
   }
 
   // Non-perspective players' reserved slots. The encoder reads the
-  // MaskedState's `reserved` field directly: face-down opp slots arrive
+  // masked clone's `reserved` field directly: face-down opp slots arrive
   // as kPlaceholderInt32 (framework wrote it via mask_field_slot).
   // Visible (face-up) opp slots carry the real cid. There is no viz
   // query here — the placeholder IS the visibility signal.

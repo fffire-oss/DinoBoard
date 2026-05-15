@@ -91,6 +91,7 @@ sources = [
     "engine/search/net_mcts.cpp",
     "engine/search/tail_solver.cpp",
     "engine/infer/onnx_policy_value_evaluator.cpp",
+    "engine/infer/onnx_belief_evaluator.cpp",
     "engine/runtime/selfplay_runner.cpp",
     "engine/runtime/arena_runner.cpp",
     "engine/runtime/heuristic_runner.cpp",

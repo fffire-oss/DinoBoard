@@ -195,7 +195,7 @@ DELETE /ai/sessions/{id}           → 结束会话
 5. Web 上验收
 
 这个流程能跑通，是因为框架的每个接入点都有**可机械验证的契约**
-（schema 强制、签名锁 const MaskedState、CI 覆盖 viz 错位 / hash
+（schema 强制、入参锁 `const IGameState& masked_state`、CI 覆盖 viz 错位 / hash
 scope / belief 等价 / 公开快照 round-trip）—— LLM 写错了立刻被测
 试抓住，闭环自修。Azul 就是这么接进来的：扔规则书 + 启动 LLM，跑
 完一轮迭代得到能训练能对战的实现。

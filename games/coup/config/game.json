@@ -1,6 +1,6 @@
 {
   "game_id": "coup",
-  "display_name": "\u653f\u53d8",
+  "display_name": "政变",
   "display_name_en": "Coup",
   "has_web": true,
   "players": {
@@ -8,7 +8,7 @@
     "max": 4
   },
   "action_space": 32,
-  "feature_dim": 128,
+  "feature_dim": 141,
   "max_game_plies": 200,
   "mcts_profiles": {
     "selfplay": {
@@ -18,23 +18,19 @@
       "temperature_schedule": {
         "enabled": true,
         "initial": 1.0,
-        "final": 0.1,
+        "final": 0.5,
         "decay_plies": 20
       },
-      "dirichlet_alpha": 0.5,
+      "dirichlet_alpha": 1.0,
       "dirichlet_epsilon": 0.25,
-      "dirichlet_on_first_n_plies": 20,
-      "opponent_selection": "puct",
-      "tail_solve_enabled": false,
-      "tail_solve_depth_limit": 10,
-      "tail_solve_node_budget": 200000,
-      "tail_solve_margin_weight": 0.0,
+      "dirichlet_on_first_n_plies": 8,
+      "opponent_selection": "prior",
       "ai_use_action_filter": false,
       "cover_root_edges": false
     },
     "arena": {
       "inherits": "selfplay",
-      "temperature": 0.0,
+      "temperature": 0.5,
       "temperature_schedule": {
         "enabled": false,
         "initial": 0.0,
@@ -51,20 +47,53 @@
   "training": {
     "episodes_per_step": 200,
     "batch_size": 256,
-    "learning_rate": 0.001,
-    "steps": 3000,
-    "heuristic_guidance_hold_steps": 10,
-    "heuristic_guidance_steps": 20,
-    "heuristic_guidance_initial_ratio": 1.0,
-    "heuristic_guidance_temperature": 1.5,
-    "heuristic_temperature": 0.0
+    "train_batches_per_step": 20,
+    "learning_rate": 3e-4,
+    "lr_schedule": {
+      "type": "cosine",
+      "lr_min": 3e-5
+    },
+    "steps": 6000,
+    "weight_decay": 1e-4,
+    "grad_clip_norm": 1.0,
+    "opponent_pool_enabled": true,
+    "opponent_pool_self_ratio": 0.5,
+    "eval_benchmarks": [
+      "heuristic_free"
+    ],
+    "runtime": {
+      "eval_every": 100,
+      "eval_games": 100,
+      "save_every": 25
+    }
   },
   "network": {
     "type": "mlp",
     "hidden_layers": [
-      128,
+      256,
+      256,
       128
     ],
     "activation": "relu"
+  },
+  "belief": {
+    "architecture": [
+      256,
+      256,
+      128
+    ],
+    "activation": "relu",
+    "batch_norm": true,
+    "temperature": 2.0,
+    "training": {
+      "lr_schedule": {
+        "type": "cosine",
+        "lr_max": 3e-4,
+        "lr_min": 3e-5
+      },
+      "batch_size": 1024,
+      "steps_per_pv_step": 1,
+      "loss": "kl"
+    }
   }
 }

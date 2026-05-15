@@ -216,6 +216,25 @@ Frozen-pool fictitious self-play：每步把一部分 worker 的对手换成历�
 >
 > 旧 config 里偶尔遗留 `"type": "mlp"` / `"activation": "relu"` 字段——`training/model.py` 只读 `hidden_layers`，**这两个字段不会被消费**，存在与否都没有效果，新游戏无需写。
 
+### `belief` 网络（可选）
+
+只对启用了网络化 belief 的游戏需要（当前 Coup）。游戏侧需同时注册 `belief_feature_extractor` + `belief_model_path` + `belief_label_extractor`（见 [GAME_DEVELOPMENT_GUIDE §10.10](GAME_DEVELOPMENT_GUIDE.md#1010-可选网络化-belieflearned-posterior) 和 [ALGORITHM_OVERVIEW §8.4](../../ALGORITHM_OVERVIEW.md#84-可选网络化-belieflearned-posterior)）；本块只是训练 / inference 超参。
+
+| 字段 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `architecture` | int[] | `[256, 256, 128]` | belief 网络隐层大小列表（独立于 PV 的 `network.hidden_layers`） |
+| `activation` | string | `"relu"` | 隐层激活函数 |
+| `batch_norm` | bool | `true` | 隐层之间是否插 BatchNorm |
+| `temperature` | float | `2.0` | softmax 温度，`pi = softmax(logits / temperature)`。越大越软（`→ ∞` 退化成 uniform，等价 hand-craft `randomize_unseen` 不加权）；越小越尖锐。诈唬游戏建议 ≥ 1.5 避免 belief 网络欠训时过度自信 |
+| `training.lr_schedule.type` | string | `"cosine"` | belief 网络的学习率 schedule，独立于 PV 的 `training.learning_rate` |
+| `training.lr_schedule.lr_max` | float | `3e-4` | 起始学习率 |
+| `training.lr_schedule.lr_min` | float | `3e-5` | cosine 终点学习率 |
+| `training.batch_size` | int | `1024` | belief 训练 mini-batch 大小 |
+| `training.steps_per_pv_step` | int | `1` | 每个 PV 训练 step 跑几次 belief 训练 step |
+| `training.loss` | string | `"kl"` | belief 训练 loss 类型；当前支持 `"kl"`（KL divergence vs 真值 `hand_counts/remaining`） |
+
+`coup/config/game.json` 是当前唯一的参考实现。
+
 ### 完整示例（Quoridor）
 
 ```json

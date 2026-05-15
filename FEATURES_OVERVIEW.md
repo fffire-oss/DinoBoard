@@ -14,7 +14,7 @@
 |------|-----|------|
 | `<game>_state.cpp` | `IGameState` | 状态、当前玩家、终局；schema-driven `hash_field_slot` / `mask_field_slot` / `read_field_slot` / `write_field_slot` 分发器；静态 `schema()` 函数声明字段（name + 数据 shape + base viz tensor），是 hash / encoder / snapshot scope 的单一事实源 |
 | `<game>_rules.cpp` | `IGameRules` | 合法动作、`do_action_fast`（含 viz 维护，`reveal_slot` / `reveal_slot_to` / `reset_to_base`；不支持 undo——MCTS / selfplay / arena / web 都丢弃用完的 state）；想接 tail solver 才额外实现 `do_action_deterministic` + `undo_action`（这两个配对工作） |
-| `<game>_net_adapter.cpp` | `IFeatureEncoder` + `IBeliefTracker` | encoder 入参锁 `const MaskedState&`（单一 `encode_features(masked, perspective, tracker, out)`；viz=0 槽位天然是 placeholder）；tracker(有非对称隐藏信息 / 需要 sim 入口对 viz=0 槽位 determinization 的游戏才需要;纯公开物理随机由 `do_action_fast` 中的 `sim_rng` 处理,不需要 tracker) |
+| `<game>_net_adapter.cpp` | `IFeatureEncoder` + `IBeliefTracker` | encoder 入参锁 `const IGameState& masked_state`（单一 `encode_features(masked_state, perspective, tracker, out)`；非虚入口 `encode` 先 `make_masked_state` 再转发，viz=0 槽位天然是 placeholder）；tracker(有非对称隐藏信息 / 需要 sim 入口对 viz=0 槽位 determinization 的游戏才需要;纯公开物理随机由 `do_action_fast` 中的 `sim_rng` 处理,不需要 tracker) |
 | `<game>_register.cpp` | `GameBundle` 工厂 + `GameRegistrar` | 组件打包注册，配变体（如 `splendor_3p`）和可选组件 |
 | `config/game.json` | — | 训练超参（simulations / lr / 网络结构等） |
 | `web/<game>.js` | `createApp(...)` | 玩家交互界面 |
@@ -53,14 +53,16 @@ DinoBoard 把"推游戏"和"AI 决策"彻底分离。这是整个框架的心智
   按字节整张覆盖。没有第二个游戏侧 writer，没有 per-game viz 推导 hook；
   `test_rules_sole_viz_writer` 仅守游戏侧 I1（框架 helper 在
   `engine/core/` 下，不在它的扫描范围内）
-- **walker 一次产出 MaskedState**：`make_masked_state(state, schema,
+- **walker 一次产出 masked clone**：`make_masked_state(state, schema,
   perspective)` 按 schema 遍历每槽——viz=1 复制真值，否则写
   `kPlaceholder` sentinel。snapshot（GT 端序列化）/ hash（sim 内每步）/
-  encoder（sim 内新节点）三家共用同一份 MaskedState，结构性对齐
-- **接口入参锁 `const MaskedState&`**：`IFeatureEncoder` /
-  `IPolicyValueEvaluator` 的入参签名钉死 MaskedState——即使有人把 truth
-  state 传进来，`encode(...)` helper 也会先 `make_masked_state` 把
-  hidden 槽位换成 placeholder，子类 override 拿不到 raw state
+  encoder（sim 内新节点）三家共用同一份 masked clone，结构性对齐
+- **接口入参锁 `const IGameState& masked_state`**：`IFeatureEncoder` /
+  `IPolicyValueEvaluator` 的入参签名约定它是 walker 已经 mask 过的副本
+  ——非虚入口 `IFeatureEncoder::encode` / `IBeliefFeatureExtractor::extract_from_state`
+  在 forward 前先 `make_masked_state` 把 hidden 槽位换成 placeholder，
+  子类 override 拿不到 raw state（没有独立的 C++ 类型阻挡误传——结构性
+  屏障是这层包装 + placeholder + 回归测试）
 - **AI session 端不重算 viz**：observe 时按 schema 序 walker 把
   `public_snapshot` 整张写回 state 公开字段；viz 由 schema base + 规则期间
   `reveal_slot` / `reset_to_base` 已经维护好，从消息侧来的也是同一张
@@ -83,9 +85,9 @@ DinoBoard 把"推游戏"和"AI 决策"彻底分离。这是整个框架的心智
 - **节点 key 按 acting player 视角**：
   `state_hash_for_perspective(current_player)` —— 每个决策节点是合法 info set
 - **Step counter 防环**：`step_count_` 单调递增，DAG 结构性 acyclic
-- **每个 descent 步只 mask 一次**：`make_masked_state` 出来的 MaskedState
+- **每个 descent 步只 mask 一次**：`make_masked_state` 出来的 masked clone
   喂给（hash 和）encoder，同一份副本不重复遍历
-- **Encoder 对齐 hash scope**：encoder 入参锁 `const MaskedState&`，viz=0
+- **Encoder 对齐 hash scope**：encoder 入参锁 `const IGameState& masked_state`，viz=0
   槽位结构性是 placeholder，物理上无法读出对手 private
   （`test_encoder_respects_hash_scope` 守护）
 
@@ -101,7 +103,7 @@ Dirichlet 噪声。
 - Root 采样吞掉所有未来随机
 - 观察者**可见**的后果通过 schema 公开槽位（mask=1）的差异自然分叉成不同
   hash 节点
-- 观察者**不可见**的后果在 MaskedState 里全是 placeholder、对所有 sim 一
+- 观察者**不可见**的后果在 masked clone 里全是 placeholder、对所有 sim 一
   样，自然合并到同一节点
 
 没有显式 chance node 机制。隐藏信息游戏需注册 `belief_tracker` + 在
@@ -247,6 +249,8 @@ vs best，胜率 ≥ 阈值更新 best）。N 人游戏 candidate 轮坐每个�
 | `episode_stats_extractor` | 自定义指标追踪 |
 | `belief_tracker` | 有非对称隐藏信息(Love Letter / Splendor / Coup),需要在 ISMCTS sim 入口对 viz=0 槽位采样;纯公开物理随机的 Azul 不需要——其物理随机由 sim_rng 在 `do_action_fast` 里直接消费 |
 | `public_event_extractor` / `applier` / `public_state_applier` | snapshot-path 游戏(隐藏信息 + Azul)在 message-driven 路径下维护 session 公开字段(每 ply truth 端 extract → observer 端 apply 覆写) |
+| `belief_feature_extractor` + `belief_model_path` | 启用网络化 belief(learned posterior)代替 hand-craft 加权 `randomize_unseen`;两者一起注册,框架自动 load `OnnxBeliefEvaluator`,在 root 一次推理 → tracker 缓存 `pi[opp][R]` → sim 内 Wallenius 采样。当前 Coup 启用,详见 [ALGORITHM_OVERVIEW §8.4](ALGORITHM_OVERVIEW.md) |
+| `belief_label_extractor` | GT-side(只在 selfplay runner emit 路径调,AI session / wire 拿不到)产 belief 训练 label(`hand_counts` / `remaining` / `alive_per_opp`);只有训练 belief 网络的游戏需要 |
 
 完整字段说明见 [CONFIG_REFERENCE.md](docs/guide/CONFIG_REFERENCE.md)。
 
@@ -268,8 +272,8 @@ vs best，胜率 ≥ 阈值更新 best）。N 人游戏 candidate 轮坐每个�
 4. 在 state 实现 schema-driven 分发器：`hash_field_slot` /
    `mask_field_slot` / `read_field_slot` / `write_field_slot` /
    `schema_ref`（按 schema 列字段答 typed value）
-5. 实现特征编码器（单一 `encode_features(masked, perspective, tracker, out)`，
-   入参 `const MaskedState&`，viz=0 槽位读 placeholder 分流）
+5. 实现特征编码器（单一 `encode_features(masked_state, perspective, tracker, out)`，
+   入参 `const IGameState& masked_state`，viz=0 槽位读 placeholder 分流）
 6. 写 `register.cpp` 组装 GameBundle
 7. 写 `game.json` 配置
 8. **在 `games/manifest.json` 追加一条**：`{ "id": ..., "enabled": true, "framework_whitelist": <bool>, "capabilities": [...], "sources": [...] }` —— 这是 **CMake 编译 / setup.py 编译 / `engine.available_games()` / web 列表 / framework 测试矩阵** 这五层的唯一事实源；漏了这一步 = 编译过但 register 不上 = web 看不见 = 测试不覆盖。临时下线一个游戏只要把 `enabled: false`（源码留在 disk 上但所有层都跳过它）

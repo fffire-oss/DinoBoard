@@ -12,6 +12,9 @@
 
 namespace board_ai {
 
+class IBeliefEvaluator;
+class IBeliefFeatureExtractor;
+
 // Observer's memory of a game in progress, derived purely from the
 // public-event stream. perspective-agnostic: the same belief content is
 // shared by every seat in the AI session — what differs per seat is what
@@ -137,7 +140,7 @@ class IBeliefTracker {
   // differ but observer-visible fields don't). The session itself does
   // NOT call randomize_unseen — its viz=0 slots are unread bytes that
   // the framework structurally hides from the hash (kHiddenHashSentinel),
-  // the encoder (MaskedState placeholder), and from sim entry (sim
+  // the encoder (masked-state placeholder), and from sim entry (sim
   // clones and resamples the tracker independently).
   virtual void randomize_unseen(IGameState& state, int observer,
                                 std::mt19937_64& rng) const = 0;
@@ -146,6 +149,31 @@ class IBeliefTracker {
   // session's tracker so descent-time `observe_public_event` calls don't
   // pollute the session's tracker.
   virtual std::unique_ptr<IBeliefTracker> clone() const = 0;
+
+  // Per-decision belief-net hook. Called once at MCTS root before any
+  // simulation; the tracker (a) extracts a feature vector via the
+  // extractor, (b) runs the belief-net evaluator to obtain (N-1) × K
+  // logits, (c) softmaxes with its own temperature and caches the
+  // resulting `pi[opp][R]` posterior internally. Subsequent
+  // `randomize_unseen` calls on this tracker (and on its `clone()`s
+  // inside MCTS sims) read the cached posterior to bias the
+  // determinization sample (Wallenius noncentral hypergeometric:
+  // `weight[R] = remaining[R] × pi[opp][R]`).
+  //
+  // Default implementation is a no-op — games with a flat-uniform
+  // determinization policy (Splendor multiset, Love Letter discard
+  // tracking) override neither this nor extractor; their
+  // `randomize_unseen` does not consult `pi`.
+  //
+  // `extractor` and `evaluator` may be null. When null, the tracker
+  // MUST behave as if no belief net is installed (uniform sampling).
+  // The pointers are held only for the duration of the call; the
+  // tracker may store the resulting posterior but not the pointers.
+  virtual void prepare_for_root(
+      const IGameState& /*root_state*/,
+      int /*root_player*/,
+      const IBeliefFeatureExtractor* /*extractor*/,
+      const IBeliefEvaluator* /*evaluator*/) {}
 
   // Serialize the tracker's internal belief to a canonical, comparable form.
   // Used by the AI API belief-equivalence tests: a self-play session and an

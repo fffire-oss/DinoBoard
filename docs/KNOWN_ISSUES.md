@@ -1895,7 +1895,7 @@ CLAUDE.md 的「AI Pipeline Independence」第二条（session 公开字段被 m
 
 - LL rules 在 Priest peek / King swap / Baron compare / 抽牌 / 弃牌 / 淘汰 全部改用 `viz::reveal_slot_to(observer)` / `viz::swap_slot_owned(a, b)` / `viz::reset_to_base(slot)`，rules 是唯一的 viz writer（I1 lint 由 `test_rules_sole_viz_writer[loveletter]` 守护）。
 - `LoveLetterBeliefTracker` 退化为公开聚合 + uniform `randomize_unseen`，不再持 `perspective_player_` / `known_hand_[]`。
-- `loveletter_net_adapter` encoder 改读 `MaskedState` 的 `hand[p]` 槽位——viz=1 的 opp hand 槽本来就有真值，placeholder 走零编码。
+- `loveletter_net_adapter` encoder 改读 masked clone 的 `hand[p]` 槽位——viz=1 的 opp hand 槽本来就有真值，placeholder 走零编码。
 - `loveletter_register.cpp` 删 `hand_override` / `drawn_override` 平行通道，`public_state_applier` 走 `viz::apply_public` walker；私人 reveal 字段（owner-visible `hand[p]`、actor-visible `drawn_card`）走新的 partial-reveal sidecar `owner_overlay`（仿 Splendor `reserved_faceup_ids_flat`），receiver 写回真值并翻 viz bit。
 - `bindings/py_engine.cpp` 把 `loveletter` 加进 `per_seat_in_scope`（per-seat session 路径），`test_selfplay_no_truth_in_ai_path` 矩阵把 LL 加进 PUBLIC_KEYS。
 - `engine/core/belief_tracker.h` class doc 更新："perspective-baked private fields → state.viz" 现在只剩 Coup（待 §G.2）。
@@ -1917,7 +1917,7 @@ CLAUDE.md 的「AI Pipeline Independence」第二条（session 公开字段被 m
 - 训练运行 `runs/loveletter_4p_20260512_113903` 在 step 125 selfplay 抛 `MCTS: DAG node legal-action mismatch`：node 缓存 `node_edges=[37,38,39,40,...]`（Prince 系列）而当前 sim 世界的 `current_legal=[45,...]`（must-Countess）。两个看上去毫无相似度的合法集落进同一个 DAG node。
 - 单种子复现：`BASE_SEED + 129 = 21510452`（step 125 的 episode 129）一次跑就 byte-equal 重现，`hash_pub=17913659907566068133`。
 - 用户对 5000 局规模做随机 rollout 验证："不可能就是 hash 64-bit 量级的随机碰撞" — 实测 0 collision，事实站在用户这边。
-- 在 `engine/search/net_mcts.cpp` 加 `DINOBOARD_DAG_DEBUG=1` 网关下的 insertion-time vs throw-time MaskedState slot dump，重跑同一个种子，拿到两条 byte-equal 的 dump：
+- 在 `engine/search/net_mcts.cpp` 加 `DINOBOARD_DAG_DEBUG=1` 网关下的 insertion-time vs throw-time masked-clone slot dump，重跑同一个种子，拿到两条 byte-equal 的 dump：
   - INSERTION（perspective=1）：`hand[1]=5 | hand[3]=7 | drawn_card=1`
   - CURRENT（perspective=1）：`hand[0]=5 | hand[1]=7 | drawn_card=1`
   - 两者除 `hand` 槽外所有公开字段、ply、step_count 完全一致；`hand` 的"被访问到的索引集"和值不同，但 `state_hash_for_perspective(1)` 落在同一个 64-bit 桶。
@@ -1957,7 +1957,7 @@ if (name == "hand") {
 
 1. **walker-driven hash 必须 mix `(name, idx, value)` 全三元组**。schema + viz 决定 visit 序列，但 visit 序列不是常数：动态 reveal（Priest / Baron / King / `hand_exposed` / 淘汰）让 perspective 在不同 sim 世界里看到不同的 owner 子集。任何把 idx 丢掉、只 mix value 的实现都隐含"被访问的 idx 集合是世界无关的"假设——一旦 dynamic reveal 进来这个假设就废了。规约：所有 `hash_field_slot` 实现里凡接受非空 `idx` 的字段，至少 mix 一次 `idx[k]`，无论 base viz 当前看起来"是不是固定的"。
 2. **DAG 碰撞复现路径要走规则 + 网络的 byte-equal 重放**。普通 random rollout 的 5000 局测不出，因为 prior 不会真的把 sim 推进 ply=9 的稀疏节点。带 model + selfplay schedule 的 single-seed 重放把 prior 收敛固定，就能稳定吃到。"训练崩了能不能复现"的标准回答：保留模型 + episode_seed，单种子单线程跑 `run_selfplay_episode` byte-equal 重现 — 这次成立，下次也应保留这条路径。
-3. **insertion-time vs throw-time MaskedState dump 是 DAG 撞车的高信噪比工具**。比起在 hash 内部加 trace（每个槽都打），存一份 node→insertion dump、撞了再 print insertion + current 两份对比，差异立刻 evidently 落在 `hand[1],hand[3]` vs `hand[0],hand[1]`。这个 pattern（gated on env var、dump 仅在 DAG 缓存命中且 legal 不一致时打）值得保留为可启用的诊断，不是常驻代码——本次修完后已下线。
+3. **insertion-time vs throw-time masked-clone dump 是 DAG 撞车的高信噪比工具**。比起在 hash 内部加 trace（每个槽都打），存一份 node→insertion dump、撞了再 print insertion + current 两份对比，差异立刻 evidently 落在 `hand[1],hand[3]` vs `hand[0],hand[1]`。这个 pattern（gated on env var、dump 仅在 DAG 缓存命中且 legal 不一致时打）值得保留为可启用的诊断，不是常驻代码——本次修完后已下线。
 
 ### 不在范围
 

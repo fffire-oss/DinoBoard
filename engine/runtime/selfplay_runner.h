@@ -9,6 +9,9 @@
 #include <utility>
 #include <vector>
 
+#include "../core/belief_evaluator.h"
+#include "../core/belief_feature_extractor.h"
+#include "../core/belief_label_extractor.h"
 #include "../core/belief_tracker.h"
 #include "../core/feature_encoder.h"
 #include "../core/game_interfaces.h"
@@ -33,6 +36,24 @@ struct SelfplaySample {
   bool tail_solved = false;
   float auxiliary_score = 0.0f;
   bool has_auxiliary_score = false;
+};
+
+// Belief-net training sample (Coup belief net plan §2.2).
+//
+// One sample per ply per observer, emitted by selfplay_runner when both
+// `belief_feature_extractor` and `belief_label_extractor` are wired
+// through the runner. `features` is computed from the AI-side
+// masked state + tracker (no truth read); `hand_counts` / `remaining` /
+// `alive_per_opp` are computed from GT truth. Both halves are
+// emit-side only — neither AI sessions nor wire snapshots ever consume
+// a BeliefSample.
+struct BeliefSample {
+  int ply = 0;
+  int observer = 0;
+  std::vector<float> features{};                       // size feature_dim
+  std::vector<std::vector<int>> hand_counts{};         // [N-1][K]
+  std::vector<int> remaining{};                        // [K]
+  std::vector<int> alive_per_opp{};                    // [N-1]
 };
 
 // Per-ply observation trace for API belief-equivalence tests. Only populated
@@ -68,6 +89,15 @@ struct SelfplayEpisodeResult {
   std::map<std::string, std::any> initial_belief_snapshot{};
   AnyMap initial_observation{};
   std::vector<SelfplayObservationTrace> observation_trace{};
+
+  // Belief-net training samples (Plan §2.2). Populated only when the
+  // runner is given both a belief_feature_extractor and a
+  // belief_label_extractor. Empty otherwise.
+  std::vector<BeliefSample> belief_samples{};
+  // K (label class count) copied from belief_label_extractor — pybind /
+  // pipeline.py needs it to interpret hand_counts / remaining shape
+  // without reaching back into the bundle.
+  int belief_label_class_count = 0;
 };
 
 struct SelfplayConfig {
@@ -185,7 +215,7 @@ SelfplayEpisodeResult run_selfplay_episode(
     // public_event_extractor registered) re-run do_action_fast(seat) on
     // each seat with its own step rng. The session's viz=0 slots are
     // never freshened — decision-side reads (hash kHiddenHashSentinel,
-    // encoder MaskedState placeholder, sim_tracker->randomize_unseen at
+    // encoder masked-state placeholder, sim_tracker->randomize_unseen at
     // sim entry) make them structurally unreachable.
     std::vector<IGameState*> per_seat_states = {},
     PublicStateApplier public_state_applier = nullptr,
@@ -206,6 +236,25 @@ SelfplayEpisodeResult run_selfplay_episode(
     // game's factory.
     int trace_perspective = -1,
     IBeliefTracker* trace_belief_tracker = nullptr,
-    PublicEventExtractor public_event_extractor = nullptr);
+    PublicEventExtractor public_event_extractor = nullptr,
+    // Sim-only events-extractor (sim descent uses this to feed
+    // sim_tracker — skips the public_snapshot serialization that
+    // public_event_extractor performs for the wire/ply protocol).
+    EventsOnlyExtractor events_only_extractor = nullptr,
+    // Belief network plumbing. When BOTH non-null, MCTS root calls
+    // `tracker.prepare_for_root(root, root_player, extractor, evaluator)`
+    // once per decision; sims inherit the cached posterior via clone().
+    // When either is null, the tracker's default `prepare_for_root` is a
+    // no-op and `randomize_unseen` falls back to uniform sampling.
+    const IBeliefFeatureExtractor* belief_extractor = nullptr,
+    const IBeliefEvaluator* belief_evaluator = nullptr,
+    // Belief-net training sample emit (Plan §2.2). When both
+    // belief_extractor and belief_label_extractor are non-null, the
+    // runner emits one BeliefSample per ply per observer into
+    // result.belief_samples. Features are taken from the per-seat AI
+    // session (masked state + tracker); labels are read from truth on
+    // the GT runner. Independent of belief_evaluator: sample emit can
+    // run with no installed belief.onnx (early training).
+    const IBeliefLabelExtractor* belief_label_extractor = nullptr);
 
 }  // namespace board_ai::runtime

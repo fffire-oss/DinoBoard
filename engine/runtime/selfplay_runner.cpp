@@ -31,8 +31,16 @@ SelfplayEpisodeResult run_selfplay_episode(
     EpisodeStatsExtractor episode_stats_extractor,
     int trace_perspective,
     IBeliefTracker* trace_belief_tracker,
-    PublicEventExtractor public_event_extractor) {
+    PublicEventExtractor public_event_extractor,
+    EventsOnlyExtractor events_only_extractor,
+    const IBeliefFeatureExtractor* belief_extractor,
+    const IBeliefEvaluator* belief_evaluator,
+    const IBeliefLabelExtractor* belief_label_extractor) {
   SelfplayEpisodeResult result{};
+  if (belief_label_extractor) {
+    result.belief_label_class_count =
+        belief_label_extractor->label_class_count();
+  }
 
   if (config.tail_solve_enabled && (!tail_solver || !tail_solve_trigger)) {
     throw std::invalid_argument(
@@ -106,7 +114,7 @@ SelfplayEpisodeResult run_selfplay_episode(
   }
 
   // No episode-start freshen of per-seat states. Decision-side reads
-  // (encoder via MaskedState placeholder, hash via kHiddenHashSentinel,
+  // (encoder via masked-state placeholder, hash via kHiddenHashSentinel,
   // MCTS sims via sim_tracker->randomize_unseen at sim entry) are
   // perspective-aware by construction; truth values that linger in
   // per_seat_states' viz=0 slots are structurally unreachable. A future
@@ -197,8 +205,44 @@ SelfplayEpisodeResult run_selfplay_episode(
     }
   };
 
+  // Belief-net training-sample emit (Plan §2.2). Active when both the
+  // feature extractor (AI side) and label extractor (GT side) are
+  // present. Independent of belief_evaluator: emit can run with no
+  // installed belief.onnx (early training).
+  const bool emit_belief_samples =
+      belief_extractor != nullptr && belief_label_extractor != nullptr;
+  auto emit_belief_for_ply = [&]() {
+    if (!emit_belief_samples) return;
+    for (int observer = 0; observer < num_players; ++observer) {
+      IBeliefTracker* obs_tracker =
+          (use_per_perspective &&
+           observer < static_cast<int>(per_perspective_trackers.size()))
+              ? per_perspective_trackers[observer]
+              : nullptr;
+      BeliefSample bs{};
+      bs.ply = ply;
+      bs.observer = observer;
+      // Feature side: per-seat session + that seat's tracker. No truth.
+      if (!belief_extractor->extract_from_state(
+              *per_seat_states[observer], observer, obs_tracker,
+              &bs.features)) {
+        throw std::runtime_error(
+            "run_selfplay_episode: belief feature extractor returned wrong size");
+      }
+      // Label side: read from truth.
+      belief_label_extractor->extract(
+          *state, observer, &bs.hand_counts, &bs.remaining, &bs.alive_per_opp);
+      result.belief_samples.push_back(std::move(bs));
+    }
+  };
+
   while (!state->is_terminal() && ply < config.max_game_plies) {
     const int player = state->current_player();
+
+    // Belief-sample emit at the START of each ply: features describe the
+    // observer's pre-action belief state, labels read truth for the same
+    // moment. One sample per observer.
+    emit_belief_for_ply();
 
     const bool use_filter = filtered_rules_ptr &&
         config.training_filter_ratio > 0.0 &&
@@ -351,6 +395,17 @@ SelfplayEpisodeResult run_selfplay_episode(
     // MCTS uses the per-sim sampled world's rules.legal_actions at each node.
     if (mcts_tracker) {
       mcts_cfg.root_belief_tracker = mcts_tracker;
+    }
+    // Sim-tracker descent maintenance (SIM_TRACKER_DESCENT_PLAN). Uses
+    // the events-only extractor (sim path doesn't need the wholesale
+    // public_snapshot the ply-protocol extractor produces — sim_state
+    // is itself a GT-equivalent advanced by do_action_fast).
+    if (events_only_extractor) {
+      mcts_cfg.events_only_extractor = events_only_extractor;
+    }
+    if (belief_extractor && belief_evaluator) {
+      mcts_cfg.belief_extractor = belief_extractor;
+      mcts_cfg.belief_evaluator = belief_evaluator;
     }
 
     if (try_tail_solve) {

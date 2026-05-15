@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Sequence
 
 import torch
 import torch.nn as nn
@@ -44,6 +45,58 @@ def create_model_from_config(game_config: dict) -> PVNet:
     num_players = game_config["num_players"]
     return PVNet(input_dim, policy_dim, hidden_layers,
                  auxiliary_score=auxiliary_score, num_players=num_players)
+
+
+class BeliefNet(nn.Module):
+    """Belief-network: MLP with optional BatchNorm.
+
+    Input: flat feature vector (size = belief_feature_dim).
+    Output: flat logits (size = (N-1) * K), reshaped client-side to (N-1, K).
+    """
+
+    def __init__(self, input_dim: int, output_dim: int,
+                 hidden_layers: Sequence[int],
+                 batch_norm: bool = True):
+        super().__init__()
+        layers: list[nn.Module] = []
+        prev = input_dim
+        for h in hidden_layers:
+            layers.append(nn.Linear(prev, h))
+            if batch_norm:
+                layers.append(nn.BatchNorm1d(h))
+            layers.append(nn.ReLU())
+            prev = h
+        layers.append(nn.Linear(prev, output_dim))
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+def create_belief_model_from_config(belief_config: dict, *,
+                                    input_dim: int,
+                                    output_dim: int) -> BeliefNet:
+    hidden = belief_config.get("architecture", [256, 256, 128])
+    batch_norm = belief_config.get("batch_norm", True)
+    return BeliefNet(input_dim, output_dim, hidden, batch_norm=batch_norm)
+
+
+def export_belief_onnx(net: BeliefNet, path: Path, input_dim: int) -> str:
+    net.eval()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # BN with batch=1 in eval mode reads running stats — safe. The exported
+    # graph keeps a batch axis for runtime convenience even though the C++
+    # evaluator always feeds batch=1.
+    dummy = torch.zeros((1, input_dim), dtype=torch.float32)
+    torch.onnx.export(
+        net, dummy, str(path),
+        input_names=["features"],
+        output_names=["logits"],
+        dynamic_axes={"features": {0: "batch"}, "logits": {0: "batch"}},
+        opset_version=13,
+        dynamo=False,
+    )
+    return str(path)
 
 
 def export_onnx(net: PVNet, path: Path, input_dim: int) -> str:

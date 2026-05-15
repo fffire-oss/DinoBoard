@@ -79,20 +79,20 @@ template <int NPlayers>
 struct CoupConfig {
   static_assert(NPlayers >= 2 && NPlayers <= 4);
   static constexpr int kPlayers = NPlayers;
-  // See coup_revival plan §"Encoder 设计". Per-player public 23: alive,
-  // coins, 2× influence_slot{revealed + char-OH(5)}=12, role one-hot
-  // (active/target/blocker/challenger)=4, signals(5).
-  // Per-player 45: alive(1) + coins norm(1) + coins-bucket OH(13) +
-  // self-flag(1) + revealed slot OH(2*5)=10 + claim history(... see
-  // encoder) = 23 (observer-visible) + 2× own influence char-OH (5+5=10)
-  // + 2× exchange_drawn{occupied + char-OH(5)}=12 (observer-private,
-  // non-self slots arrive as kPlaceholder via MaskedState) = 45.
-  static constexpr int kPerPlayerFeatures = 45;
-  // Global: stage(11) + declared_action_type(7) + claimed_char(5) +
-  // block_char(5) + pending_claimer relative-OH(N) + pending_challenged
-  // (1) + deck_size/15(1) + ply/200(1) + revealed multiset per role(5)
-  // = 36 + N.
-  static constexpr int kGlobalFeatures = 36 + NPlayers;
+  // Belief-net plan §16. Per-player block (46/player):
+  //   alive(1) + coins/12(1) + 2 x {revealed?(1)+char-OH(5)}(12) +
+  //   role flags active/target/blocker/challenger(4) +
+  //   pre_claim_counts/4(5) + post_claim_counts/4(5) +
+  //   pre_challenge_initiated/4(5) + post_challenge_initiated/4(5) +
+  //   last_reshuffle_kind OH None/Exchange/RevealTruthful(3) +
+  //   last_revealed_role OH(5) = 46.
+  static constexpr int kPerPlayerFeatures = 46;
+  // Global block (47 + N):
+  //   stage OH(11) + declared_action_type OH(7) + claimed_character OH(5) +
+  //   block_character OH(5) + pending_claimer relative OH(N) +
+  //   pending_challenged(1) + ply/200(1) + remaining[R](5) +
+  //   2 x {occupied?(1)+OH(5)} exchange_drawn(12) = 47 + N.
+  static constexpr int kGlobalFeatures = 47 + NPlayers;
   static constexpr int kFeatureDim = kPerPlayerFeatures * NPlayers + kGlobalFeatures;
 };
 

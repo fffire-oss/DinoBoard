@@ -13,7 +13,7 @@
 namespace board_ai::splendor {
 
 // Splendor has non-symmetric hidden info (blind reserved cards). The
-// encoder reads the perspective's MaskedState — observer-visible
+// encoder reads the perspective-masked state — observer-visible
 // fields (tableau, bank, nobles, all players' gems/bonuses/scores/
 // visible reserved) plus the perspective's own blind reserved cards.
 // Other players' blind reserved arrive as kPlaceholder*.

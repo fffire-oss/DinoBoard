@@ -24,7 +24,10 @@ ArenaMatchResult run_arena_match(
     PublicEventExtractor public_event_extractor,
     std::vector<IBeliefTracker*> per_perspective_trackers,
     std::vector<IGameState*> per_seat_states,
-    PublicStateApplier public_state_applier) {
+    PublicStateApplier public_state_applier,
+    EventsOnlyExtractor events_only_extractor,
+    const IBeliefFeatureExtractor* belief_extractor,
+    const IBeliefEvaluator* belief_evaluator) {
   ArenaMatchResult result{};
   auto state = initial_state.clone_state();
   int ply = 0;
@@ -125,6 +128,15 @@ ArenaMatchResult run_arena_match(
     mcts_cfg.opponent_selection = pcfg.opponent_selection;
     if (mcts_tracker) {
       mcts_cfg.root_belief_tracker = mcts_tracker;
+    }
+    // Sim-tracker descent maintenance (SIM_TRACKER_DESCENT_PLAN). Uses
+    // events-only extractor — see selfplay_runner.cpp for rationale.
+    if (events_only_extractor) {
+      mcts_cfg.events_only_extractor = events_only_extractor;
+    }
+    if (belief_extractor && belief_evaluator) {
+      mcts_cfg.belief_extractor = belief_extractor;
+      mcts_cfg.belief_evaluator = belief_evaluator;
     }
 
     if (pcfg.tail_solve_enabled) {

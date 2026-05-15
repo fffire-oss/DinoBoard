@@ -53,7 +53,7 @@ DinoBoard 的立项动机不是抽象的"框架设计美学"，是一条具体�
   DinoBoard 的目标用户。
 - **你只想做一款游戏**——DinoBoard 的抽象成本要在 N 款游戏上摊销
   才回本。第一款游戏你感受到的只有"为什么要写 schema、要写 viz、
-  要分 IGameState/IGameRules、要懂 MaskedState"这些 boilerplate；
+  要分 IGameState/IGameRules、要懂 walker / masked clone"这些 boilerplate；
   到第三款才显出价值。一款游戏的话 KataGo / LCZero / 单游戏 fork
   / 或者 PyTorch + alpha-zero-general 自拼都比 DinoBoard 划算。
 - **你做研究、需要 paper 标杆**——DinoBoard 不是审稿人认得的事实
@@ -160,17 +160,17 @@ schema 声明字段 + base viz
        ↓
 rules 在 do_action_fast 里维护 viz（reveal_slot / reset_to_base）
        ↓
-walker make_masked_state(state, schema, perspective) 派 MaskedState
+walker make_masked_state(state, schema, perspective) 派一份 masked clone
        ↓
 三家消费者（snapshot 序列化 / hash digest / encoder tensor）
-签名锁 const MaskedState& —— viz=0 槽位结构性读到 placeholder
+入参锁 const IGameState& masked_state —— viz=0 槽位结构性读到 placeholder
 ```
 
 | 维度 | OpenSpiel（Observer API） | DinoBoard |
 |---|---|---|
 | 可见性元数据 | observation-type 级（flag），具体字段散在 observer 实现里 | per-slot per-perspective viz tensor |
 | Belief sample | `ResampleFromInfostate(State*)`——作者**有能力**读真值，契约只用 info-set 信息 | tracker 接口签名里没有 `IGameState*`，`randomize_unseen(state, rng)` 的 state 是已经 resample 过的 session state |
-| Hash / encoder / sampler 一致性 | observer 派生 string + tensor（一份实现）；ResampleFromInfostate 是另一条独立实现 | walker 派 MaskedState，三家消费者共享同一对象 |
+| Hash / encoder / sampler 一致性 | observer 派生 string + tensor（一份实现）；ResampleFromInfostate 是另一条独立实现 | walker 派一份 masked clone，三家消费者共享同一对象 |
 
 ### 2.1 Worked example：假如要在 OpenSpiel 实现 Love Letter
 
@@ -232,9 +232,10 @@ viz::reveal_slot_to(state, "hand", {target}, /*viewer=*/viewer);
 viz::reset_to_base(state, "hand", State::schema(), {q});
 
 // encoder 不知道有 peek：
-void encode_features(const MaskedState& m, int perspective,
+void encode_features(const IGameState& masked_state, int perspective,
                      const IBeliefTracker* /*tracker*/,
                      vector<float>* out) {
+  const auto& m = static_cast<const State&>(masked_state);
   for (int seat = 0; seat < num_players; ++seat) {
     encode_card(m.hand[seat], out);
   }

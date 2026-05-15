@@ -10,8 +10,8 @@
 // Golden standard I1: rules' do_action_fast is the SOLE writer of
 // state.viz_, calling reveal_slot / reveal_slot_to / reset_to_base.
 // Framework readers (hash walker, snapshot serializer) read state.viz_
-// directly; encoders never query viz at all (they read MaskedState
-// placeholders, see masked_state.h).
+// directly; encoders never query viz at all (they read masked-state
+// kPlaceholder* sentinels, see masked_state.h).
 
 #include <algorithm>
 #include <cstddef>

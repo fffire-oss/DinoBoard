@@ -114,25 +114,31 @@ class TestLoveLetterRandomizeUnseen:
 class TestCoupEncoderInfoBarrier:
     """Verify that Coup encoder features for opponents contain no hidden info.
 
-    Layout (perspective-rotated, see games/coup/coup_net_adapter.cpp):
-      Public (23 × N + 36 + N): per-player block of 23 features × N players,
-        then global. Per-player: alive(1) + coins(1) + 2×{revealed(1)+OH(5)}
-        = 12 + role(4) + signals(5) = 23. Influence-OH only fires when
-        revealed (mirroring public projection); unrevealed self cards
-        live in the private half, not here.
-      Private (22 × N): per-player block of 22 features. For player==self
-        (block 0): 2 × influence char-OH on UNREVEALED slots (5+5=10) +
-        2 × exchange_drawn{occupied(1)+OH(5)}=12. For non-self blocks
-        every entry is 0 (encoder structurally cannot read truth).
+    Layout (perspective-rotated, see games/coup/coup_net_adapter.cpp,
+    belief-net plan §16). Total 46 N + 47 + N.
+
+    Per-player block (46/player, perspective-rotated):
+      [0]  alive
+      [1]  coins/12
+      [2-7]   slot 0: revealed?(1) + char-OH(5)  ← viz-controlled
+      [8-13]  slot 1: revealed?(1) + char-OH(5)  ← viz-controlled
+      [14-17] role flags (active/target/blocker/challenger)
+      [18-22] pre_claim_counts/4
+      [23-27] post_claim_counts/4
+      [28-32] pre_challenge_initiated/4
+      [33-37] post_challenge_initiated/4
+      [38-40] last_reshuffle_kind OH
+      [41-45] last_revealed_role OH
+
+    For an opponent (pi >= 1), the only viz-controlled bits are the two
+    influence slots: char-OH should be all-zero whenever the slot is
+    unrevealed (placeholder). When the slot has been publicly revealed,
+    char-OH is non-zero by design.
     """
 
-    PER_PLAYER_PUBLIC = 23
-
-    def _public_dim(self, num_players: int) -> int:
-        return self.PER_PLAYER_PUBLIC * num_players + 36 + num_players
-
-    def _self_private_offset(self, num_players: int) -> int:
-        return self._public_dim(num_players)
+    PER_PLAYER = 46
+    INFLUENCE_OFFSET = 2  # within per-player block
+    SLOT_STRIDE = 6       # revealed?(1) + char-OH(5)
 
     def _play_and_encode(self, seed, plies=3):
         gs = dinoboard_engine.GameSession("coup", seed=seed)
@@ -143,37 +149,39 @@ class TestCoupEncoderInfoBarrier:
             gs.apply_action(legal[0])
         return gs.get_state_dict(), dinoboard_engine.encode_state("coup", seed=seed)
 
-    def test_opponent_private_block_all_zeros(self):
-        """Non-self per-player private blocks (22 features each) must be
-        all zeros — encoder cannot encode opponent hidden state."""
-        per_player_private = 22
-
+    def test_opponent_unrevealed_influence_all_zeros(self):
+        """For opponents (pi >= 1), char-OH in any unrevealed slot must be
+        all zeros — encoder cannot read opponent hidden cards."""
         for seed in range(10):
             state, enc = self._play_and_encode(seed, plies=0)
             f = enc["features"]
             num_players = state["num_players"]
-            self_private_offset = self._self_private_offset(num_players)
             for pi in range(1, num_players):
-                start = self_private_offset + pi * per_player_private
-                opp_block = f[start : start + per_player_private]
-                assert all(v == 0.0 for v in opp_block), (
-                    f"Seed {seed}, opp {pi}: private block = {opp_block}, "
-                    "should be all zeros"
-                )
+                base = pi * self.PER_PLAYER
+                for sl in range(2):
+                    slot_off = base + self.INFLUENCE_OFFSET + sl * self.SLOT_STRIDE
+                    revealed = f[slot_off]
+                    char_oh = f[slot_off + 1 : slot_off + 6]
+                    if revealed == 0.0:
+                        assert all(v == 0.0 for v in char_oh), (
+                            f"Seed {seed}, opp {pi}, slot {sl}: unrevealed "
+                            f"char-OH = {char_oh}, should be all zeros"
+                        )
 
     def test_self_hand_reflects_actual_cards(self):
-        """Player 0's own influence char-OH (first 10 of self-private) should
-        encode exactly two unrevealed cards at game start (one per slot)."""
+        """Player 0's own influence char-OH (perspective block 0, both slots)
+        must show exactly two cards at game start — one per slot, both
+        unrevealed."""
         for seed in [42, 100, 200]:
             enc = dinoboard_engine.encode_state("coup", seed=seed)
             f = enc["features"]
-            num_players = 2  # default coup is 2p
-            self_private_offset = self._self_private_offset(num_players)
-            self_hand = f[self_private_offset : self_private_offset + 10]
-            total = sum(self_hand)
+            base = 0  # perspective block
+            slot0_oh = f[base + 3 : base + 8]   # skip alive/coins/revealed
+            slot1_oh = f[base + 9 : base + 14]
+            total = sum(slot0_oh) + sum(slot1_oh)
             assert total == 2.0, (
-                f"Seed {seed}: self hand sum={total}, expected exactly 2 "
-                "(one OH per slot at game start)"
+                f"Seed {seed}: self hand OH sum={total}, expected exactly 2 "
+                "(one OH per unrevealed slot at game start)"
             )
 
 

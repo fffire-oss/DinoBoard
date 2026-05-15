@@ -14,7 +14,7 @@
 // One traversal feeds three consumers:
 //   - hash builder (schema_hash.h): hash_field_slot per visible slot
 //   - snapshot serializer (snapshot_io.h): read_field_slot / write_field_slot
-//   - encoder (per-game net_adapter): reads MaskedState placeholders
+//   - encoder (per-game net_adapter): reads masked-state kPlaceholder* sentinels
 //
 // Sharing one traversal keeps "what counts as visible" defined in
 // exactly one place.

@@ -328,8 +328,8 @@ const viz::VisibilitySchema& SplendorState<NPlayers>::schema() {
     // reserved[p][i]: card id of player p's reserve slot i. Base
     // owner-only; rules call viz::reveal_slot(reserved, {p, i}) when a
     // reserve becomes face-up, reset_to_base when bought/discarded.
-    // The encoder reads MaskedState's `reserved` slot directly — face-
-    // down opp slots arrive as kPlaceholderInt32.
+    // The encoder reads the masked clone's `reserved` slot directly —
+    // face-down opp slots arrive as kPlaceholderInt32.
     viz::declare_field(
         schema, "reserved",
         viz::owner_only_first_axis({Cfg::kPlayers, 3}, Cfg::kPlayers));

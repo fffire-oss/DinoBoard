@@ -9,8 +9,12 @@
 #include <unordered_map>
 #include <vector>
 
+#include "belief_evaluator.h"
+#include "belief_feature_extractor.h"
+#include "belief_label_extractor.h"
 #include "belief_tracker.h"
 #include "feature_encoder.h"
+#include "snapshot_io.h"
 #include "game_interfaces.h"
 #include "../search/tail_solver.h"
 
@@ -81,6 +85,28 @@ using PublicEventExtractor = std::function<PublicEventTrace(
     const IGameState& state_after,
     int perspective_player)>;
 
+// Events-only flavor of the extractor — same diff logic as
+// PublicEventExtractor, but skips the wholesale `viz::serialize_public_snapshot`
+// walk over the schema. Consumed exclusively by the MCTS sim descent
+// (engine/search/net_mcts.cpp): each sim step calls this to feed the
+// cloned sim_tracker's `observe_public_event`. The sim never needs the
+// `public_snapshot` half — sim_state is itself a GT-equivalent advanced
+// by `do_action_fast`, so its viz is already correct and node-player
+// masking is done via `make_masked_state(sim_state, schema, player)`,
+// not via wire-protocol replacement.
+//
+// Tracker content is perspective-invariant (test_tracker_perspective_invariance),
+// so the sim calls this with `perspective = root_player` once per step.
+//
+// Optional: when a game registers `public_event_extractor` but leaves
+// `events_only_extractor` empty, the sim path falls back to the full
+// extractor (correct, just pays the snapshot serialization cost).
+using EventsOnlyExtractor = std::function<std::vector<PublicEvent>(
+    const IGameState& state_before,
+    ActionId action,
+    const IGameState& state_after,
+    int perspective_player)>;
+
 // Message-driven public state: inverse of the public-fields-only
 // serialization produced by public_event_extractor. Overwrites the
 // observer session's state_ public fields from the truth snapshot at
@@ -133,10 +159,53 @@ struct GameBundle {
   // that register a belief_tracker AND want to be driveable through the
   // AI API with independent seeds.
   PublicEventExtractor public_event_extractor;
+  // Sim-only events extractor (see EventsOnlyExtractor above). Optional;
+  // when empty the sim falls back to public_event_extractor.
+  EventsOnlyExtractor events_only_extractor;
   // Required for hidden-info games. See PublicStateApplier above.
   // Fully-public games (tictactoe, quoridor) leave this unset.
   PublicStateApplier public_state_applier;
+
+  // Belief network plumbing (Coup belief net plan). Optional — only
+  // games whose `IBeliefTracker::prepare_for_root` consults a learned
+  // posterior register both. The framework discovers the ONNX model
+  // at runtime via `belief_model_path` (e.g.
+  // `games/<id>/model/<id>_belief_<N>p.onnx`); the extractor produces
+  // the input feature vector and declares the (N-1) × K logit count.
+  // When either is empty, the tracker's default
+  // `prepare_for_root` is a no-op and `randomize_unseen` falls back to
+  // its uniform / multiset-derived sampling.
+  std::unique_ptr<IBeliefFeatureExtractor> belief_feature_extractor;
+  std::string belief_model_path;
+  // GT-side label extractor for belief-net training samples (Plan §2.2).
+  // Reads truth IGameState; never reachable from the AI session. Only
+  // selfplay_runner consults it (emit path). Optional — only games that
+  // emit BeliefSample register one.
+  std::unique_ptr<IBeliefLabelExtractor> belief_label_extractor;
+
   std::string game_id;
+
+  // One-shot helper for hidden-info games. Pass an events-only diff
+  // (game-specific) and a schema provider; the helper auto-fills the
+  // three wire-protocol fields:
+  //
+  //   events_only_extractor    = events_only_diff (consumed by sim)
+  //   public_event_extractor   = events_only + viz::serialize_public_snapshot
+  //                              (consumed by ply / wire / trace)
+  //   public_state_applier     = viz::apply_public_snapshot
+  //                              (consumed by receiver session)
+  //
+  // For games whose tracker is event-free (no_events_extractor), pass
+  // viz::no_events_extractor as the diff.
+  template <typename EventsOnlyFn, typename SchemaProviderFn>
+  void install_event_protocol(EventsOnlyFn events_only,
+                              SchemaProviderFn schema_provider) {
+    events_only_extractor = events_only;
+    public_event_extractor =
+        viz::make_public_event_extractor_from_events_only(
+            events_only, schema_provider);
+    public_state_applier = viz::make_public_state_applier(schema_provider);
+  }
 };
 
 using GameFactory = std::function<GameBundle(std::uint64_t seed)>;

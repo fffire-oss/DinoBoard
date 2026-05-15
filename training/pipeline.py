@@ -15,7 +15,13 @@ from typing import Any
 import torch
 
 from .mcts_profile import MctsProfile, max_game_plies, profile_as_dict, resolve_profile
-from .model import PVNet, create_model_from_config, export_onnx
+from .model import (
+    PVNet,
+    create_belief_model_from_config,
+    create_model_from_config,
+    export_belief_onnx,
+    export_onnx,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +85,7 @@ def _worker_selfplay(args: tuple) -> dict[str, Any]:
         heuristic_temperature=cfg["heuristic_temperature"],
         training_filter_ratio=cfg["training_filter_ratio"],
         opponent_selection=cfg["opponent_selection"],
+        belief_model_path=cfg.get("belief_model_path", ""),
     )
 
 
@@ -125,6 +132,7 @@ def _worker_selfplay_pool(args: tuple) -> dict[str, Any]:
         heuristic_temperature=cfg["heuristic_temperature"],
         training_filter_ratio=cfg["training_filter_ratio"],
         opponent_selection=cfg["opponent_selection"],
+        belief_model_path=cfg.get("belief_model_path", ""),
     )
     result["latest_seat"] = latest_seat
     return result
@@ -240,6 +248,87 @@ def train_step(
         "value_loss": value_loss.item(),
         "score_loss": score_loss.item(),
     }
+
+
+def _train_belief_step(
+    net: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    buffer: deque,
+    *,
+    num_players: int,
+    K: int,
+    batch_size: int,
+    batches_per_step: int,
+    grad_clip: float,
+) -> float:
+    """One step of belief-net KL training (Plan §2.3).
+
+    Buffer entries: (features, hand_counts[N-1][K], remaining[K],
+    alive_per_opp[N-1]). Per opp row i and role R:
+      label[i][R] = (hand_counts[i][R] / remaining[R]) normalized along R
+      mask_R[i][R] = (remaining[R] > 0)
+      mask_row[i] = (alive_per_opp[i] > 0)
+    Loss = mean over alive rows of KL(label || softmax(logits / 1.0)).
+    Returns the average loss across `batches_per_step`.
+    """
+    if not buffer or net is None:
+        return float("nan")
+    n_opp = num_players - 1
+    if n_opp <= 0 or K <= 0:
+        return float("nan")
+    buf = list(buffer)
+    n = len(buf)
+    feats_all = torch.tensor([s[0] for s in buf], dtype=torch.float32)
+    hand_all = torch.tensor([s[1] for s in buf], dtype=torch.float32)  # [B,N-1,K]
+    rem_all = torch.tensor([s[2] for s in buf], dtype=torch.float32)   # [B,K]
+    alive_all = torch.tensor([s[3] for s in buf], dtype=torch.float32) # [B,N-1]
+
+    net.train()
+    total = 0.0
+    eps = 1e-12
+    for _ in range(batches_per_step):
+        idx = torch.randint(n, (min(batch_size, n),))
+        f = feats_all[idx]
+        hand = hand_all[idx]
+        rem = rem_all[idx]
+        alive = alive_all[idx]
+        B = f.size(0)
+        logits = net(f).view(B, n_opp, K)
+
+        rem_exp = rem.unsqueeze(1).expand(-1, n_opp, -1)             # [B,N-1,K]
+        mask_R = (rem_exp > 0).float()
+        unnorm = torch.where(mask_R.bool(), hand / (rem_exp + eps),
+                             torch.zeros_like(hand))
+        row_sum = unnorm.sum(dim=-1, keepdim=True)                   # [B,N-1,1]
+        valid_row = (row_sum.squeeze(-1) > 0) & (alive > 0)          # [B,N-1]
+        label = torch.where(row_sum > 0, unnorm / (row_sum + eps),
+                            torch.zeros_like(unnorm))
+
+        # log-softmax with -inf where mask_R = 0 (kill those R from softmax).
+        neg_inf = torch.full_like(logits, float("-inf"))
+        masked_logits = torch.where(mask_R.bool(), logits, neg_inf)
+        log_pi = torch.nn.functional.log_softmax(masked_logits, dim=-1)
+        # KL = sum_R label * (log label - log_pi); 0 * log0 := 0.
+        log_label = torch.where(label > 0, torch.log(label + eps),
+                                torch.zeros_like(label))
+        kl_per_role = label * (log_label - log_pi)
+        # Zero out masked R / dead rows safely.
+        kl_per_role = torch.where(mask_R.bool(), kl_per_role,
+                                   torch.zeros_like(kl_per_role))
+        kl_row = kl_per_role.sum(dim=-1)                              # [B,N-1]
+        kl_row = torch.where(valid_row, kl_row, torch.zeros_like(kl_row))
+
+        n_valid = valid_row.float().sum().clamp_min(1.0)
+        loss = kl_row.sum() / n_valid
+
+        optimizer.zero_grad()
+        loss.backward()
+        if grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(net.parameters(), grad_clip)
+        optimizer.step()
+        total += float(loss.item())
+    net.eval()
+    return total / max(1, batches_per_step)
 
 
 def run_selfplay_batch(
@@ -583,6 +672,52 @@ def run_training_loop(
     replay_buffer_size = episodes_per_step * 50 * 20
     replay_buffer: deque[tuple[list, list, list, list, float]] = deque(maxlen=replay_buffer_size)
 
+    # Belief net plumbing (Plan §2.2 / §2.3). Activated only when the game
+    # registers a belief feature extractor AND a 'belief' block exists in
+    # game.json. Coup is the only such game today; LL/Splendor will train
+    # their own belief nets in future plans (no runtime branch on game id —
+    # capability-driven).
+    import dinoboard_engine as _engine
+    meta = _engine.game_metadata(game_id)
+    belief_enabled = meta["has_belief_extractor"] and "belief" in game_config
+    belief_net = None
+    belief_optimizer = None
+    belief_buffer: deque[tuple[list, list, list, list]] | None = None
+    belief_lr_schedule = None
+    belief_batch_size = 1024
+    belief_batches_per_step = 1
+    belief_class_count = meta["belief_logit_count"]  # (N-1) * K — used for shape check
+    current_belief_model_path = ""
+    if belief_enabled:
+        belief_cfg = game_config["belief"]
+        belief_in = meta["belief_feature_dim"]
+        belief_out = meta["belief_logit_count"]
+        belief_net = create_belief_model_from_config(
+            belief_cfg, input_dim=belief_in, output_dim=belief_out,
+        )
+        b_train = belief_cfg.get("training", {})
+        belief_lr_init = float(b_train.get("lr_schedule", {}).get("lr_max", 3e-4))
+        belief_lr_schedule = b_train.get("lr_schedule")
+        belief_batch_size = int(b_train.get("batch_size", 1024))
+        belief_batches_per_step = int(b_train.get("steps_per_pv_step", 1))
+        belief_optimizer = torch.optim.Adam(belief_net.parameters(), lr=belief_lr_init)
+        belief_buffer = deque(maxlen=replay_buffer_size)
+        # Random-init export so step 1 selfplay can already use the net.
+        belief_init_path = models_dir / "belief_init.onnx"
+        export_belief_onnx(belief_net, belief_init_path, belief_in)
+        current_belief_model_path = str(belief_init_path)
+        # Per-opp character count K (kCharacterCount in C++).
+        # logit_count = (N-1) * K, so K = logit_count // (N-1).
+        belief_K = belief_out // max(1, num_players - 1) if num_players > 1 else belief_out
+        logger.info(
+            f"  belief: enabled (input_dim={belief_in}, logits={belief_out}, "
+            f"K={belief_K}, batch={belief_batch_size}, "
+            f"batches/step={belief_batches_per_step})"
+        )
+    else:
+        belief_K = 0
+        logger.info(f"  belief: disabled (no extractor or no 'belief' block)")
+
     logger.info(f"Starting training: game={game_id}, steps={steps}, episodes/step={episodes_per_step}")
     logger.info(
         f"  heuristic_guidance: hold={heuristic_guidance_hold_steps}, "
@@ -647,6 +782,7 @@ def run_training_loop(
         selfplay_cfg["heuristic_temperature"] = train_cfg.get(
             "heuristic_guidance_temperature", 0.0)
         selfplay_cfg["training_filter_ratio"] = effective_filter_ratio
+        selfplay_cfg["belief_model_path"] = current_belief_model_path
 
         # Recompute the pool every step — newly saved checkpoints automatically
         # enrol the step after they land. Empty pool ⇒ all episodes mirror.
@@ -667,8 +803,24 @@ def run_training_loop(
         # `step_samples` counts what actually entered the replay buffer
         # (after pool-mode filtering), not the raw episode-output count.
         step_samples = 0
+        belief_step_samples = 0
         for ep in episodes:
             latest_seat = ep["latest_seat"]  # int for pool, None for mirror
+            # Belief samples (Plan §2.2). One per ply per observer; pool-mode
+            # filter applies — only keep observer == latest_seat. (The latest
+            # net's belief is what we're training; freezing the pool's net
+            # means its belief samples would train against the frozen weights.)
+            if belief_enabled:
+                for bs in ep.get("belief_samples", []):
+                    if latest_seat is not None and bs["observer"] != latest_seat:
+                        continue
+                    belief_buffer.append((
+                        bs["features"],
+                        bs["hand_counts"],   # [N-1][K]
+                        bs["remaining"],     # [K]
+                        bs["alive_per_opp"], # [N-1]
+                    ))
+                    belief_step_samples += 1
             for sample in ep["samples"]:
                 # Pool-mode: keep only the latest model's seat samples — the
                 # opp's seat was driven by a frozen historical net and would
@@ -742,6 +894,36 @@ def run_training_loop(
             step_onnx = models_dir / f"model_step_{step:05d}.onnx"
             export_onnx(net, step_onnx, feature_dim)
 
+        # Belief training step (Plan §2.3) — KL(label || pi) where
+        # label[i][R] = (hand_counts[i][R] / remaining[R]) / row_norm,
+        # masked by remaining > 0 and alive_per_opp[i] > 0. This trains the
+        # Wallenius bias factor (label * remaining = q is the truth marginal).
+        belief_loss_val = None
+        if belief_enabled and belief_buffer:
+            belief_lr = compute_lr(step, steps, belief_lr_init, belief_lr_schedule)
+            for pg in belief_optimizer.param_groups:
+                pg["lr"] = belief_lr
+            belief_loss_val = _train_belief_step(
+                belief_net, belief_optimizer, belief_buffer,
+                num_players=num_players, K=belief_K,
+                batch_size=belief_batch_size,
+                batches_per_step=belief_batches_per_step,
+                grad_clip=train_cfg.get("grad_clip_norm", 1.0),
+            )
+            if not math.isfinite(belief_loss_val):
+                raise RuntimeError(
+                    f"belief loss diverged: {belief_loss_val} — abort to "
+                    "prevent training-on-NaN drift (Plan §2.4)"
+                )
+            belief_latest = models_dir / "belief_latest.onnx"
+            export_belief_onnx(belief_net, belief_latest, meta["belief_feature_dim"])
+            current_belief_model_path = str(belief_latest)
+            if step % save_every == 0:
+                belief_step_onnx = models_dir / f"belief_step_{step:05d}.onnx"
+                export_belief_onnx(
+                    belief_net, belief_step_onnx, meta["belief_feature_dim"],
+                )
+
         elapsed = time.perf_counter() - t0
         log_parts = [
             f"Step {step}/{steps}: loss={avg_loss:.4f}",
@@ -760,6 +942,15 @@ def run_training_loop(
         sps = step_samples / max(0.01, elapsed)
         mps = sps * current_sims
         log_parts.append(f"{sps:.0f}smp/s, {mps:.0f}mcts/s")
+        if belief_enabled:
+            buf_n = len(belief_buffer) if belief_buffer is not None else 0
+            if belief_loss_val is not None:
+                log_parts.append(
+                    f"b_loss={belief_loss_val:.4f}, b_buf={buf_n}, "
+                    f"b_step={belief_step_samples}"
+                )
+            else:
+                log_parts.append(f"b_buf={buf_n}, b_step={belief_step_samples}")
         # Game-defined per-episode stats (averaged over the step's
         # episodes). Splendor's extractor returns {"turns": main_actions
         # / num_players}, which excludes return-token sub-actions and
