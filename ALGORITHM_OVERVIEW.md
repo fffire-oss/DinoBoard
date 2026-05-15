@@ -36,7 +36,7 @@
 | 名词 | 定位 | 一句话 |
 |------|------|--------|
 | **walker** | schema 驱动的遍历器 | 一遍走完 state 的所有字段、所有槽位,对每个槽位决定"该露还是该藏" |
-| **masked clone** | walker 的产物 | state + perspective + viz=0 槽位被替换成 placeholder 哨兵的副本(类型仍是 `IGameState`,没有独立 C++ 类型——结构性屏障靠 `make_masked_state` 包装 + placeholder 哨兵 + 回归测试,不是型别);**snapshot / hash / encoder 三家共用** |
+| **masked clone** | walker 的产物 | state + perspective + viz=0 槽位被替换成 placeholder 哨兵的副本;**snapshot / hash / encoder 三家共用** |
 
 **三家消费者**(都从同一份 masked clone 出发)
 
@@ -714,6 +714,10 @@ sim_tracker->randomize_unseen(sim_state, observer, sim_rng);
 每款启用的游戏 ship 一份独立 ONNX:`games/<id>/model/<id>_belief_<N>p.onnx`。
 当前 Coup 2p/3p/4p 都已 ship。`game.json` 里 `belief` 块控制网络形状 +
 训练超参,详见 [CONFIG_REFERENCE §game.json belief 块](guide/CONFIG_REFERENCE.md)。
+
+Coup 上的具体 feature layout / tracker 状态机 / Wallenius 加权采样 / KL
+loss 见 [games/coup/BELIEF_NETWORK.md](../games/coup/BELIEF_NETWORK.md)
+——其它隐藏信息游戏要接 belief 网络时拿这个做范本。
 
 ---
 

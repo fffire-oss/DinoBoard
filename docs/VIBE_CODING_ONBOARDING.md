@@ -82,7 +82,7 @@ You do not need to read `../ALGORITHM_OVERVIEW.md` unless you are modifying the 
 |------|---------|----------------------|
 | Public + deterministic | TicTacToe, Quoridor | state / rules / encoder only |
 | Public + symmetric random | Azul | state / rules / encoder; no tracker (physical randomness lives on public counts, sim_rng samples on the fly inside `do_action_fast`) |
-| Asymmetric hidden info | Splendor, Love Letter, Coup | + `belief_tracker` + visibility schema with owner-only fields + per-slot `hash_field_slot` / `mask_field_slot` / `read_field_slot` / `write_field_slot` dispatchers. Wire protocol unifies opening and per-ply on one walker: opening = `viz::serialize_public_snapshot` (full slot set; emits `(idx, value)` pairs for viz=1 slots and the perspective's viz slice under `__viz__`) + `tracker.pack_init_payload` (perspective-private bootstrap) → applied via `viz::apply_public_snapshot` + `tracker.init`; per-ply = `public_event_extractor` / `public_state_applier` + `tracker.observe_public_event`. |
+| Asymmetric hidden info | Splendor, Love Letter, Coup | + `belief_tracker` + visibility schema with owner-only fields + per-slot `hash_field_slot` / `mask_field_slot` / `read_field_slot` / `write_field_slot` dispatchers. Wire protocol unifies opening and per-ply on one walker: opening = `viz::serialize_public_snapshot` (full slot set; emits `(idx, value)` pairs for viz=1 slots and the perspective's viz slice under `__viz__`) + `tracker.pack_init_payload` (perspective-private bootstrap) → applied via `viz::apply_public_snapshot` + `tracker.init`; per-ply = `public_event_extractor` / `public_state_applier` + `tracker.observe_public_event`. Snapshot-path games wire all three extractors via one `b.install_event_protocol(events_only_diff, schema_provider)` call in `register.cpp` — the framework auto-derives `events_only_extractor` (sim path) / `public_event_extractor` (events + framework's `serialize_public_snapshot`, wire/selfplay/trace) / `public_state_applier` (framework's `apply_public_snapshot`, receiver session). Pass `viz::no_events_extractor` if the tracker is event-free (pure viz inference). **Learned-belief variant** (Coup today) additionally registers `belief_feature_extractor` + `belief_label_extractor` + `belief_model_path` so the framework runs an independent belief net at MCTS root and caches `pi[opp][R]` for sim sampling — opt-in only when uniform `randomize_unseen` degenerates (bluffing games). See §4 and `games/coup/BELIEF_NETWORK.md`. |
 
 ---
 
@@ -92,8 +92,9 @@ Registered fields on `GameBundle`. None are required by the framework; opt in on
 
 | Component | Use when |
 |-----------|----------|
-| `belief_tracker` | Game has **asymmetric hidden info** (Love Letter / Splendor / Coup) and therefore viz=0 slots that MCTS sim entry must determinize. Public physical randomness alone (Azul) does **not** need a tracker — sim_rng samples directly inside `do_action_fast`. |
-| `public_event_extractor` / `applier` / `public_state_applier` | Snapshot-path game (hidden-info **or** Azul) — diff truth into events for the message stream and rebuild observer-side public state from them |
+| `belief_tracker` | Game has **asymmetric hidden info** (Love Letter / Splendor / Coup) and therefore viz=0 slots that MCTS sim entry must determinize. Public physical randomness alone (Azul) does **not** need a tracker — sim_rng samples directly inside `do_action_fast`. Tracker also implements `pack_init_payload(gt_state, perspective)` for the opening bootstrap (perspective-private content viz=1 reveals can't carry, e.g. LL starting hand). |
+| `public_event_extractor` / `applier` / `public_state_applier` | Snapshot-path game (hidden-info **or** Azul) — diff truth into events for the message stream and rebuild observer-side public state from them. All three are wired via a single `b.install_event_protocol(events_only_diff, schema_provider)` call; the framework auto-derives the three from your `events_only_diff` plus its own `viz::serialize_public_snapshot` / `viz::apply_public_snapshot` halves. Pass `viz::no_events_extractor` if the tracker is event-free. |
+| `belief_feature_extractor` + `belief_label_extractor` + `belief_model_path` | **Learned-belief** path (Coup today) — register all three together; framework loads `OnnxBeliefEvaluator`, runs one inference at MCTS root, caches `pi[opp][R]`, and sims do Wallenius sampling instead of `randomize_unseen` uniform/hand-craft. Use only when uniform sampling degenerates on the game (bluffing). `belief_label_extractor` is the **GT-side-only** target producer — physically unreachable from AI session / wire / web / API; that's the no-truth-leak red line. Each N-player variant ships its own `<g>_belief_<N>p.onnx`. |
 | `tail_solver` / `tail_solve_trigger` | Want exact endgame solving and a smart trigger for when to fire it |
 | `heuristic_picker` | Hand-written scorer to bootstrap selfplay (three-stage schedule: hold → linear decay → 0) |
 | `auxiliary_scorer` | Extra learning signal beyond win/loss (e.g. score margin) |
@@ -170,7 +171,7 @@ Write empty stubs for all six files. `legal_actions` returns `[0]`; `do_action` 
 - `pytest tests/ -q` all green = framework invariants intact
 
 **Step 5 — Wire-up + docs.**
-- Multiplayer variants (`<g>_3p` / `<g>_4p`) each need an independently-trained ONNX model
+- Multiplayer variants (`<g>_3p` / `<g>_4p`) each need an independently-trained ONNX model. **Learned-belief games (Coup-style) ship two ONNX per variant**: `<g>_<N>p.onnx` (PV) and `<g>_belief_<N>p.onnx` (belief). Each variant inits and trains the belief net independently — the PV-net rule applies to belief too.
 - `game.json` `feature_dim` / `action_space` **must** match `engine.game_metadata(game_id)` (C++ is canonical; if they disagree, fix the JSON)
 - Write `docs/devlog/<today>.md` with key decisions (encoder dim choice, tracker design)
 - New pothole encountered → add an entry to `docs/KNOWN_ISSUES.md`

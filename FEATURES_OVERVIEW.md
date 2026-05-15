@@ -121,6 +121,23 @@ schema 里 declare 私人字段（owner-only viz）+ 实现
 | Love Letter | 抽牌 | 手牌 | mixed（hand owner-only） |
 | Coup | 抽牌 + bluff | 影响牌 + claim | mixed（influence + exchange-seen owner-only） |
 
+### 网络化 belief（避开 uniform 采样退化）
+
+最朴素的 `randomize_unseen` 是按 `remaining[R]` 的张数 weighted 抽——
+"袋里剩多少就按多少抽"。Splendor 这种"袋里有什么我都看得到"的游戏没问
+题；**诈唬游戏（Coup）上是结构性 bug**：对手早期 claim Tax 的信号在
+sim 入口完全消失（被 uniform 一抹平），网络很快学会"永远 Challenge"，
+gating 来回震荡也不会装 / 不会基于 claim 做有信息的决策。
+
+框架提供网络化 belief 路径解决这条：游戏注册 `belief_feature_extractor
++ belief_model_path + belief_label_extractor`，框架在 root 处跑一次独立
+belief 网络得到 `(N-1) × K` 后验 `pi[opp][R]`，sim 内复用 cache，
+`randomize_unseen` 改用 Wallenius 加权 `weight[R] = remaining[R] ×
+pi[opp][R]`——把 hand-craft uniform 退化均衡换成 selfplay 自己学出来
+的 prior。当前 Coup 启用，详见
+[Coup BELIEF_NETWORK.md](games/coup/BELIEF_NETWORK.md) +
+[ALGORITHM_OVERVIEW §8.4](ALGORITHM_OVERVIEW.md#84-可选网络化-belieflearned-posterior)。
+
 ### 残局求解（Tail Solve）
 
 MCTS 前用 alpha-beta 尝试精确求解，proven win 时跳过 MCTS。多人游戏被压
@@ -249,7 +266,7 @@ vs best，胜率 ≥ 阈值更新 best）。N 人游戏 candidate 轮坐每个�
 | `episode_stats_extractor` | 自定义指标追踪 |
 | `belief_tracker` | 有非对称隐藏信息(Love Letter / Splendor / Coup),需要在 ISMCTS sim 入口对 viz=0 槽位采样;纯公开物理随机的 Azul 不需要——其物理随机由 sim_rng 在 `do_action_fast` 里直接消费 |
 | `public_event_extractor` / `applier` / `public_state_applier` | snapshot-path 游戏(隐藏信息 + Azul)在 message-driven 路径下维护 session 公开字段(每 ply truth 端 extract → observer 端 apply 覆写) |
-| `belief_feature_extractor` + `belief_model_path` | 启用网络化 belief(learned posterior)代替 hand-craft 加权 `randomize_unseen`;两者一起注册,框架自动 load `OnnxBeliefEvaluator`,在 root 一次推理 → tracker 缓存 `pi[opp][R]` → sim 内 Wallenius 采样。当前 Coup 启用,详见 [ALGORITHM_OVERVIEW §8.4](ALGORITHM_OVERVIEW.md) |
+| `belief_feature_extractor` + `belief_model_path` | 启用网络化 belief(learned posterior)代替 hand-craft 加权 `randomize_unseen`;两者一起注册,框架自动 load `OnnxBeliefEvaluator`,在 root 一次推理 → tracker 缓存 `pi[opp][R]` → sim 内 Wallenius 采样。当前 Coup 启用,详见 [Coup BELIEF_NETWORK.md](games/coup/BELIEF_NETWORK.md) + [ALGORITHM_OVERVIEW §8.4](ALGORITHM_OVERVIEW.md#84-可选网络化-belieflearned-posterior) |
 | `belief_label_extractor` | GT-side(只在 selfplay runner emit 路径调,AI session / wire 拿不到)产 belief 训练 label(`hand_counts` / `remaining` / `alive_per_opp`);只有训练 belief 网络的游戏需要 |
 
 完整字段说明见 [CONFIG_REFERENCE.md](docs/guide/CONFIG_REFERENCE.md)。
@@ -274,12 +291,40 @@ vs best，胜率 ≥ 阈值更新 best）。N 人游戏 candidate 轮坐每个�
    `schema_ref`（按 schema 列字段答 typed value）
 5. 实现特征编码器（单一 `encode_features(masked_state, perspective, tracker, out)`，
    入参 `const IGameState& masked_state`，viz=0 槽位读 placeholder 分流）
-6. 写 `register.cpp` 组装 GameBundle
+6. 写 `register.cpp` 组装 GameBundle。**snapshot-path 游戏(任何在
+   `games/manifest.json` 里挂 `"snapshot"` capability 的)**额外要在
+   register.cpp 里:(a) 写 `extract_events_only(state_before, action,
+   state_after, perspective) → vector<PublicEvent>`,只 diff 出 tracker
+   需要的事件,**不**做 viz 序列化;(b) 调
+   `b.install_event_protocol(extract_events_only, schema_provider)`,框
+   架据此自动派生 `events_only_extractor`(sim 路径)/
+   `public_event_extractor`(events + framework 的
+   `viz::serialize_public_snapshot`,wire / selfplay / trace 走这条)/
+   `public_state_applier`(framework 的 `viz::apply_public_snapshot`,
+   接收侧 session 走这条);tracker 不依赖 events(纯 viz 推断)就传
+   `viz::no_events_extractor`。整张 viz 切片由 framework 整批塞,游戏不
+   写 snapshot 序列化逻辑。隐藏信息游戏的 tracker 还要写
+   `pack_init_payload(gt_state, perspective) → AnyMap` 配合 `init`,
+   bootstrap 那一侧 perspective 私有的初始观测(viz=1 槽不够装的部分,
+   例如 LL 起始手牌)
 7. 写 `game.json` 配置
 8. **在 `games/manifest.json` 追加一条**：`{ "id": ..., "enabled": true, "framework_whitelist": <bool>, "capabilities": [...], "sources": [...] }` —— 这是 **CMake 编译 / setup.py 编译 / `engine.available_games()` / web 列表 / framework 测试矩阵** 这五层的唯一事实源；漏了这一步 = 编译过但 register 不上 = web 看不见 = 测试不覆盖。临时下线一个游戏只要把 `enabled: false`（源码留在 disk 上但所有层都跳过它）
 9. 写 Web 前端
 10. 跑 `pytest tests/<game>/` 全绿
 11. 跑训练、看日志、调参
+12. **(可选)上 learned belief**——只对 uniform `randomize_unseen` 退化严重
+    的游戏做(目前只有 Coup);PV 链路跑通且 hand-craft 加权
+    `randomize_unseen` 仍解决不了诈唬维度时再上。需要四件事:
+    (a) 在 `<game>_net_adapter.cpp` 写 `belief_feature_extractor`(AI 侧
+    输入,与 PV encoder 同样吃 masked clone)和 `belief_label_extractor`
+    (**只在 GT 侧 selfplay runner emit 路径调用**——AI session / wire / web
+    / API 物理上拿不到,这是 belief 网络的"无 truth 泄漏"红线);
+    (b) `register.cpp` 里 `b.belief_feature_extractor = ...; b.belief_label_extractor = ...; b.belief_model_path = "games/<g>/model/<g>_belief_<N>p.onnx";`
+    (c) `game.json` 加 `belief` 块(architecture / temperature /
+    training);
+    (d) **每个 N-player 变体单独 init 并训练一份 `<g>_belief_<N>p.onnx`**——
+    PV 网络是这样,belief 网络也是。详见 [Coup
+    BELIEF_NETWORK.md](games/coup/BELIEF_NETWORK.md)。
 
 ### `games/manifest.json` 字段说明
 
@@ -402,35 +447,6 @@ vs best，胜率 ≥ 阈值更新 best）。N 人游戏 candidate 轮坐每个�
 8. **仅 CPU 自博弈**——当前网络规模（~1M 参数，CPU 单次推理 ~200μs）
    GPU batch inference 的 IPC 固定开销没有摊销价值。网络规模提到 ~5M+
    参数（小型 ResNet / Transformer）后才值得加 GPU
-
-### 路径已知,未来可能补上(下一轮迭代候选)
-
-这一组**有明确技术路线**,只是当前没做。如果未来某条被实现,记得回来删掉
-对应条目。
-
-9. **决策依赖长历史序列**（如 Hanabi）—— 当前 encoder 是状态快照；超出
-   belief tracker 能编码的范围需要 RNN/Transformer 序列建模
-10. **ISMCTS strategy fusion**（算法层固有限制）—— 对手节点会"看到"当前
-    玩家 tracker 锁死的已知信息，把本应跨 info set 求期望的决策当成完全
-    信息求解。在 LL Priest+Guard / Coup challenge / Werewolf 查验后发言
-    这类"一方确定知识 + 另一方即时推理"高频场景下，AI 强度有天花板。根
-    治需要 nested ISMCTS / subgame resampling，会破坏 DAG 共享 + 搜索吞
-    吐降一个量级，未做。**部分缓解**：`opponent_selection="prior"`（Smooth-UCT
-    风格）在非根对手节点用 policy 先验 multinomial sampling 替代 PUCT
-    bandit，避免对手节点在每个 determinization 里都"贪婪最优"导致的全知
-    偏置；可在 `game.json mcts_profiles.<selfplay|arena|eval>.opponent_selection`
-    / `web.json mcts_profiles.<web_expert|web_casual|analysis>.opponent_selection`
-    配置，默认 `"puct"` 保持向后兼容。根节点（轮到自己）始终走 PUCT。
-11. **策略追逐 / 自博弈非传递循环**（如石头剪刀布的扩展型博弈）—— 当
-    前 selfplay 只跟"latest vs best"对打、训练目标是击败当前 best。如
-    果游戏存在"A 克 B、B 克 C、C 克 A"的非传递结构，AI 容易陷入局部循
-    环：训出克制当前 best 的 A，下一轮 best 变 A、再训出克 A 的 C，循
-    环往复，平均强度不上升。框架已经实现了**简单的 frozen-checkpoint 对
-    手池**（`opponent_pool_enabled` + `opponent_pool_self_ratio`，让一部
-    分 selfplay worker 把对手换成历史 `model_step_*.onnx`），可以缓解最
-    严重的策略坍缩；但**完整的 PSRO / fictitious self-play / league
-    training**（用 meta-solver 给历史 checkpoint 算混合策略权重）尚未实
-    现。当前 gating eval 也只做一对一胜率比较，没有元博弈求解
 
 **关于裸 PPO**：回合制桌游决策频率低、分支因子有限，正是 MCTS 强项。裸
 PPO 更适合实时游戏（星际、Dota），不在本框架目标范围。

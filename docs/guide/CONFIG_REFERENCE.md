@@ -233,7 +233,10 @@ Frozen-pool fictitious self-play：每步把一部分 worker 的对手换成历�
 | `training.steps_per_pv_step` | int | `1` | 每个 PV 训练 step 跑几次 belief 训练 step |
 | `training.loss` | string | `"kl"` | belief 训练 loss 类型；当前支持 `"kl"`（KL divergence vs 真值 `hand_counts/remaining`） |
 
-`coup/config/game.json` 是当前唯一的参考实现。
+`coup/config/game.json` 是当前唯一的参考实现。Coup 上的具体 feature
+layout / tracker 状态机 / Wallenius 加权 / KL loss 见
+[games/coup/BELIEF_NETWORK.md](../../games/coup/BELIEF_NETWORK.md)
+——其它游戏要接 belief 网络时拿这个做范本。
 
 ### 完整示例（Quoridor）
 
