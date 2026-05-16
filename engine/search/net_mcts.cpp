@@ -427,6 +427,7 @@ ActionId NetMcts::search_root(
   const int simulations = std::max(1, cfg_.simulations);
 
   std::int64_t dag_reuse_hits = 0;
+  std::int64_t depth_out_hits = 0;
 
   for (int sim = 0; sim < simulations; ++sim) {
     std::unique_ptr<IGameState> sim_state = root.clone_state();
@@ -658,6 +659,17 @@ ActionId NetMcts::search_root(
       depth += 1;
     }
 
+    // Depth-out fallback: sim ran out of max_depth without hitting a
+    // terminal or unexpanded leaf — the descent looped through expanded
+    // nodes for the full budget. Treat as a draw-equivalent leaf (zero
+    // value to every player) and back up. The state is policy-collapse
+    // pathology (e.g. Coup mutual block-deadlock) that the player will
+    // need to learn to break, not an evaluator failure — silently
+    // throwing here masks the diagnostic. See KNOWN_ISSUES.
+    if (leaf_values.empty()) {
+      leaf_values.assign(static_cast<size_t>(np), 0.0f);
+      ++depth_out_hits;
+    }
     validate_leaf_values(leaf_values, np, "leaf evaluation");
 
     // Backup. Standard path-walk; in a DAG each node's visit_count tracks
@@ -720,6 +732,7 @@ ActionId NetMcts::search_root(
     stats->expanded_nodes = static_cast<std::int64_t>(nodes.size());
     stats->nodes_per_sec = static_cast<double>(nodes.size()) / sec;
     stats->dag_reuse_hits = dag_reuse_hits;
+    stats->depth_out_hits = depth_out_hits;
     stats->root_actions.clear();
     stats->root_action_visits.clear();
     stats->root_actions.reserve(root_node.edges.size());

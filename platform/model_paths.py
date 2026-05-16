@@ -54,3 +54,35 @@ def find_model_path(game_id: str) -> str:
         return str(alt)
 
     return ""
+
+
+def variant_belief_model_name(game_id: str) -> str:
+    """Belief-net filename stem mirroring variant_model_name.
+
+    Examples: 'coup' → 'coup_belief_2p', 'coup_3p' → 'coup_belief_3p'.
+    """
+    base = base_game_id(game_id)
+    variant_suffix = variant_model_name(game_id)[len(base) + 1:]  # '2p' / '3p' / ...
+    return f"{base}_belief_{variant_suffix}"
+
+
+def expected_belief_model_path(game_id: str) -> Path:
+    """Return the canonical belief-net model path for a game.
+
+    Mirrors expected_model_path: games/<base>/model/<base>_belief_<N>p.onnx.
+    """
+    base = base_game_id(game_id)
+    return _PROJECT_ROOT / "games" / base / "model" / f"{variant_belief_model_name(game_id)}.onnx"
+
+
+def find_belief_model_path(game_id: str) -> str:
+    """Return path to the game's deployed belief-net, or "" if none exists.
+
+    Games that don't use a learned belief network (most games) simply don't
+    have a file at this path; callers pass "" and the GameSession leaves
+    bundle.belief_model_path empty.
+    """
+    canonical = expected_belief_model_path(game_id)
+    if canonical.exists():
+        return str(canonical)
+    return ""

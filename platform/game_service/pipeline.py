@@ -146,8 +146,13 @@ def _get_ai_move(gs: engine.GameSession, sess: dict) -> dict:
     simulations = sess["simulations"]
     temperature = sess["temperature"]
     opp_sel = sess["opponent_selection"]
-    return gs.get_ai_action(simulations, temperature,
-                            opponent_selection=opp_sel)
+    kwargs = dict(simulations=simulations, temperature=temperature,
+                  opponent_selection=opp_sel)
+    if sess.get("temperature_schedule_enabled"):
+        kwargs["temperature_initial"] = sess["temperature_initial"]
+        kwargs["temperature_final"] = sess["temperature_final"]
+        kwargs["temperature_decay_plies"] = sess["temperature_decay_plies"]
+    return gs.get_ai_action(**kwargs)
 
 
 def _analyze_user_move(sess: dict) -> dict | None:

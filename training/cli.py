@@ -67,6 +67,11 @@ def main() -> int:
                              "architecture changes). The checkpoint must be a dict with "
                              "'model_state_dict' whose keys / shapes match the configured "
                              "PVNet (use scripts/convert_*.py to migrate legacy formats).")
+    parser.add_argument("--belief-init-from", type=str, default=None,
+                        help="Path to an exported belief ONNX (e.g. games/coup/model/coup_belief_2p.onnx) "
+                             "to warmstart the belief network from. Initializer names must match "
+                             "the freshly built BeliefNet's state_dict keys; shape mismatches raise. "
+                             "Optimizer state is not preserved. Has no effect when belief is disabled.")
     parser.add_argument("--config-override", type=str, default=None,
                         help="Path to a JSON file whose contents are deep-merged onto the "
                              "game's game.json (overrides any field, including nested ones "
@@ -128,6 +133,7 @@ def main() -> int:
         seed=seed,
         save_every=save_every,
         init_from=args.init_from,
+        belief_init_from=args.belief_init_from,
     )
     return 0
 

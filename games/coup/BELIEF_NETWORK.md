@@ -24,33 +24,35 @@ weight[R] = remaining[R]    // uniform-by-pool
    均衡上"该 claim Duke 的频率"是一条软概率；网络只能拟合 argmax。
 2. **如果 belief 也 uniform**，对手早期 claim Tax 的信号在 sim 里完全
    消失——sim 入口随手把对手抽成 Captain / Ambassador 都和"实际 claim
-   过 Duke"一样。结果：网络很快学会**永远 Challenge**——因为它在 sim
+   过 Duke"一样。结果：网络收敛到**永远 Challenge**——因为它在 sim
    世界里看到的对手手牌跟 claim 无关，挑战的胜率被 inflate。
-3. 实测：早期 selfplay 在 vs heuristic_free 上能跑到 95% 但策略空洞，
-   gating vs best 来回震荡；定性看 AI 不会装、也不会基于 claim 做有
-   信息的决策。
 
-**Coup 实际想要的 weight**：
+**Coup 实际想要的后验**：
 
 ```
-weight[R] = remaining[R] × P(opp 持有 R | 公开历史)
+P(opp 持有手牌 H | 公开历史)        // H 是 multiset，alive=2 时 |H|=2，alive=1 时 |H|=1
 ```
-
-第二项的 `P(...)` 是后验，理想形态是个跟 claim/challenge 历史相关的
-分布。手写一份 hand-craft 加权能避开 uniform 退化，但权重函数的形状
-是作者手挑的（每个 signal 加多少 alpha、pending claim 加多少 boost），
-跟 Coup 真实的策略均衡几乎肯定不对齐。
 
 **网络化 belief 的解法**：训练一个独立的小网络，输入 perspective 视角
-下的 claim/challenge 公开历史，输出 `(N-1) × 5` 的 opp×role 后验
-`pi[opp][R]`。把它喂进 Wallenius 加权采样：
+下的 claim/challenge 公开历史，**直接输出对手完整手牌 multiset 的后
+验**——不是 5 维 marginal、不是边缘分布的拼凑，而是 `15 + 5 = 20` 维
+categorical：
 
-```
-weight[R] = remaining[R] × pi[opp_index(slot.owner)][R]
-```
+- 15 维 = `C(5,2) + 5 = 10 + 5` 个**二张 multiset**（包含同名对子如
+  `(Duke, Duke)`），用于 `alive=2` 的对手；
+- 5 维 = 5 个**单张** R，用于 `alive=1` 的对手（一张已被 reveal）。
 
-对 deck 槽位（`pi_` 没有 row）保留 `prior = 1.0`——deck 是公开剩余池
-本身。
+每个对手按当前 `alive` 切到 15 维或 5 维分支，分支内是普通
+categorical。**label 空间 = 采样空间 = multiset，一次 categorical 就
+到位，没有任何无放回组合的概念。**
+
+对 deck 槽位（无 belief 网络 row）保留 uniform—— deck 是公开剩余池
+本身，slot 间无顺序差别，剩余 `remaining[R]` 直接填入即可。
+
+**没有 belief 网络时的 fallback**：直接把所有 viz=0 槽位（不分 opp /
+deck）当作从 `remaining[R]` 计数加权的 multinomial without
+replacement——逐 slot 抽一张、抽到的角色 `remaining` 减一。语义上等价
+"把剩余池洗一次然后顺序发给所有 viz=0 卡牌"。
 
 ---
 
@@ -70,26 +72,32 @@ weight[R] = remaining[R] × pi[opp_index(slot.owner)][R]
                                           └────────────┬───────────────────────┘
                                                        ▼
                                          ┌── OnnxBeliefEvaluator.evaluate ──┐
-                                         │      (5×(N-1) logits)            │
+                                         │      (N-1) × 20 logits           │
+                                         │   per opp = [15 multiset | 5 单张]│
                                          └────────────┬─────────────────────┘
                                                       ▼
-                                  softmax(logits / belief.temperature) per opp
+                                 按 alive 切分支 → softmax(logits / T) 单分支内
                                                       ▼
-                                            tracker.pi_ 缓存
+                                       tracker.pi_hand_[opp] 缓存（20 维）
                                                       ▼
        ┌─ MCTS sim 入口 ───────────────────────────────┐
-       │ sim_tracker = session.tracker.clone()         │ ← pi_ 一起 clone
+       │ sim_tracker = session.tracker.clone()         │ ← pi_hand_ 一起 clone
        │ sim_tracker.randomize_unseen(sim_state, ...)  │
-       │   ↳ weight[R] = remaining[R] × pi[oi][R]     │
-       │      Wallenius 抽样填 viz=0 槽位             │
+       │   ↳ 对每 opp：取 alive 对应分支               │
+       │      → feasibility mask (need[h][R] ≤         │
+       │         remaining_after_alloc[R]) → renorm    │
+       │      → 一次 categorical 抽完整手牌            │
+       │   ↳ deck slot：从公开剩余池均匀抽             │
        └───────────────────────────────────────────────┘
 
   selfplay 训练时另一条 GT-side label 流：
   ────────────────────────────────────────
   GT runner 每 ply 调 belief_label_extractor.extract(truth, observer)
-    → (hand_counts[opp][R], remaining[R], alive[opp])
+    → (hand_multiset_id[opp], remaining[R], alive[opp])
   连同 observer 视角 features 一起 emit 成 BeliefSample
-  下一个 PV-step 训练循环里跑 KL(softmax(logits/T) ‖ hand_counts/remaining)
+  下一个 PV-step 训练循环里：
+    target = one-hot at hand_multiset_id（按 alive 选 15 维或 5 维分支）
+    loss   = CE(softmax(logits[opp][branch] / T), target)，dead opp 不算
 ```
 
 四条物理屏障保证决策侧不读真值（详见
@@ -102,8 +110,10 @@ weight[R] = remaining[R] × pi[opp_index(slot.owner)][R]
    tracker / wire / 训练循环之外` 都拿不到；
 3. `randomize_unseen` 在 sim_tracker（clone）上调，session tracker 永远
    不被 sim 改写；
-4. `pi_observer_` 校验：sim 里要用网络化路径必须 `pi_observer_ ==
-   observer`，否则降级回 hand-craft signals 路径（见 §6）。
+4. `pi_observer_` 校验：sim 里要用网络化路径必须 `pi_valid_ == true` 且
+   `pi_observer_ == observer`，否则走 §6 的 uniform-from-pool fallback。
+   多 multiset 分布 `pi_hand_` 与 `pi_observer_` 共生命周期，clone 一并
+   复制。
 
 ---
 
@@ -113,7 +123,6 @@ Tracker 的 raw 字段（`coup_net_adapter.h:`）：
 
 | 字段 | 形状 | 含义 |
 |---|---|---|
-| `signals_[p][r]` | `N × 5` | 通用 hand-craft 加权器（fallback 路径用） |
 | `pre_claim_counts_[p][r]` | `N × 5` | **跨过最近一次洗牌**累计的 claim 次数 |
 | `post_claim_counts_[p][r]` | `N × 5` | 自最近一次洗牌**之后**新的 claim 次数 |
 | `pre_challenge_initiated_[p][r]` | `N × 5` | 同上，发起挑战的次数 |
@@ -121,6 +130,8 @@ Tracker 的 raw 字段（`coup_net_adapter.h:`）：
 | `last_reshuffle_kind_[p]` | `N` | `{None, Exchange, RevealTruthful}` 之一 |
 | `last_revealed_role_[p]` | `N` | 上次洗牌对应被亮出的 role（Exchange 时 -1） |
 | `pending_claimer_` / `pending_claim_role_` / `pending_challenged_` | scalars | 正在解决的 claim cycle 状态 |
+
+Tracker 不维护任何"分数"或加权和——只累加纯公共事件计数。
 
 ### 3.1 claim/challenge 事件如何累加
 
@@ -130,21 +141,18 @@ Tracker 的 raw 字段（`coup_net_adapter.h:`）：
 - **Action-level（claim opening）**：`actor` 出 Tax / Steal / Assassinate
   / Exchange / Block 之一 → `post_claim_counts_[actor][claimed_role] += 1`，
   并把 `(pending_claimer_, pending_claim_role_)` 设到这个 actor。
-- **Action-level（challenge declared）**：`actor` 出 Challenge → `signals_
-  [actor][pending_claim_role_] += 1`（"我敢挑战 R 说明我倾向认为我手里
-  有 R"），同时 `post_challenge_initiated_[actor][pending_claim_role_]
-  += 1`。
-- **Event `claim_unchallenged` / `block_unchallenged`**：通过 → `signals_
-  [c][r] += 1`。**不动 pre/post**——没洗牌。
+- **Action-level（challenge declared）**：`actor` 出 Challenge →
+  `post_challenge_initiated_[actor][pending_claim_role_] += 1`。
+- **Event `claim_unchallenged` / `block_unchallenged`**：通过 → 清
+  pending 状态。**不动 pre/post**——没洗牌。
 - **Event `claim_resolved_truthful` / `block_resolved_truthful`**：
   挑战失败、claimer 把那张牌洗回牌堆（Coup 规则）→
-  `signals_[c][r] = 0` + `promote_post_to_pre(c)` +
+  `promote_post_to_pre(c)` +
   `last_reshuffle_kind_[c] = RevealTruthful` + `last_revealed_role_[c] = r`。
 - **Event `card_revealed`**：lose-influence / 挑战成功导致那张影响牌
-  公开亮出 → `signals_[p][r] = 0`。**不 promote**——那张牌物理离场而
-  非回牌堆，pre/post 不动。
-- **Event `exchange_complete`**：Ambassador 换完牌 → `signals_[p].fill
-  (0)` + `promote_post_to_pre(p)` + `last_reshuffle_kind_[p] = Exchange`。
+  公开亮出。**不 promote**——那张牌物理离场而非回牌堆，pre/post 不动。
+- **Event `exchange_complete`**：Ambassador 换完牌 →
+  `promote_post_to_pre(p)` + `last_reshuffle_kind_[p] = Exchange`。
 
 ### 3.2 promote_post_to_pre：累加，不替换
 
@@ -180,9 +188,10 @@ pending_challenged_` 三个 scalar 跟踪这个 cycle：
   对上 pending → 清 pending；
 - claim_unchallenged / block_unchallenged 对上 pending → 清 pending。
 
-Fallback 采样路径会在 `pending_claimer_ == slot.owner && pending_claim_
-role_ == r && !pending_challenged_` 时给 R 加 +2 boost——belief 网络
-打开后这条 boost 不再生效（走 §6 的 `pi_` 优先级）。
+pending 三元组直接进 §4 的特征向量——通过 raw 计数的 pre/post 切分以及
+`last_reshuffle_kind` / `last_revealed_role` one-hot，belief 网络可以
+学到"刚 claim 还没 resolve 的角色更可信"这类时序结构。fallback 路径
+（§6.2）不读 pending。
 
 ---
 
@@ -226,53 +235,109 @@ observer 自己未 reveal 的 R 张数。其它玩家未 reveal 的槽位是 viz
 | 项 | 值 |
 |---|---|
 | 输入维度 | 6 + 28 × (N-1) = `34/62/90`（2p/3p/4p） |
-| 输出 | `(N-1) × 5` logits per opp × role |
+| 输出 | `(N-1) × 20` logits per opp，分两段：`[0..14]` 二张 multiset、`[15..19]` 单张 |
 | 网络 | MLP `[256, 256, 128]`（默认）+ ReLU + BatchNorm |
-| 温度 | `belief.temperature = 2.0` |
-| 后处理 | `pi_[opp][R] = softmax(logits[opp] / 2.0)`，per-row |
+| 温度 | `belief.temperature = 0.5`（C++ `kBeliefTemperature`） |
+| 后处理 | 按 `alive` 切分支，分支内 softmax(logits / T) → `pi_hand_[opp]` |
 
-输出 logits 经 softmax + 缓存到 tracker `pi_` 字段。`temperature=2.0`
-是诈唬游戏避开"网络欠训时过度自信"的妥协——欠训阶段 logits 噪声大，
-温度高一些让 prior 更软，sim 不会过早被错的高自信先验带偏。temperature
-→ ∞ 等价 hand-craft uniform，正好回到 §1 那条退化情形（保护降级行为
-在数学上一致）。
+### 5.1 二张 multiset 枚举（15 维）
+
+按字典序固定下标 `m = 0..14`，对应 `(R_a, R_b)`，`R_a ≤ R_b`，
+角色编号 `D=0, As=1, Cap=2, Amb=3, Con=4`：
+
+```
+m=0  (D, D)        m=5  (As, As)      m=10 (Cap, Amb)
+m=1  (D, As)       m=6  (As, Cap)     m=11 (Cap, Con)
+m=2  (D, Cap)      m=7  (As, Amb)     m=12 (Amb, Amb)
+m=3  (D, Amb)      m=8  (As, Con)     m=13 (Amb, Con)
+m=4  (D, Con)      m=9  (Cap, Cap)    m=14 (Con, Con)
+```
+
+`C(5+2-1, 2) = 15`。编号由 `coup_net_adapter.cpp` 中的
+`enumerate_two_card_multisets()` 表静态生成。`need[m][R]` =
+multiset m 中 R 的张数（0/1/2），是 deck feasibility mask 的查表。
+
+### 5.2 单张分支（5 维）
+
+下标 `r = 0..4` 对应 `{Duke, Assassin, Captain, Ambassador, Contessa}`，
+`alive=1` 的对手用此分支。
+
+### 5.3 温度
+
+`temperature=0.5` 比 1.0 更尖锐，让 sim 真正"用上"网络给的高置信先验，
+避免"对手分布几乎平均"导致 MCTS 在每个 determinization 里看到的对手
+手牌都差不多、先验白训。`temperature → ∞` 退化为 multiset 上的均匀
+分布（约等于 §1 的 uniform 退化情形）；`temperature → 0` 退化为
+argmax 决定论，破坏 ISMCTS 需要的"determinization 方差"。
 
 ---
 
-## 6. Wallenius 加权采样
+## 6. Multiset categorical 采样
 
-`randomize_unseen`（`coup_net_adapter.cpp:411-646`）在 sim 入口被 clone
-后的 sim_tracker 调用一次，把 viz=0 槽位填上具体 role：
+`randomize_unseen`（`coup_net_adapter.cpp:411-...`）在 sim 入口被
+clone 后的 sim_tracker 调用一次，把 viz=0 槽位填上具体 role。两条路径：
+
+### 6.1 Belief-net 路径（`pi_valid_ && pi_observer_ == observer`）
+
+**Per-opp 一发抽完整手牌 + deck 兜底**：
 
 ```
-对每个 viz=0 slot：
-  for R in {Duke, Assassin, Captain, Ambassador, Contessa}:
-    avail = remaining[R] - 已分配[R]
-    if avail == 0:
-      weight[R] = 0
-      continue
-    if pi_valid_ and pi_observer_ == observer and slot is opp slot:
-      prior = pi_[opp_index(slot.owner)][R]
-    elif slot is opp slot:                   # 网络降级
-      prior = 1 + alpha * (signals_[owner][R] + pending_boost)
-    else:                                    # deck slot
-      prior = 1.0
-    weight[R] = avail × prior
-
-  multinomial(weights)
+1. 收集所有 viz=0 slot；按 owner 分组：opp slots[oi] / deck slots
+2. 全局 pool 起点：global_remaining[R] = remaining[R]   // observer 视角公开剩余池
+3. 用 sim_rng `std::shuffle` opp 顺序，遍历每个还有 viz=0 slot 的 opp：
+     a = alive[opp(oi)]                          // 1 或 2，由 viz=0 slot 数量推出
+     if a == 2: prob = pi_hand_[oi][0..14];  need_table = need_2card[m]
+     else:      prob = pi_hand_[oi][15..19]; need_table = need_1card[r] (one-hot)
+     # feasibility mask：need[h][R] ≤ global_remaining[R] 才合法
+     for h in branch:
+         prob[h] *= 1 if all_R need[h][R] <= global_remaining[R] else 0
+     renormalize prob; if sum==0 → throw（pool 与 alive 矛盾，coup 规则不应出现）
+     h* = categorical_sample(prob, sim_rng)
+     # 把抽到的 multiset 落到 opp 的 viz=0 slot 上（slot 内顺序无所谓，二张多元集对称）
+     for R in need_table[h*]:
+         take one viz=0 slot of this opp, write R; global_remaining[R] -= 1
+4. deck slot：直接按剩下的 global_remaining 公平抽（uniform without replacement）。
 ```
 
 注意点：
 
-1. **池一致性硬约束**——若 `sum(remaining) != slot count` 直接 throw
-   `std::logic_error`，按 CLAUDE.md "No Fallbacks"。
+1. **池一致性硬约束**——开始时若 `sum(remaining) != viz=0 slot 总数` 直接
+   throw `std::logic_error`，按 CLAUDE.md "No Fallbacks"。
 2. **observer 自己的槽位**结构性 viz=1，不应进 `slots`；如果走到这里
    说明 viz mis-tagged，throw。
-3. **Wallenius 而非 Fisher**——每抽一张减少 `remaining[R]` 而不是按
-   独立伯努利重抽。这才匹配"deck 是固定 15 张" 的物理约束。
-4. **Belief 降级路径保留**——belief.onnx 没加载（早期训练）/ 没
-   `prepare_for_root` / `pi_observer_ != observer` 时回到 §3.1 的
-   hand-craft signals，Coup selfplay 在 belief 未训练好时仍可用。
+3. **label 空间 = 采样空间 = multiset**——单次 categorical 即得到完整
+   手牌，没有 marginal 拼装也没有无放回组合。
+4. **遍历顺序由 sim_rng 随机化**——多个 opp 的采样通过 `global_remaining`
+   feasibility mask 耦合（前一个 opp 抽掉某 role 后，后面的 opp 在该 role
+   上的 candidate 可能被 mask 掉），固定 oi 升序会让 sim 之间产生系统性
+   偏置。`std::shuffle(opp_order, sim_rng)` 让顺序成为 sim 噪声的一部分，
+   每个 sim 的耦合方向独立，整体期望就是真后验。
+5. **softmax 在根上做一次**：`pi_hand_[opp][...]` 在 `prepare_for_root`
+   阶段就按 `kBeliefTemperature` 做了分支内归一化（branch 2 [0..14] 与
+   branch 1 [15..19] 各自独立 softmax），sim 里直接读概率、做掩码、
+   重归一化即可，无需再调网络。
+
+### 6.2 No-belief fallback：uniform-from-pool
+
+belief.onnx 没加载（训练初期）/ 没 `prepare_for_root` / `pi_observer_
+!= observer` 时走这条降级路径。把所有 viz=0 槽位（不分 opp / deck）
+当成"剩余池洗一次后顺序发牌"：
+
+```
+remaining[R] = observer 视角剩余池
+for slot in 所有 viz=0 槽位（按 owner 升序、slot index 升序）:
+    total = sum(remaining)
+    if total <= 0: throw std::logic_error（池耗尽，必为 bug）
+    u = uniform_int(0, total - 1, sim_rng)
+    R = the role whose cumulative count covers u
+    write R to slot
+    remaining[R] -= 1
+```
+
+这等价于 multinomial without replacement——每张抽到的概率正比于剩余张
+数。语义上和 §1 那条"如果 belief 也 uniform" 一致——MCTS 会退化到
+"永远 Challenge"，所以 belief.onnx 训出后必须接管。fallback 的作用是
+让 belief.onnx 缺位时 selfplay / 测试不 crash。
 
 ---
 
@@ -284,33 +349,42 @@ runner 的 emit 路径调用，**只在 GT 端**：
 ```cpp
 struct BeliefSample {
   std::vector<float> features;          // 6 + 28×(N-1)
-  std::vector<std::vector<int>> hand_counts;  // (N-1) × 5
+  // 二选一：alive==2 时填 hand_multiset_2card_id（0..14），否则 hand_single_id（0..4）
+  std::vector<int> hand_multiset_id;     // (N-1)，对应 alive 分支内的下标
   std::vector<int> remaining;            // 5
-  std::vector<int> alive_per_opp;        // (N-1)
+  std::vector<int> alive_per_opp;        // (N-1)，0/1/2
 };
 ```
 
 label 来自 truth：
-- `hand_counts[i][R]` = opp i 当前未 reveal 的 R 角色张数（0/1/2）
-- `remaining[R]` 同 §4.1 公式但走真值
-- `alive_per_opp[i]` = opp i 是否还有任意未 reveal 的影响牌
+- `hand_multiset_id[i]` = `enumerate_two_card_multisets` 索引（alive=2）或
+  单张 R 索引（alive=1）；alive=0 的 opp 标 `-1` 表示无 label。
+- `remaining[R]` 同 §4.1 公式但走真值。
+- `alive_per_opp[i]` ∈ {0, 1, 2} = opp i 当前未 reveal 的影响牌张数。
 
-**Loss = KL divergence**（`coup/config/game.json::belief.training.loss
-= "kl"`）：
+**Loss = cross-entropy on multiset one-hot**（`coup/config/game.json::belief
+.training.loss = "ce"`，per-opp branch 内 CE）：
 
+```python
+for opp in opps:
+    a = alive[opp]
+    if a == 0:                              # 全 reveal 完了，无 belief 可学
+        continue
+    branch = logits[opp][0..14] if a == 2 else logits[opp][15..19]
+    target = one_hot(hand_multiset_id[opp], depth=15 if a == 2 else 5)
+    loss += cross_entropy(softmax(branch / T), target)
+loss /= num_opps_with_alive_gt_0
 ```
-target[opp][R] = hand_counts[opp][R] / max(1, alive[opp])     # row-prob
-loss = mean over (opp, R) where alive[opp]: KL(softmax(logits[opp]/T) ‖ target[opp])
-```
 
-dead opps（`alive=0`）不贡献 loss——他们的手牌已经全部公开 reveal
-出来了，没什么"belief"可学。
+target 天然在概率单纯形上（peak=1.0），无需除以 alive，没有
+"marginal/multiset 不一致"的拼装。dead opps 不贡献 loss。
 
 训练循环（`training/pipeline.py`）：每 PV step 跑 `belief.training.
 steps_per_pv_step` 次 belief mini-batch（默认 1）；独立 cosine LR
 schedule（默认 `lr_max=3e-4 → lr_min=3e-5`）；独立 replay buffer
-`b_buf=200000`。日志里 `b_loss` 即此项 KL，目前 step 200 在 ~0.85
-（完全 uniform target 下 KL ≈ 1.6，说明已经学到大量公开信息约束）。
+`b_buf=200000`。日志里 `b_loss` 是此项 CE。完全 uniform 起点下：
+- alive=2 分支理论上限 `log(15) ≈ 2.71`
+- alive=1 分支理论上限 `log(5)  ≈ 1.61`
 
 ---
 
@@ -323,12 +397,12 @@ schedule（默认 `lr_max=3e-4 → lr_min=3e-5`）；独立 replay buffer
   "architecture": [256, 256, 128],
   "activation": "relu",
   "batch_norm": true,
-  "temperature": 2.0,
+  "temperature": 0.5,
   "training": {
     "lr_schedule": {"type": "cosine", "lr_max": 3e-4, "lr_min": 3e-5},
     "batch_size": 1024,
     "steps_per_pv_step": 1,
-    "loss": "kl"
+    "loss": "ce"
   }
 }
 ```
@@ -344,7 +418,7 @@ schedule（默认 `lr_max=3e-4 → lr_min=3e-5`）；独立 replay buffer
 | `coup_net_adapter.h:85-170` | tracker 字段 + `promote_post_to_pre` |
 | `coup_net_adapter.h:171-220` | `CoupBeliefFeatureExtractor` 接口 |
 | `coup_net_adapter.cpp:264-393` | `observe_public_event` 状态机 |
-| `coup_net_adapter.cpp:411-646` | `randomize_unseen` Wallenius 采样 |
+| `coup_net_adapter.cpp:411-646` | `randomize_unseen` multiset categorical 采样 |
 | `coup_net_adapter.cpp:649-700` | `prepare_for_root`（softmax + cache） |
 | `coup_net_adapter.cpp:741-840` | `extract`（28×(N-1)+6 维 features） |
 | `coup_net_adapter.cpp:850-908` | `CoupBeliefLabelExtractor::extract` |

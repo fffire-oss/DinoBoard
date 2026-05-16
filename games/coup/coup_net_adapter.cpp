@@ -25,12 +25,6 @@ int claim_role_for_action(ActionId action) {
   return -1;
 }
 
-// Prior multiplier per unit of signal count. prior(R) = 1 + alpha * count[R].
-// With alpha=0.5 and count=3, prior=2.5 — a 2.5× bias over uniform, not
-// extreme. Tuned for soft boost that keeps sampling feasible but still shifts
-// MCTS toward plausible worlds.
-constexpr double kSignalAlpha = 0.5;
-
 template <int NPlayers>
 int influence_count(const CoupData<NPlayers>& d, int p) {
   int n = 0;
@@ -50,7 +44,47 @@ int action_type_index(ActionId action) {
   return -1;
 }
 
+// Two-card multiset table (Plan §5.1). 15 entries; m=0..14 corresponds
+// to (R_a, R_b) with R_a ≤ R_b in role-id order:
+//   m=0  (D,D)         m=5  (As,As)        m=10 (Cap,Amb)
+//   m=1  (D,As)        m=6  (As,Cap)       m=11 (Cap,Con)
+//   m=2  (D,Cap)       m=7  (As,Amb)       m=12 (Amb,Amb)
+//   m=3  (D,Amb)       m=8  (As,Con)       m=13 (Amb,Con)
+//   m=4  (D,Con)       m=9  (Cap,Cap)      m=14 (Con,Con)
+struct TwoCardTable {
+  std::array<std::array<int, kCharacterCount>, 15> need;
+  std::array<std::array<int, kCharacterCount>, kCharacterCount> id;
+  TwoCardTable() {
+    for (auto& row : need) row.fill(0);
+    int m = 0;
+    for (int a = 0; a < kCharacterCount; ++a) {
+      for (int b = a; b < kCharacterCount; ++b) {
+        ++need[m][a];
+        ++need[m][b];
+        id[a][b] = m;
+        id[b][a] = m;
+        ++m;
+      }
+    }
+  }
+};
+const TwoCardTable& two_card_table() {
+  static const TwoCardTable t{};
+  return t;
+}
+
 }  // namespace
+
+template <int NPlayers>
+const std::array<std::array<int, kCharacterCount>, 15>&
+CoupBeliefTracker<NPlayers>::need_2card() {
+  return two_card_table().need;
+}
+
+template <int NPlayers>
+int CoupBeliefTracker<NPlayers>::multiset_id_2card(int a, int b) {
+  return two_card_table().id[a][b];
+}
 
 // Masked-state read pattern (BUG-018 / encoder contract): the encoder
 // reads slots through the perspective-masked clone. viz=1 slots carry
@@ -243,7 +277,6 @@ void CoupBeliefTracker<NPlayers>::init(
   // bootstrap to seed; just remember perspective for `randomize_unseen`
   // and reset signal memory.
   perspective_player_ = perspective;
-  for (auto& row : signals_) row.fill(0);
   for (auto& row : pre_claim_counts_) row.fill(0);
   for (auto& row : post_claim_counts_) row.fill(0);
   for (auto& row : pre_challenge_initiated_) row.fill(0);
@@ -260,18 +293,15 @@ void CoupBeliefTracker<NPlayers>::observe_public_event(
     int actor,
     ActionId action,
     const std::vector<PublicEvent>& events) {
-  // The tracker is fed by two inputs:
-  //   1. Action-level: claim openings (set pending_claimer/role) and
-  //      challenge declarations (signal accrual on the challenger).
-  //   2. Event-level: stage-boundary derived events emitted by
-  //      `coup_events::extract_events_only`. Multi-player Allow flows
-  //      collapse into a single `claim_unchallenged` / `block_unchallenged`
-  //      event so signals are not double-counted across N-1 Allows.
-  //
-  // Stages where state.influence is rewritten in-place (challenge
-  // win → reshuffle, exchange_complete → hand reshuffle) zero out the
-  // affected signals because prior claim history no longer points at
-  // a fixed set of cards.
+  // Tracker fed by two inputs:
+  //   1. Action-level: claim openings (post_claim_counts_) and challenge
+  //      declarations (post_challenge_initiated_).
+  //   2. Event-level: stage-boundary events emitted by
+  //      `coup_events::extract_events_only`. Reshuffle events
+  //      (claim_resolved_truthful / block_resolved_truthful /
+  //      exchange_complete) promote post→pre so the belief feature
+  //      extractor can distinguish "evidence carried over a reshuffle"
+  //      from "evidence accrued since".
 
   // ----- Action-level (claim opening + challenge declaration) -----
   const int claimed = claim_role_for_action(action);
@@ -279,17 +309,11 @@ void CoupBeliefTracker<NPlayers>::observe_public_event(
     pending_claimer_ = actor;
     pending_claim_role_ = claimed;
     pending_challenged_ = false;
-    // v0.2 raw counts: claim event lands on `post_claim_counts_` for the
-    // claimer (challenge-initiated is bumped on challenge events further
-    // down). The post→pre promotion happens on reshuffle events.
     if (actor >= 0 && actor < NPlayers) {
       post_claim_counts_[actor][claimed] += 1;
     }
   } else if (action == kChallengeAction) {
-    // Challenger implicitly signals "I may hold `pending_claim_role_`" —
-    // they dare to challenge because they can rule out the claim.
     if (pending_claim_role_ >= 0 && actor >= 0 && actor < NPlayers) {
-      signals_[actor][pending_claim_role_] += 1;
       post_challenge_initiated_[actor][pending_claim_role_] += 1;
     }
     pending_challenged_ = true;
@@ -298,19 +322,7 @@ void CoupBeliefTracker<NPlayers>::observe_public_event(
   // ----- Event-level -----
   for (const auto& evt : events) {
     const auto& payload = evt.second;
-    if (evt.first == "card_revealed") {
-      auto it_p = payload.find("player");
-      auto it_r = payload.find("role");
-      if (it_p == payload.end() || it_r == payload.end()) continue;
-      int p = std::any_cast<int>(it_p->second);
-      int r = std::any_cast<int>(it_r->second);
-      if (p < 0 || p >= NPlayers) continue;
-      if (r < 0 || r >= kCharacterCount) continue;
-      // Revealed copy is public; any signal we'd accumulated about
-      // (p, r) is now grounded — drop it so we don't double-bias the
-      // pool sampler against the truth that's already on the table.
-      signals_[p][r] = 0;
-    } else if (evt.first == "claim_resolved_truthful") {
+    if (evt.first == "claim_resolved_truthful") {
       auto it_c = payload.find("claimer");
       auto it_r = payload.find("role");
       if (it_c == payload.end() || it_r == payload.end()) continue;
@@ -318,10 +330,6 @@ void CoupBeliefTracker<NPlayers>::observe_public_event(
       int r = std::any_cast<int>(it_r->second);
       if (c < 0 || c >= NPlayers) continue;
       if (r < 0 || r >= kCharacterCount) continue;
-      // Claimer truly held r and just reshuffled it back into the deck —
-      // they no longer demonstrably hold r. Reset that pair; close the
-      // claim cycle.
-      signals_[c][r] = 0;
       promote_post_to_pre(c);
       last_reshuffle_kind_[c] = ReshuffleKind::kRevealTruthful;
       last_revealed_role_[c] = static_cast<std::int8_t>(r);
@@ -338,8 +346,6 @@ void CoupBeliefTracker<NPlayers>::observe_public_event(
       int r = std::any_cast<int>(it_r->second);
       if (b < 0 || b >= NPlayers) continue;
       if (r < 0 || r >= kCharacterCount) continue;
-      // Same as above for the block side.
-      signals_[b][r] = 0;
       promote_post_to_pre(b);
       last_reshuffle_kind_[b] = ReshuffleKind::kRevealTruthful;
       last_revealed_role_[b] = static_cast<std::int8_t>(r);
@@ -356,8 +362,6 @@ void CoupBeliefTracker<NPlayers>::observe_public_event(
       int r = std::any_cast<int>(it_r->second);
       if (c < 0 || c >= NPlayers) continue;
       if (r < 0 || r >= kCharacterCount) continue;
-      // Everyone Allowed — single reinforcement regardless of N.
-      signals_[c][r] += 1;
       if (pending_claimer_ == c && pending_claim_role_ == r) {
         pending_claimer_ = -1;
         pending_claim_role_ = -1;
@@ -371,7 +375,6 @@ void CoupBeliefTracker<NPlayers>::observe_public_event(
       int r = std::any_cast<int>(it_r->second);
       if (b < 0 || b >= NPlayers) continue;
       if (r < 0 || r >= kCharacterCount) continue;
-      signals_[b][r] += 1;
       if (pending_claimer_ == b && pending_claim_role_ == r) {
         pending_claimer_ = -1;
         pending_claim_role_ = -1;
@@ -382,8 +385,6 @@ void CoupBeliefTracker<NPlayers>::observe_public_event(
       if (it_p == payload.end()) continue;
       int p = std::any_cast<int>(it_p->second);
       if (p < 0 || p >= NPlayers) continue;
-      // Ambassador reshuffled p's hand — prior claim signals are stale.
-      signals_[p].fill(0);
       promote_post_to_pre(p);
       last_reshuffle_kind_[p] = ReshuffleKind::kExchange;
       last_revealed_role_[p] = -1;
@@ -485,160 +486,276 @@ void CoupBeliefTracker<NPlayers>::randomize_unseen(
   }
 
   // ------------------------------------------------------------------
-  // Step 2: enumerate viz=0 slots that need filling.
-  //   - influence[p][sl] where viz=0 to observer
-  //   - exchange_drawn[i] where viz=0 AND the slot is occupied
-  //     (-1 sentinel = empty, no need to sample)
-  //   - the deck residual (pool size known from deck_size scalar)
+  // Step 2: enumerate hidden slots, grouped by owner.
+  //   - For each opponent: the (≤ 2) viz=0 influence slots they hold +
+  //     any in-flight exchange-drawn slot owned by an active opponent.
+  //   - For the active player: their own in-flight exchange-drawn
+  //     slots when they're the observer's opponent (covered above) or
+  //     simply ignored when they're the observer themselves (observer-
+  //     owned exchange slots are viz=1 to observer, won't be hidden).
+  //   - Deck residual (deck_size copies, content unordered).
   // ------------------------------------------------------------------
-  struct Slot {
-    int owner;      // -1 = deck, else player index
-    int slot_idx;   // for influence: 0/1; for exchange: kXBase + i
-  };
   constexpr int kXBase = 100;
-  std::vector<Slot> slots;
-  slots.reserve(static_cast<size_t>(NPlayers * 2 + kExchangeDrawSlots + 15));
-
+  struct OwnerSlots {
+    int owner;
+    std::vector<int> slot_idx;  // 0/1 for influence, kXBase+i for exchange
+  };
+  std::array<OwnerSlots, NPlayers> per_owner{};
+  for (int p = 0; p < NPlayers; ++p) per_owner[p].owner = p;
   for (int p = 0; p < NPlayers; ++p) {
     for (int sl = 0; sl < 2; ++sl) {
       if (!influence_visible(p, sl)) {
-        slots.push_back({p, sl});
+        per_owner[p].slot_idx.push_back(sl);
       }
     }
   }
-  // Hidden in-flight drawn slots: derive count from public exchange_active
-  // + held_count rather than reading viz=0 d.exchange_drawn[i] (DEC-003).
-  // We don't know which `i` the hidden slot is at — pick visually first
-  // viz=0 slots up to the in-flight count. The deck-multiset write in
-  // step 4 doesn't depend on per-i identity, and the encoder only reads
-  // visible slots for active perspective via the masked clone
-  // (placeholder for non-active perspectives).
   if (exchange_active && drawn_in_flight > visible_drawn_count) {
     int hidden_to_assign = drawn_in_flight - visible_drawn_count;
-    for (int i = 0; i < kExchangeDrawSlots && hidden_to_assign > 0; ++i) {
-      if (!exchange_visible(i)) {
-        slots.push_back({d.active_player, kXBase + i});
-        --hidden_to_assign;
+    const int active = d.active_player;
+    if (active >= 0 && active < NPlayers) {
+      for (int i = 0; i < kExchangeDrawSlots && hidden_to_assign > 0; ++i) {
+        if (!exchange_visible(i)) {
+          per_owner[active].slot_idx.push_back(kXBase + i);
+          --hidden_to_assign;
+        }
       }
     }
   }
 
-  const int deck_size = static_cast<int>(d.deck_size);
-  // Deck is treated as a single multiset slot per copy. We don't need
-  // unique slot indices since the deck content is homogeneous (only the
-  // count per role matters; visual order is reconstructed client-side
-  // from the action stream).
-  for (int i = 0; i < deck_size; ++i) {
-    slots.push_back({-1, 0});
+  // Total hidden slots (excluding deck) — used for the pool sanity check.
+  int hidden_owner_slots = 0;
+  for (int p = 0; p < NPlayers; ++p) {
+    hidden_owner_slots += static_cast<int>(per_owner[p].slot_idx.size());
   }
+  const int deck_size = static_cast<int>(d.deck_size);
+  const int total_hidden_slots = hidden_owner_slots + deck_size;
 
-  // ------------------------------------------------------------------
-  // Step 3: weighted sampling. Per-slot weight[R] = remaining[R] *
-  // prior[R]. `remaining` is a hard pool constraint; prior reflects
-  // tracker signals + pending-claim boost for that owner.
-  // ------------------------------------------------------------------
-  // Sanity check: viable joint must have remaining-sum == slot count.
   const int total_remaining =
       std::accumulate(remaining.begin(), remaining.end(), 0);
-  if (total_remaining != static_cast<int>(slots.size())) {
-    // No silent fallback: an inconsistent pool means upstream snapshot
-    // application or rules are broken. Throw with context per CLAUDE.md.
+  if (total_remaining != total_hidden_slots) {
     throw std::logic_error(
         "CoupBeliefTracker::randomize_unseen: pool inconsistency "
         "(remaining=" + std::to_string(total_remaining) +
-        ", slots=" + std::to_string(slots.size()) +
+        ", hidden_slots=" + std::to_string(total_hidden_slots) +
         ", observer=" + std::to_string(observer) + ")");
   }
 
-  std::shuffle(slots.begin(), slots.end(), rng);
+  // Observer's own hidden slots cannot exist — observer's influence is
+  // viz=1 to themselves by construction.
+  if (!per_owner[observer].slot_idx.empty()) {
+    throw std::logic_error(
+        "CoupBeliefTracker::randomize_unseen: hidden slot owned by "
+        "observer (viz mis-tagged) — observer=" +
+        std::to_string(observer));
+  }
 
-  // Sampling policy (Plan §1.1):
-  //   weight[R] = remaining[R] × prior[R]
-  //   - Belief net active (pi_valid_ && pi_observer_ == observer): for
-  //     opponent slots use `prior = pi_[player_to_opp(observer,owner,N)][R]`;
-  //     for deck slots use `prior = 1.0` (uniform — we have no per-slot
-  //     posterior for the deck).
-  //   - Belief net not installed / not run for this observer: fall back
-  //     to the legacy `signals_` + pending-claim heuristic (kept so
-  //     selfplay still works without belief.onnx in early training).
-  // Plan §1.2.2: `slot.owner == observer` cannot happen — observer's own
-  // slots are always viz=1 to themselves. We assert defensively rather
-  // than fall back, per CLAUDE.md "No Fallbacks".
+  // ------------------------------------------------------------------
+  // Step 3: fill viz=0 slots from `remaining`.
+  //
+  // - Belief-net path (pi_valid_ && pi_observer_==observer): per-opp
+  //   multiset categorical, branch selected by alive count
+  //   (alive=2 → 15-way two-card, alive=1 → 5-way single), with
+  //   feasibility mask `need[m][R] ≤ remaining[R]`. Belief is per-opp,
+  //   not per-slot, so opps are processed independently.
+  //
+  // - Fallback (no belief net): just shuffle `remaining` over every
+  //   hidden slot uniformly without replacement. No per-opp aggregation,
+  //   no priors, no signals_ — every viz=0 slot draws from the same
+  //   residual pool with weight = remaining[R].
+  // ------------------------------------------------------------------
   const bool use_belief_net = pi_valid_ && pi_observer_ == observer;
   auto opp_index = [observer](int p) {
     return (p - observer - 1 + NPlayers) % NPlayers;
   };
 
-  std::array<int, kCharacterCount> deck_fill{};
-  for (const Slot& slot : slots) {
-    if (slot.owner == observer) {
-      throw std::logic_error(
-          "CoupBeliefTracker::randomize_unseen: hidden slot owned by "
-          "observer (viz mis-tagged) — observer=" +
-          std::to_string(observer));
-    }
-    std::array<double, kCharacterCount> weights{};
-    double total = 0.0;
-    for (int r = 0; r < kCharacterCount; ++r) {
-      const int avail = remaining[static_cast<size_t>(r)];
-      if (avail == 0) { weights[r] = 0.0; continue; }
-      double prior = 1.0;
-      if (use_belief_net) {
-        if (slot.owner >= 0 && slot.owner < NPlayers) {
-          // opp slot: pi from belief net (already a per-row prob).
-          const int oi = opp_index(slot.owner);
-          prior = static_cast<double>(pi_[oi][r]);
-        }  // deck slot: prior stays 1.0
-      } else if (slot.owner >= 0 && slot.owner < NPlayers) {
-        int effective_signal = signals_[slot.owner][r];
-        if (!pending_challenged_ &&
-            pending_claimer_ == slot.owner &&
-            pending_claim_role_ == r) {
-          effective_signal += 2;
-        }
-        prior += kSignalAlpha * static_cast<double>(effective_signal);
+  auto write_owner_slots = [&](int owner,
+                               const std::array<int, kCharacterCount>& fills) {
+    int next_role = 0;
+    int remaining_copies = fills[next_role];
+    for (int slot_idx : per_owner[owner].slot_idx) {
+      while (remaining_copies == 0 && next_role + 1 < kCharacterCount) {
+        ++next_role;
+        remaining_copies = fills[next_role];
       }
-      weights[r] = static_cast<double>(avail) * prior;
-      total += weights[r];
+      const CharId picked = static_cast<CharId>(next_role);
+      --remaining_copies;
+      if (slot_idx >= kXBase) {
+        d.exchange_drawn[slot_idx - kXBase] = picked;
+      } else {
+        d.influence[owner][slot_idx] = picked;
+      }
     }
+  };
 
-    int picked = -1;
-    if (total > 0.0) {
+  if (use_belief_net) {
+    std::vector<int> opp_order;
+    opp_order.reserve(NPlayers - 1);
+    for (int p = 0; p < NPlayers; ++p) {
+      if (p == observer) continue;
+      if (per_owner[p].slot_idx.empty()) continue;
+      opp_order.push_back(p);
+    }
+    std::shuffle(opp_order.begin(), opp_order.end(), rng);
+
+    const auto& need_2 = two_card_table().need;
+
+    auto sample_branch = [&](const std::vector<double>& branch_logits,
+                             const std::vector<bool>& feasible) -> int {
+      double m = -std::numeric_limits<double>::infinity();
+      for (size_t h = 0; h < branch_logits.size(); ++h) {
+        if (feasible[h] && branch_logits[h] > m) m = branch_logits[h];
+      }
+      if (!std::isfinite(m)) return -1;
+      std::vector<double> w(branch_logits.size(), 0.0);
+      double total = 0.0;
+      for (size_t h = 0; h < branch_logits.size(); ++h) {
+        if (!feasible[h]) continue;
+        w[h] = std::exp(branch_logits[h] - m);
+        total += w[h];
+      }
+      if (!(total > 0.0)) return -1;
       std::uniform_real_distribution<double> dist(0.0, total);
       const double u = dist(rng);
       double acc = 0.0;
-      for (int r = 0; r < kCharacterCount; ++r) {
-        acc += weights[r];
-        if (u < acc) { picked = r; break; }
+      for (size_t h = 0; h < branch_logits.size(); ++h) {
+        acc += w[h];
+        if (u < acc) return static_cast<int>(h);
       }
-      if (picked < 0) {
-        for (int r = kCharacterCount - 1; r >= 0; --r) {
-          if (weights[r] > 0.0) { picked = r; break; }
+      for (int h = static_cast<int>(branch_logits.size()) - 1; h >= 0; --h) {
+        if (w[h] > 0.0) return h;
+      }
+      return -1;
+    };
+
+    for (int owner : opp_order) {
+      const int n_unknown = static_cast<int>(per_owner[owner].slot_idx.size());
+      std::array<int, kCharacterCount> fills{};
+
+      if (n_unknown == 2) {
+        std::vector<double> logits(15, 0.0);
+        std::vector<bool> feasible(15, true);
+        const int oi = opp_index(owner);
+        for (int h = 0; h < 15; ++h) {
+          const float p = pi_hand_[oi][CoupBeliefTracker<NPlayers>::
+                                          kBeliefBranch2 + h];
+          logits[h] = std::log(static_cast<double>(p) + 1e-30);
+        }
+        for (int h = 0; h < 15; ++h) {
+          for (int r = 0; r < kCharacterCount; ++r) {
+            if (need_2[h][r] > remaining[r]) { feasible[h] = false; break; }
+          }
+        }
+        const int picked = sample_branch(logits, feasible);
+        if (picked < 0) {
+          throw std::logic_error(
+              "CoupBeliefTracker::randomize_unseen: no feasible 2-card "
+              "multiset for owner=" + std::to_string(owner));
+        }
+        for (int r = 0; r < kCharacterCount; ++r) fills[r] = need_2[picked][r];
+      } else if (n_unknown == 1) {
+        std::vector<double> logits(kCharacterCount, 0.0);
+        std::vector<bool> feasible(kCharacterCount, true);
+        const int oi = opp_index(owner);
+        for (int r = 0; r < kCharacterCount; ++r) {
+          const float p = pi_hand_[oi][CoupBeliefTracker<NPlayers>::
+                                          kBeliefBranch1 + r];
+          logits[r] = std::log(static_cast<double>(p) + 1e-30);
+        }
+        for (int r = 0; r < kCharacterCount; ++r) {
+          if (remaining[r] <= 0) feasible[r] = false;
+        }
+        const int picked = sample_branch(logits, feasible);
+        if (picked < 0) {
+          throw std::logic_error(
+              "CoupBeliefTracker::randomize_unseen: no feasible single role "
+              "for owner=" + std::to_string(owner));
+        }
+        fills[picked] = 1;
+      } else {
+        // n_unknown ∈ {3, 4}: only mid-Exchange. Belief head is
+        // alive-conditioned at {1, 2}, so this branch falls through to
+        // pool-uniform per-slot.
+        for (int s = 0; s < n_unknown; ++s) {
+          int total = 0;
+          for (int r = 0; r < kCharacterCount; ++r) {
+            total += remaining[r] - fills[r];
+          }
+          if (total <= 0) {
+            throw std::logic_error(
+                "CoupBeliefTracker::randomize_unseen: pool exhausted "
+                "during n_unknown>2 fallback");
+          }
+          std::uniform_int_distribution<int> dist(0, total - 1);
+          int u = dist(rng);
+          int picked = 0;
+          for (int r = 0; r < kCharacterCount; ++r) {
+            const int avail = remaining[r] - fills[r];
+            if (u < avail) { picked = r; break; }
+            u -= avail;
+          }
+          fills[picked] += 1;
         }
       }
-    } else {
-      for (int r = 0; r < kCharacterCount; ++r) {
-        if (remaining[static_cast<size_t>(r)] > 0) { picked = r; break; }
-      }
+
+      for (int r = 0; r < kCharacterCount; ++r) remaining[r] -= fills[r];
+      write_owner_slots(owner, fills);
     }
-    if (picked < 0) picked = 0;
-
-    remaining[static_cast<size_t>(picked)]--;
-
-    if (slot.owner == -1) {
-      ++deck_fill[static_cast<size_t>(picked)];
-    } else if (slot.slot_idx >= kXBase) {
-      const int i_draw = slot.slot_idx - kXBase;
-      d.exchange_drawn[i_draw] = static_cast<CharId>(picked);
-    } else {
-      d.influence[slot.owner][slot.slot_idx] = static_cast<CharId>(picked);
+  } else {
+    // No belief net → shuffle remaining over every hidden owner slot
+    // uniformly without replacement. Per-opp aggregation is irrelevant
+    // here; we just need per-slot draws.
+    for (int p = 0; p < NPlayers; ++p) {
+      if (p == observer) continue;
+      std::array<int, kCharacterCount> fills{};
+      for (int s = 0, n = static_cast<int>(per_owner[p].slot_idx.size());
+           s < n; ++s) {
+        int total = 0;
+        for (int r = 0; r < kCharacterCount; ++r) total += remaining[r] - fills[r];
+        if (total <= 0) {
+          throw std::logic_error(
+              "CoupBeliefTracker::randomize_unseen: pool exhausted "
+              "during fallback shuffle (owner=" + std::to_string(p) + ")");
+        }
+        std::uniform_int_distribution<int> dist(0, total - 1);
+        int u = dist(rng);
+        int picked = 0;
+        for (int r = 0; r < kCharacterCount; ++r) {
+          const int avail = remaining[r] - fills[r];
+          if (u < avail) { picked = r; break; }
+          u -= avail;
+        }
+        fills[picked] += 1;
+      }
+      for (int r = 0; r < kCharacterCount; ++r) remaining[r] -= fills[r];
+      write_owner_slots(p, fills);
     }
   }
 
   // ------------------------------------------------------------------
-  // Step 4: write deck residual into the multiset count array. deck_size
-  // scalar stays as-is (public).
+  // Step 4: deck residual — uniform-without-replacement from `remaining`.
+  // We don't need per-position identity; deck is a multiset slot. Just
+  // dump the residual into deck_count.
   // ------------------------------------------------------------------
+  std::array<int, kCharacterCount> deck_fill{};
+  int deck_remaining = deck_size;
+  while (deck_remaining > 0) {
+    int total = 0;
+    for (int r = 0; r < kCharacterCount; ++r) total += remaining[r];
+    if (total <= 0) {
+      throw std::logic_error(
+          "CoupBeliefTracker::randomize_unseen: deck residual underflow");
+    }
+    std::uniform_int_distribution<int> dist(0, total - 1);
+    int u = dist(rng);
+    int picked = 0;
+    for (int r = 0; r < kCharacterCount; ++r) {
+      if (u < remaining[r]) { picked = r; break; }
+      u -= remaining[r];
+    }
+    --remaining[picked];
+    ++deck_fill[picked];
+    --deck_remaining;
+  }
   for (int c = 0; c < kCharacterCount; ++c) {
     d.deck_count[static_cast<size_t>(c)] =
         static_cast<std::int8_t>(deck_fill[static_cast<size_t>(c)]);
@@ -657,7 +774,7 @@ void CoupBeliefTracker<NPlayers>::prepare_for_root(
   // during `randomize_unseen` without re-evaluating the network.
   pi_valid_ = false;
   pi_observer_ = -1;
-  for (auto& row : pi_) row.fill(0.0f);
+  for (auto& row : pi_hand_) row.fill(0.0f);
 
   if (!extractor || !evaluator) return;
   if (root_player < 0 || root_player >= NPlayers) return;
@@ -670,29 +787,39 @@ void CoupBeliefTracker<NPlayers>::prepare_for_root(
   }
   std::vector<float> logits;
   if (!evaluator->evaluate(features, &logits)) return;
-  const int kLogitCount = (NPlayers - 1) * kCharacterCount;
-  if (static_cast<int>(logits.size()) != kLogitCount) return;
+  constexpr int kHandDim = kBeliefHandDim;
+  const int expected = (NPlayers - 1) * kHandDim;
+  if (static_cast<int>(logits.size()) != expected) return;
 
-  // Per-row softmax along role axis (Plan §1.2). Subtract row max for
-  // numerical stability.
+  // Per-opp two independent branch softmaxes (multiset Plan §5):
+  // [0..14] is the two-card multiset head; [15..19] is the single-card
+  // head. Each branch is normalized along its own axis at temperature T.
+  // randomize_unseen reads only the branch matching that opp's current
+  // alive count, so the two normalizers don't need to be commensurate.
   const float inv_T = 1.0f / kBeliefTemperature;
+  auto softmax_branch = [&](int opp, int base, int len) -> bool {
+    float m = -std::numeric_limits<float>::infinity();
+    for (int k = 0; k < len; ++k) {
+      const float z = logits[opp * kHandDim + base + k] * inv_T;
+      if (z > m) m = z;
+    }
+    if (!std::isfinite(m)) return false;
+    float sum = 0.0f;
+    std::array<float, std::max(kBeliefBranch1Size, kBeliefBranch2Size)> ez{};
+    for (int k = 0; k < len; ++k) {
+      const float z = logits[opp * kHandDim + base + k] * inv_T;
+      ez[k] = std::exp(z - m);
+      sum += ez[k];
+    }
+    if (sum <= 0.0f || !std::isfinite(sum)) return false;
+    for (int k = 0; k < len; ++k) {
+      pi_hand_[opp][base + k] = ez[k] / sum;
+    }
+    return true;
+  };
   for (int i = 0; i < NPlayers - 1; ++i) {
-    float row_max = -std::numeric_limits<float>::infinity();
-    for (int r = 0; r < kCharacterCount; ++r) {
-      const float z = logits[i * kCharacterCount + r] * inv_T;
-      if (z > row_max) row_max = z;
-    }
-    float row_sum = 0.0f;
-    std::array<float, kCharacterCount> ez{};
-    for (int r = 0; r < kCharacterCount; ++r) {
-      const float z = logits[i * kCharacterCount + r] * inv_T;
-      ez[r] = std::exp(z - row_max);
-      row_sum += ez[r];
-    }
-    if (row_sum <= 0.0f || !std::isfinite(row_sum)) return;
-    for (int r = 0; r < kCharacterCount; ++r) {
-      pi_[i][r] = ez[r] / row_sum;
-    }
+    if (!softmax_branch(i, kBeliefBranch2, kBeliefBranch2Size)) return;
+    if (!softmax_branch(i, kBeliefBranch1, kBeliefBranch1Size)) return;
   }
   pi_valid_ = true;
   pi_observer_ = root_player;
@@ -715,7 +842,6 @@ AnyMap CoupBeliefTracker<NPlayers>::serialize() const {
     }
     return flat;
   };
-  out["signals"] = flatten(signals_);
   out["pre_claim_counts"] = flatten(pre_claim_counts_);
   out["post_claim_counts"] = flatten(post_claim_counts_);
   out["pre_challenge_initiated"] = flatten(pre_challenge_initiated_);
@@ -902,7 +1028,7 @@ void CoupBeliefLabelExtractor<NPlayers>::extract(
         }
       }
     }
-    (*out_alive)[i] = alive_slots > 0 ? 1 : 0;
+    (*out_alive)[i] = alive_slots;  // 0/1/2 — multiset-aware (Plan §7).
   }
 }
 

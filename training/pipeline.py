@@ -18,6 +18,7 @@ from .mcts_profile import MctsProfile, max_game_plies, profile_as_dict, resolve_
 from .model import (
     PVNet,
     create_belief_model_from_config,
+    load_belief_onnx_into,
     create_model_from_config,
     export_belief_onnx,
     export_onnx,
@@ -164,7 +165,7 @@ def _worker_arena(args: tuple) -> dict[str, Any]:
     """Run a single arena match in a worker process."""
     import dinoboard_engine
     game_id, seed, model_paths, sims_list, max_plies, temperature, opp_sel, \
-        ts_enabled, ts_depth, ts_budget, ts_margin = args
+        ts_enabled, ts_depth, ts_budget, ts_margin, belief_model_path = args
     return dinoboard_engine.run_arena_match(
         game_id=game_id, seed=seed,
         model_paths=model_paths, simulations_list=sims_list,
@@ -175,6 +176,7 @@ def _worker_arena(args: tuple) -> dict[str, Any]:
         tail_solve_node_budget=ts_budget,
         tail_solve_margin_weight=ts_margin,
         opponent_selection_list=[opp_sel] * len(model_paths),
+        belief_model_path=belief_model_path,
     )
 
 
@@ -182,7 +184,7 @@ def _worker_eval_vs_heuristic(args: tuple) -> dict[str, Any]:
     """Run a single eval game vs heuristic in a worker process."""
     import dinoboard_engine
     (game_id, seed, model_path, simulations, model_is_player,
-     constrained, h_temp, opp_sel) = args
+     constrained, h_temp, opp_sel, belief_model_path) = args
     return dinoboard_engine.run_constrained_eval_vs_heuristic(
         game_id=game_id,
         seed=seed,
@@ -192,6 +194,7 @@ def _worker_eval_vs_heuristic(args: tuple) -> dict[str, Any]:
         constrained=constrained,
         heuristic_temperature=h_temp,
         opponent_selection=opp_sel,
+        belief_model_path=belief_model_path,
     )
 
 
@@ -250,6 +253,51 @@ def train_step(
     }
 
 
+# Two-card multiset enumeration — must match
+# `coup_net_adapter.cpp::TwoCardTable` exactly. m=0..14 with the canonical
+# (R_a, R_b) order R_a ≤ R_b in role-id space (D=0..Con=4).
+_BELIEF_BRANCH2_BASE = 0
+_BELIEF_BRANCH2_SIZE = 15
+_BELIEF_BRANCH1_BASE = 15
+_BELIEF_BRANCH1_SIZE = 5
+
+
+def _build_two_card_id_table(K_role: int) -> list[list[int]]:
+    """id[a][b] = id[b][a] = multiset index for (a,b)."""
+    table = [[0] * K_role for _ in range(K_role)]
+    m = 0
+    for a in range(K_role):
+        for b in range(a, K_role):
+            table[a][b] = m
+            table[b][a] = m
+            m += 1
+    return table
+
+
+def _hand_counts_to_multiset_id(
+    hand_row: list[int], K_role: int, two_card_id: list[list[int]]
+) -> tuple[int, int]:
+    """Map a per-role count row into (alive, multiset_id) ∈
+    ({0,1,2}, branch index). For alive=2 the id is a 0..14 two-card id;
+    for alive=1 the id is the role itself (0..4); alive=0/≥3 → (alive,-1).
+    """
+    alive = sum(hand_row)
+    if alive == 1:
+        for r in range(K_role):
+            if hand_row[r] == 1:
+                return 1, r
+        return 1, -1
+    if alive == 2:
+        roles = []
+        for r in range(K_role):
+            for _ in range(hand_row[r]):
+                roles.append(r)
+        if len(roles) != 2:
+            return 2, -1
+        return 2, two_card_id[roles[0]][roles[1]]
+    return alive, -1
+
+
 def _train_belief_step(
     net: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
@@ -261,65 +309,101 @@ def _train_belief_step(
     batches_per_step: int,
     grad_clip: float,
 ) -> float:
-    """One step of belief-net KL training (Plan §2.3).
+    """One step of belief-net training under the multiset categorical
+    formulation (BELIEF_NETWORK.md §6/§7).
 
-    Buffer entries: (features, hand_counts[N-1][K], remaining[K],
-    alive_per_opp[N-1]). Per opp row i and role R:
-      label[i][R] = (hand_counts[i][R] / remaining[R]) normalized along R
-      mask_R[i][R] = (remaining[R] > 0)
-      mask_row[i] = (alive_per_opp[i] > 0)
-    Loss = mean over alive rows of KL(label || softmax(logits / 1.0)).
-    Returns the average loss across `batches_per_step`.
+    The belief net emits, per opp, a length-20 logit vector — `[0..14]`
+    over two-card multisets and `[15..19]` over single roles. Targets are
+    one-hot multiset ids: alive=2 → 15-way head; alive=1 → 5-way head;
+    alive=0 / alive≥3 rows are skipped (alive=0 = opp eliminated, no
+    belief to learn; alive≥3 = mid-Exchange bookkeeping not covered by
+    either head). Loss is plain CE on the selected branch.
+
+    `K` here is the per-opp output width (`output_logit_count() / (N-1)`)
+    and must equal 20; the underlying role count is fixed at 5 (Coup).
     """
     if not buffer or net is None:
         return float("nan")
     n_opp = num_players - 1
-    if n_opp <= 0 or K <= 0:
+    expected_K = _BELIEF_BRANCH2_SIZE + _BELIEF_BRANCH1_SIZE  # 20
+    if n_opp <= 0 or K != expected_K:
         return float("nan")
+    K_role = _BELIEF_BRANCH1_SIZE  # 5
+    two_card_id = _build_two_card_id_table(K_role)
+
     buf = list(buffer)
     n = len(buf)
     feats_all = torch.tensor([s[0] for s in buf], dtype=torch.float32)
-    hand_all = torch.tensor([s[1] for s in buf], dtype=torch.float32)  # [B,N-1,K]
-    rem_all = torch.tensor([s[2] for s in buf], dtype=torch.float32)   # [B,K]
-    alive_all = torch.tensor([s[3] for s in buf], dtype=torch.float32) # [B,N-1]
+    hand_all = [s[1] for s in buf]   # list of [N-1][K_role] lists
+    alive_all = [s[3] for s in buf]  # list of [N-1] alive counts (0/1/2)
+
+    # Pre-compute targets once per buffer load:
+    #   target_id[b, i]    : one-hot index inside the chosen branch (or -1)
+    #   target_branch[b,i] : 2 / 1 / 0 (alive count) for branch selection
+    B_total = n
+    target_id = torch.full((B_total, n_opp), -1, dtype=torch.long)
+    target_branch = torch.zeros((B_total, n_opp), dtype=torch.long)
+    for bi in range(B_total):
+        hand = hand_all[bi]
+        alive = alive_all[bi]
+        for oi in range(n_opp):
+            row = hand[oi]
+            a = alive[oi] if oi < len(alive) else 0
+            # Defensive: for alive>=3 (mid-Exchange) skip — net's two
+            # branches don't cover it. Trainer bypasses this row.
+            if a == 2 or (a == 0 and sum(row) == 2):
+                # alive==0 with sum==2 cannot happen; guard for safety.
+                a_eff, mid = _hand_counts_to_multiset_id(row, K_role,
+                                                         two_card_id)
+                target_branch[bi, oi] = a_eff
+                target_id[bi, oi] = mid
+            elif a == 1:
+                _, mid = _hand_counts_to_multiset_id(row, K_role, two_card_id)
+                target_branch[bi, oi] = 1
+                target_id[bi, oi] = mid
+            else:
+                target_branch[bi, oi] = a
+                target_id[bi, oi] = -1
 
     net.train()
     total = 0.0
-    eps = 1e-12
+    log_softmax = torch.nn.functional.log_softmax
     for _ in range(batches_per_step):
         idx = torch.randint(n, (min(batch_size, n),))
         f = feats_all[idx]
-        hand = hand_all[idx]
-        rem = rem_all[idx]
-        alive = alive_all[idx]
+        tid = target_id[idx]                # [B, n_opp]
+        tbr = target_branch[idx]            # [B, n_opp]
         B = f.size(0)
-        logits = net(f).view(B, n_opp, K)
+        logits = net(f).view(B, n_opp, K)   # [B, n_opp, 20]
 
-        rem_exp = rem.unsqueeze(1).expand(-1, n_opp, -1)             # [B,N-1,K]
-        mask_R = (rem_exp > 0).float()
-        unnorm = torch.where(mask_R.bool(), hand / (rem_exp + eps),
-                             torch.zeros_like(hand))
-        row_sum = unnorm.sum(dim=-1, keepdim=True)                   # [B,N-1,1]
-        valid_row = (row_sum.squeeze(-1) > 0) & (alive > 0)          # [B,N-1]
-        label = torch.where(row_sum > 0, unnorm / (row_sum + eps),
-                            torch.zeros_like(unnorm))
+        # Branch 2 (two-card multiset) — alive == 2 rows.
+        b2_logits = logits[..., _BELIEF_BRANCH2_BASE:
+                                  _BELIEF_BRANCH2_BASE + _BELIEF_BRANCH2_SIZE]
+        b2_log_pi = log_softmax(b2_logits, dim=-1)
+        # Branch 1 (single-card) — alive == 1 rows.
+        b1_logits = logits[..., _BELIEF_BRANCH1_BASE:
+                                  _BELIEF_BRANCH1_BASE + _BELIEF_BRANCH1_SIZE]
+        b1_log_pi = log_softmax(b1_logits, dim=-1)
 
-        # log-softmax with -inf where mask_R = 0 (kill those R from softmax).
-        neg_inf = torch.full_like(logits, float("-inf"))
-        masked_logits = torch.where(mask_R.bool(), logits, neg_inf)
-        log_pi = torch.nn.functional.log_softmax(masked_logits, dim=-1)
-        # KL = sum_R label * (log label - log_pi); 0 * log0 := 0.
-        log_label = torch.where(label > 0, torch.log(label + eps),
-                                torch.zeros_like(label))
-        kl_per_role = label * (log_label - log_pi)
-        # Zero out masked R / dead rows safely.
-        kl_per_role = torch.where(mask_R.bool(), kl_per_role,
-                                   torch.zeros_like(kl_per_role))
-        kl_row = kl_per_role.sum(dim=-1)                              # [B,N-1]
-        kl_row = torch.where(valid_row, kl_row, torch.zeros_like(kl_row))
+        valid2 = (tbr == 2) & (tid >= 0)
+        valid1 = (tbr == 1) & (tid >= 0)
 
-        n_valid = valid_row.float().sum().clamp_min(1.0)
-        loss = kl_row.sum() / n_valid
+        nll2 = torch.zeros((), dtype=b2_log_pi.dtype)
+        nll1 = torch.zeros((), dtype=b1_log_pi.dtype)
+        # gather indexes every position regardless of mask; clamp per-branch
+        # to that branch's range so non-target rows (which we mask out
+        # afterward) can't trigger out-of-bounds. b2 size=15, b1 size=5.
+        if valid2.any():
+            sel = tid.clamp(min=0, max=_BELIEF_BRANCH2_SIZE - 1).unsqueeze(-1)
+            picked = b2_log_pi.gather(-1, sel).squeeze(-1)
+            nll2 = -(picked[valid2]).sum()
+        if valid1.any():
+            sel = tid.clamp(min=0, max=_BELIEF_BRANCH1_SIZE - 1).unsqueeze(-1)
+            picked = b1_log_pi.gather(-1, sel).squeeze(-1)
+            nll1 = -(picked[valid1]).sum()
+
+        n_valid = (valid2.sum() + valid1.sum()).clamp_min(1).float()
+        loss = (nll2 + nll1) / n_valid
 
         optimizer.zero_grad()
         loss.backward()
@@ -432,6 +516,7 @@ def run_eval_vs_heuristic(
     heuristic_temperature: float,
     max_workers: int,
     opponent_selection: str,
+    belief_model_path: str = "",
 ) -> dict[str, Any]:
     import dinoboard_engine
     num_players = dinoboard_engine.game_metadata(game_id)["num_players"]
@@ -444,7 +529,7 @@ def run_eval_vs_heuristic(
         tasks.append((
             game_id, base_seed + i, model_path, simulations,
             model_side, constrained, heuristic_temperature,
-            opponent_selection,
+            opponent_selection, belief_model_path,
         ))
 
     wins = losses = draws = 0
@@ -480,6 +565,7 @@ def run_eval_batch(
     tail_solve_depth_limit: int,
     tail_solve_node_budget: int,
     tail_solve_margin_weight: float,
+    belief_model_path: str = "",
 ) -> dict[str, Any]:
     import dinoboard_engine
     meta = dinoboard_engine.game_metadata(game_id)
@@ -498,6 +584,7 @@ def run_eval_batch(
             temperature, opponent_selection,
             tail_solve_enabled, tail_solve_depth_limit,
             tail_solve_node_budget, tail_solve_margin_weight,
+            belief_model_path,
         ))
         candidate_seats.append(seat)
 
@@ -595,6 +682,7 @@ def run_training_loop(
     seed: int = 20260323,
     save_every: int = 0,
     init_from: str | None = None,
+    belief_init_from: str | None = None,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     models_dir = output_dir / "models"
@@ -695,6 +783,15 @@ def run_training_loop(
         belief_net = create_belief_model_from_config(
             belief_cfg, input_dim=belief_in, output_dim=belief_out,
         )
+        if belief_init_from:
+            init_path = Path(belief_init_from)
+            if not init_path.is_absolute():
+                init_path = Path(__file__).resolve().parent.parent / init_path
+            if not init_path.exists():
+                raise FileNotFoundError(
+                    f"--belief-init-from path does not exist: {init_path}")
+            load_belief_onnx_into(belief_net, init_path)
+            logger.info(f"  belief: warmstarted from {init_path}")
         b_train = belief_cfg.get("training", {})
         belief_lr_init = float(b_train.get("lr_schedule", {}).get("lr_max", 3e-4))
         belief_lr_schedule = b_train.get("lr_schedule")
@@ -847,6 +944,9 @@ def run_training_loop(
         winners = [ep["winner"] for ep in episodes]
         per_player_wins = [sum(1 for w in winners if w == p) for p in range(num_players)]
         draws_count = sum(1 for w in winners if w < 0)
+        plies_list = [ep["total_plies"] for ep in episodes]
+        avg_plies = sum(plies_list) / max(1, len(plies_list))
+        max_plies_hit = sum(1 for p in plies_list if p >= game_max_plies)
 
         ts_attempts = sum(ep["tail_solve_attempts"] for ep in episodes)
         ts_completed = sum(ep["tail_solve_completed"] for ep in episodes)
@@ -894,10 +994,13 @@ def run_training_loop(
             step_onnx = models_dir / f"model_step_{step:05d}.onnx"
             export_onnx(net, step_onnx, feature_dim)
 
-        # Belief training step (Plan §2.3) — KL(label || pi) where
-        # label[i][R] = (hand_counts[i][R] / remaining[R]) / row_norm,
-        # masked by remaining > 0 and alive_per_opp[i] > 0. This trains the
-        # Wallenius bias factor (label * remaining = q is the truth marginal).
+        # Belief training step — multiset categorical CE
+        # (BELIEF_NETWORK.md §7). Per opp the network emits 20 logits split
+        # into a 15-way two-card-multiset branch and a 5-way single-card
+        # branch; alive_per_opp[i] selects the branch (alive=2 → 15-way,
+        # alive=1 → 5-way, alive=0 → skip in loss). Target is one-hot at
+        # the multiset id derived from hand_counts; remaining[R] is unused
+        # by the trainer (only needed at sim entry for feasibility masking).
         belief_loss_val = None
         if belief_enabled and belief_buffer:
             belief_lr = compute_lr(step, steps, belief_lr_init, belief_lr_schedule)
@@ -929,6 +1032,7 @@ def run_training_loop(
             f"Step {step}/{steps}: loss={avg_loss:.4f}",
             f"episodes={len(episodes)}, samples={n}",
             ", ".join(f"p{p}={per_player_wins[p]}" for p in range(num_players)) + f", draw={draws_count}",
+            f"plies={avg_plies:.1f} (cap_hits={max_plies_hit}/{len(episodes)})",
             f"sims={current_sims}",
         ]
         if lr_schedule:
@@ -964,7 +1068,11 @@ def run_training_loop(
             for k, v in cs.items():
                 custom_keys.setdefault(k, []).append(float(v))
         for k, vs in sorted(custom_keys.items()):
-            log_parts.append(f"{k}={sum(vs) / len(vs):.1f}")
+            avg = sum(vs) / len(vs)
+            # Rate-like keys (averages already in [0,1]) need more precision
+            # than count-like keys; the convention is `_rate` suffix.
+            fmt = ".3f" if k.endswith("_rate") else ".1f"
+            log_parts.append(f"{k}={avg:{fmt}}")
         log_parts.append(f"time={elapsed:.1f}s")
         logger.info(", ".join(log_parts))
 
@@ -979,7 +1087,8 @@ def run_training_loop(
                     r = run_eval_vs_heuristic(
                         game_id, eval_model, eval_games, seed + step * 100000,
                         eval_profile.simulations, True, h_temp, max_workers,
-                        opponent_selection=eval_profile.opponent_selection)
+                        opponent_selection=eval_profile.opponent_selection,
+                        belief_model_path=current_belief_model_path)
                     logger.info(
                         f"  eval vs heuristic (constrained): win_rate={r['win_rate']:.1%} "
                         f"(W={r['wins']}, L={r['losses']}, D={r['draws']})")
@@ -987,7 +1096,8 @@ def run_training_loop(
                     r = run_eval_vs_heuristic(
                         game_id, eval_model, eval_games, seed + step * 100000 + 50000,
                         eval_profile.simulations, False, free_h_temp, max_workers,
-                        opponent_selection=eval_profile.opponent_selection)
+                        opponent_selection=eval_profile.opponent_selection,
+                        belief_model_path=current_belief_model_path)
                     logger.info(
                         f"  eval vs heuristic (free): win_rate={r['win_rate']:.1%} "
                         f"(W={r['wins']}, L={r['losses']}, D={r['draws']})")
@@ -1003,6 +1113,7 @@ def run_training_loop(
                         tail_solve_depth_limit=eval_profile.tail_solve_depth_limit,
                         tail_solve_node_budget=eval_profile.tail_solve_node_budget,
                         tail_solve_margin_weight=eval_profile.tail_solve_margin_weight,
+                        belief_model_path=current_belief_model_path,
                     )
                     logger.info(
                         f"  eval vs {Path(bench).stem}: win_rate={bench_result['win_rate']:.1%} "
@@ -1021,6 +1132,7 @@ def run_training_loop(
                 tail_solve_depth_limit=arena_profile.tail_solve_depth_limit,
                 tail_solve_node_budget=arena_profile.tail_solve_node_budget,
                 tail_solve_margin_weight=arena_profile.tail_solve_margin_weight,
+                belief_model_path=current_belief_model_path,
             )
             gating_wr = gating_result["win_rate"]
             logger.info(

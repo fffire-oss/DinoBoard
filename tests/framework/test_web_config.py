@@ -51,17 +51,17 @@ class TestWebProfilesResolve:
         "coup" not in __import__("dinoboard_engine").available_games(),
         reason="coup not built (manifest disabled)",
     )
-    def test_coup_web_casual_temperature(self):
-        p = resolve_profile("coup", "web_casual")
-        assert p.temperature == 0.3
-
-    @pytest.mark.skipif(
-        "coup" not in __import__("dinoboard_engine").available_games(),
-        reason="coup not built (manifest disabled)",
-    )
-    def test_coup_web_expert_temperature(self):
-        p = resolve_profile("coup", "web_expert")
-        assert p.temperature == 0.1
+    def test_coup_web_uses_temperature_schedule(self):
+        """Coup ditches deterministic temperature for a schedule (decay
+        across early plies). web_casual inherits web_expert's schedule;
+        both must report a positive starting temperature and an enabled
+        schedule rather than a fixed deterministic temperature."""
+        for name in ("web_expert", "web_casual"):
+            p = resolve_profile("coup", name)
+            assert p.temperature_schedule_enabled is True, name
+            assert p.temperature_initial > 0.0, name
+            assert p.temperature_final > 0.0, name
+            assert p.temperature_decay_plies > 0, name
 
     @pytest.mark.skipif(
         "coup" not in __import__("dinoboard_engine").available_games(),
@@ -148,17 +148,16 @@ class TestSessionCreation:
         "coup" not in __import__("dinoboard_engine").available_games(),
         reason="coup not built (manifest disabled)",
     )
-    def test_coup_casual_session_temperature(self):
-        _, sess = self._create_session("coup", "casual")
-        assert sess["temperature"] == 0.3
-
-    @pytest.mark.skipif(
-        "coup" not in __import__("dinoboard_engine").available_games(),
-        reason="coup not built (manifest disabled)",
-    )
-    def test_coup_expert_session_temperature(self):
-        _, sess = self._create_session("coup", "expert")
-        assert sess["temperature"] == 0.1
+    def test_coup_session_temperature_uses_schedule(self):
+        """Coup web sessions use a temperature schedule rather than a
+        fixed deterministic temperature; assert the schedule fields
+        flow into the session dict instead of a hard-coded value."""
+        for diff in ("casual", "expert"):
+            _, sess = self._create_session("coup", diff)
+            assert sess["temperature_schedule_enabled"] is True, diff
+            assert sess["temperature_initial"] > 0.0, diff
+            assert sess["temperature_final"] > 0.0, diff
+            assert sess["temperature_decay_plies"] > 0, diff
 
     @pytest.mark.skipif(
         "coup" not in __import__("dinoboard_engine").available_games(),

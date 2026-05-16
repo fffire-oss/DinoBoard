@@ -81,6 +81,43 @@ def create_belief_model_from_config(belief_config: dict, *,
     return BeliefNet(input_dim, output_dim, hidden, batch_norm=batch_norm)
 
 
+def load_belief_onnx_into(net: BeliefNet, path: Path) -> None:
+    """Load weights from an exported belief ONNX into a fresh BeliefNet.
+
+    `torch.onnx.export` keeps PyTorch parameter names verbatim in the
+    initializer list (e.g. `net.0.weight`), so we just numpy → tensor copy
+    by name. BN running_mean / running_var are tracked buffers and arrive
+    under the same `net.<idx>.running_*` names, so the full state_dict round
+    trips. Shapes must match the freshly created BeliefNet — a mismatch is
+    a bug and we raise.
+    """
+    import onnx as _onnx
+    model = _onnx.load(str(path))
+    onnx_state = {
+        ini.name: torch.from_numpy(_onnx.numpy_helper.to_array(ini).copy())
+        for ini in model.graph.initializer
+    }
+    net_state = net.state_dict()
+    # BatchNorm's `num_batches_tracked` is not exported by torch.onnx — it's
+    # a pure step counter, irrelevant to inference. Carry over net's value
+    # (zero in a fresh module) so load_state_dict is happy.
+    for k in net_state:
+        if k.endswith("num_batches_tracked") and k not in onnx_state:
+            onnx_state[k] = net_state[k]
+    missing = sorted(set(net_state.keys()) - set(onnx_state.keys()))
+    extra = sorted(set(onnx_state.keys()) - set(net_state.keys()))
+    if missing or extra:
+        raise ValueError(
+            f"belief warmstart ONNX {path} parameter set differs from "
+            f"freshly built BeliefNet: missing={missing}, extra={extra}")
+    for k, v in net_state.items():
+        if v.shape != onnx_state[k].shape:
+            raise ValueError(
+                f"belief warmstart shape mismatch on {k!r}: net={tuple(v.shape)} "
+                f"onnx={tuple(onnx_state[k].shape)}")
+    net.load_state_dict(onnx_state)
+
+
 def export_belief_onnx(net: BeliefNet, path: Path, input_dim: int) -> str:
     net.eval()
     path.parent.mkdir(parents=True, exist_ok=True)

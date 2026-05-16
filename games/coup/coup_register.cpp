@@ -296,6 +296,7 @@ board_ai::GameBundle make_coup(const std::string& game_id, std::uint64_t seed) {
       []() -> const board_ai::viz::VisibilitySchema& {
         return CoupState<NPlayers>::schema();
       });
+
   return b;
 }
 

@@ -3,8 +3,8 @@
     "web_expert": {
       "simulations": 2000,
       "c_puct": 1.4,
-      "temperature": 0.1,
-      "temperature_schedule": {"enabled": false, "initial": 0.0, "final": 0.0, "decay_plies": 0},
+      "temperature": 1.0,
+      "temperature_schedule": {"enabled": true, "initial": 1.0, "final": 0.5, "decay_plies": 20},
       "dirichlet_alpha": 0.0,
       "dirichlet_epsilon": 0.0,
       "dirichlet_on_first_n_plies": 0,
@@ -19,7 +19,8 @@
     "web_casual": {
       "inherits": "web_expert",
       "simulations": 50,
-      "temperature": 0.3
+      "temperature": 1.0,
+      "temperature_schedule": {"enabled": true, "initial": 1.0, "final": 0.5, "decay_plies": 20}
     },
     "analysis": {
       "inherits": "web_expert",

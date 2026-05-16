@@ -98,14 +98,19 @@ MCTS 强度被拆成六个命名 profile（selfplay / arena / eval 在
 DinoBoard 基于 AlphaZero / ISMCTS 范式，撞上以下场景**不要硬接**
 （详见 [FEATURES_OVERVIEW.md §框架局限性](FEATURES_OVERVIEW.md)）：
 
-1. 需要混合策略均衡（扑克类）—— 用 OpenSpiel CFR / Deep CFR / NFSP
-2. 动作空间组合爆炸（斗地主）—— 用 OpenSpiel `dou_dizhu` 或 DouZero
-3. 卡牌构筑（万智牌）—— 框架接不进来
-4. 非零和 / 合作博弈（外交风云、Hanabi）—— 用 OpenSpiel `hanabi` /
-   `bargaining`
-5. 单人游戏（纸牌接龙、2048）—— 用 intrinsic motivation 系算法
-6. 闭眼环节（狼人杀夜晚、密写动作）—— viz 嵌套在 hidden 上的高阶
-   不确定性，与本框架"viz 是公开规则"假设硬冲突
+1. 需要混合策略均衡（德扑）—— AlphaZero 训练的是确定性策略，收敛不到
+   精确混合 Nash
+2. 动作空间组合爆炸（斗地主、万智牌等卡牌构筑）—— 固定 `action_space`
+   槽位在这个量级下既稀疏又低效；卡牌构筑额外还是独立的 meta-game，
+   框架根本没建模
+3. 合作博弈（Hanabi、Overcooked）—— self-play 假设「队友跟我同分布」，
+   两个 seat 会同步收敛到一个**只对训练里那份自己有效的私有约定**，
+   换独立训出来的版本或人类队友直接废。要根治得用 other-play /
+   population-based training，不是 AlphaZero 范式内的旋钮
+4. 单人游戏（纸牌接龙、2048）—— 自博弈 bootstrap 依赖「双方差不多菜
+   也能有胜有负」，没有对手整局都是 `z=-1`，网络拿不到梯度
+5. 闭眼环节（狼人杀）—— viz 嵌套在 hidden 上的高阶不确定性，与本框架
+   "viz 是公开规则"假设硬冲突
 
 ---
 
@@ -227,7 +232,7 @@ scope / belief 等价 / 公开快照 round-trip）—— LLM 写错了立刻被�
 | 步步为营 | 已训练 | — | — |
 | 璀璨宝石 | 已训练 | **未训练（随机初始化）** | **未训练（随机初始化）** |
 | 花砖物语 | 已训练 | **未训练（随机初始化）** | **未训练（随机初始化）** |
-| 情书 | 已训练 | 已训练 | **未训练（随机初始化）** |
+| 情书 | 已训练 | 已训练 | 已训练 |
 | 政变 | 已训练 | **未训练（随机初始化）** | **未训练（随机初始化）** |
 
 标注*未训练*的变体发布的是随机初始化网络——网页能玩，但没有棋力。

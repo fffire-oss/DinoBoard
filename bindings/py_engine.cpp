@@ -772,11 +772,13 @@ py::dict run_constrained_eval_vs_heuristic_py(
     int model_is_player,
     bool constrained,
     double heuristic_temperature,
-    const std::string& opponent_selection) {
+    const std::string& opponent_selection,
+    const std::string& belief_model_path) {
   const auto opp_sel = parse_opponent_selection(opponent_selection);
   py::gil_scoped_release release;
 
   auto bundle = GameRegistry::instance().create_game(game_id, seed);
+  if (!belief_model_path.empty()) bundle.belief_model_path = belief_model_path;
 
   if (model_path.empty()) {
     throw std::invalid_argument("run_constrained_eval_vs_heuristic: model_path must not be empty");
@@ -787,6 +789,19 @@ py::dict run_constrained_eval_vs_heuristic_py(
     throw std::runtime_error("run_constrained_eval_vs_heuristic: failed to load model: " + model_eval->last_error());
   }
   const search::IPolicyValueEvaluator* eval_ptr = model_eval.get();
+
+  std::unique_ptr<infer::OnnxBeliefEvaluator> belief_evaluator;
+  const IBeliefEvaluator* belief_evaluator_ptr = nullptr;
+  if (bundle.belief_feature_extractor && !bundle.belief_model_path.empty()) {
+    belief_evaluator = std::make_unique<infer::OnnxBeliefEvaluator>(
+        bundle.belief_model_path);
+    if (!belief_evaluator->is_ready()) {
+      throw std::runtime_error(
+          "run_constrained_eval_vs_heuristic: failed to load belief model '" +
+          bundle.belief_model_path + "': " + belief_evaluator->last_error());
+    }
+    belief_evaluator_ptr = belief_evaluator.get();
+  }
 
   std::unique_ptr<runtime::FilteredRulesWrapper> filtered_rules;
   if (constrained && bundle.training_action_filter) {
@@ -819,6 +834,10 @@ py::dict run_constrained_eval_vs_heuristic_py(
       mcts_cfg.opponent_selection = opp_sel;
       if (bt) {
         mcts_cfg.root_belief_tracker = bt;
+      }
+      if (bundle.belief_feature_extractor && belief_evaluator_ptr) {
+        mcts_cfg.belief_extractor = bundle.belief_feature_extractor.get();
+        mcts_cfg.belief_evaluator = belief_evaluator_ptr;
       }
       // Sim-tracker descent maintenance — events-only flavor.
       if (bundle.events_only_extractor) {
@@ -1481,9 +1500,31 @@ class GameSessionWrapper {
 
   py::dict get_ai_action(int simulations, double temperature,
                          bool cover_root_edges = false,
-                         std::string opponent_selection = "puct") {
+                         std::string opponent_selection = "puct",
+                         double temperature_initial = -1.0,
+                         double temperature_final = -1.0,
+                         int temperature_decay_plies = 0) {
     const auto opp_sel = parse_opponent_selection(opponent_selection);
     py::gil_scoped_release release;
+
+    // Resolve effective temperature from schedule + current ply. When
+    // initial/final < 0 the schedule is disabled and `temperature` is
+    // used as-is (back-compat with callers that don't pass schedule).
+    search::TemperatureSchedule t_sched{};
+    if (temperature_initial >= 0.0 || temperature_final >= 0.0) {
+      t_sched.enabled = true;
+      if (temperature_initial >= 0.0) {
+        t_sched.has_initial = true;
+        t_sched.initial = temperature_initial;
+      }
+      if (temperature_final >= 0.0) {
+        t_sched.has_final = true;
+        t_sched.final_ = temperature_final;
+      }
+      t_sched.decay_plies = temperature_decay_plies;
+    }
+    const double effective_temperature = search::resolve_linear_temperature(
+        t_sched, temperature, static_cast<int>(ply_count_));
 
     const IGameRules& rules = filtered_rules_ ? *filtered_rules_ : *bundle_->rules;
     const int cp = bundle_->state->current_player();
@@ -1567,7 +1608,7 @@ class GameSessionWrapper {
     std::uint64_t action_seed = mcts_seed ^ 0xBF58476D1CE4E5B9ULL;
     ActionId chosen = search::select_action_from_visits(
         stats.root_actions, stats.root_action_visits,
-        temperature, action_seed, legal[0]);
+        effective_temperature, action_seed, legal[0]);
 
     py::gil_scoped_acquire acquire;
     py::dict out;
@@ -1968,7 +2009,8 @@ PYBIND11_MODULE(dinoboard_engine, m) {
       py::arg("model_is_player") = 0,
       py::arg("constrained") = true,
       py::arg("heuristic_temperature") = 0.0,
-      py::arg("opponent_selection") = std::string("puct"));
+      py::arg("opponent_selection") = std::string("puct"),
+      py::arg("belief_model_path") = std::string(""));
 
   m.def("run_heuristic_episode", &run_heuristic_episode_py,
       py::arg("game_id"),
@@ -2082,7 +2124,10 @@ PYBIND11_MODULE(dinoboard_engine, m) {
            py::arg("simulations") = 200,
            py::arg("temperature") = 0.0,
            py::arg("cover_root_edges") = false,
-           py::arg("opponent_selection") = std::string("puct"))
+           py::arg("opponent_selection") = std::string("puct"),
+           py::arg("temperature_initial") = -1.0,
+           py::arg("temperature_final") = -1.0,
+           py::arg("temperature_decay_plies") = 0)
       .def("get_heuristic_action", &GameSessionWrapper::get_heuristic_action)
       .def("configure_tail_solve", &GameSessionWrapper::configure_tail_solve,
            py::arg("enabled"),

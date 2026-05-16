@@ -74,6 +74,7 @@ register({
     'coup.move_reveal': '亮牌 第{n}张',
     'coup.move_lose_influence': '失去影响力 第{n}张',
     'coup.move_return_card': '还 {role}',
+    'coup.move_return_card_hidden': '还回一张',
     'coup.challenge_modal_title': '质疑 · 对方亮牌',
     'coup.challenge_caption': '玩家{n} 亮出 {role}',
     'coup.challenge_failed_suffix': '，质疑失败（你将失去影响力）',
@@ -155,6 +156,7 @@ register({
     'coup.move_reveal': 'Reveal card #{n}',
     'coup.move_lose_influence': 'Lose influence #{n}',
     'coup.move_return_card': 'Return {role}',
+    'coup.move_return_card_hidden': 'Return a card',
     'coup.challenge_modal_title': 'Challenge · Reveal',
     'coup.challenge_caption': 'Player {n} reveals {role}',
     'coup.challenge_failed_suffix': ' — challenge failed (you will lose influence)',
@@ -614,16 +616,20 @@ function renderPlayerArea(container, gs, ctx) {
   }
 
   // Drawn cards after, tagged as draw-0 / draw-1 so animation selectors
-  // can target them individually.
-  for (let di = 0; di < 2; di++) {
-    const c = drawn[di];
-    if (c == null || c < 0) continue;
-    const card = buildMyCard(c, false, di, 'draw');
-    card.classList.add('drawn');
-    if (inExchange) {
+  // can target them individually. Only render when WE are the one mid-
+  // exchange — when an opponent is exchanging their drawn slots are
+  // viz=0 to us, but the wire may still ship stale leftover bytes there
+  // (DEC-003: viz=0 slots hold semantically-undefined values). Without
+  // this gate those leftovers would render as extra cards in our hand.
+  if (inExchange) {
+    for (let di = 0; di < 2; di++) {
+      const c = drawn[di];
+      if (c == null || c < 0) continue;
+      const card = buildMyCard(c, false, di, 'draw');
+      card.classList.add('drawn');
       wireReturnClick(card, c, legalSet, ctx);
+      hand.appendChild(card);
     }
-    hand.appendChild(card);
   }
 
   area.appendChild(hand);
@@ -685,7 +691,7 @@ function charNameLocalized(name) {
   return charLabel(idx);
 }
 
-function formatMove(info, actionId) {
+function formatMove(info, actionId, actor) {
   if (!info || !info.type) {
     if (actionId === null || actionId === undefined) return t('coup.action_start');
     return t('coup.action_unknown', { id: actionId });
@@ -704,7 +710,17 @@ function formatMove(info, actionId) {
     case 'allow_no_block': return t('coup.move_allow_no_block');
     case 'reveal': return t('coup.move_reveal', { n: info.slot + 1 });
     case 'lose_influence': return t('coup.move_lose_influence', { n: info.slot + 1 });
-    case 'return_card': return t('coup.move_return_card', { role: charNameLocalized(info.character_name) });
+    case 'return_card': {
+      // Coup rule: the card a player returns to the deck during Exchange
+      // is private to that player. The wire ships character_name because
+      // the return action_id encodes the role (kReturnDuke..kReturnContessa)
+      // — but we must not display it to anyone except the actor.
+      const humanPlayer = currentCtx && currentCtx.state ? currentCtx.state.humanPlayer : -1;
+      if (actor != null && actor !== humanPlayer) {
+        return t('coup.move_return_card_hidden');
+      }
+      return t('coup.move_return_card', { role: charNameLocalized(info.character_name) });
+    }
     default: return t('coup.action_unknown', { id: actionId });
   }
 }
@@ -730,7 +746,7 @@ function describeTransition(prevState, newState, actionInfo, actionId) {
   group.children.push({
     type: 'popup',
     target: actorSelector(actor),
-    content: formatMove(actionInfo, actionId),
+    content: formatMove(actionInfo, actionId, actor),
     className: 'action-bubble',
     width: 220,
     height: 36,

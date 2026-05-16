@@ -71,7 +71,15 @@ def client(monkeypatch):
     the production server uses to read web.json's expert difficulty.
     """
     monkeypatch.setattr(ai_sessions, "_find_model_path", get_test_model)
-    monkeypatch.setattr(ai_sessions, "_resolve_strength", lambda game_id: (40, 0.0, "puct"))
+    # _resolve_strength returns
+    # (simulations, temperature, opponent_selection,
+    #  schedule_enabled, t_initial, t_final, t_decay) — keep schedule
+    # disabled for deterministic test runs.
+    monkeypatch.setattr(
+        ai_sessions,
+        "_resolve_strength",
+        lambda game_id: (40, 0.0, "puct", False, 0.0, 0.0, 0),
+    )
     # Fresh store each test so sessions don't leak between cases.
     monkeypatch.setattr(ai_sessions, "_STORE", None)
     return TestClient(app)
@@ -319,7 +327,10 @@ def test_create_session_ignores_client_strength_params(client, monkeypatch):
     the server-side `_resolve_strength` is the only source. We assert by stubbing `_resolve_strength` and checking the AISession
     actually carries the resolved values, not the client's.
     """
-    sentinel = (123, 0.7, "puct")
+    # _resolve_strength returns a 7-tuple:
+    # (simulations, temperature, opponent_selection,
+    #  schedule_enabled, t_initial, t_final, t_decay).
+    sentinel = (123, 0.7, "puct", False, 0.0, 0.0, 0)
     monkeypatch.setattr(ai_sessions, "_resolve_strength", lambda game_id: sentinel)
 
     resp = client.post("/ai/sessions", json={
@@ -333,7 +344,8 @@ def test_create_session_ignores_client_strength_params(client, monkeypatch):
     session_id = resp.json()["session_id"]
     try:
         sess = ai_sessions.get_store().get(session_id)
-        assert (sess.simulations, sess.temperature, sess.opponent_selection) == sentinel
+        assert (sess.simulations, sess.temperature,
+                sess.opponent_selection) == sentinel[:3]
     finally:
         client.delete(f"/ai/sessions/{session_id}")
 

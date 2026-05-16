@@ -22,15 +22,21 @@ from session_factory import SessionConfig, SessionFactory  # noqa: E402
 from training.mcts_profile import resolve_profile  # noqa: E402
 
 
-def _resolve_strength(game_id: str) -> tuple[int, float, str]:
+def _resolve_strength(game_id: str) -> tuple[int, float, str, bool, float, float, int]:
     """Read AI strength from the `web_expert` MCTS profile.
 
     AI API contract: strength = web_expert difficulty, never client-supplied.
     Resolver raises if the profile is missing or malformed.
+
+    Returns (simulations, temperature, opponent_selection, schedule_enabled,
+             temperature_initial, temperature_final, temperature_decay_plies).
     """
     base = _base_game_id(game_id)
     p = resolve_profile(base, "web_expert")
-    return p.simulations, p.temperature, p.opponent_selection
+    return (p.simulations, p.temperature, p.opponent_selection,
+            p.temperature_schedule_enabled,
+            p.temperature_initial, p.temperature_final,
+            p.temperature_decay_plies)
 
 
 @dataclass
@@ -59,6 +65,10 @@ class AISession:
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _action_count: int = 0
     _closed: bool = False
+    temperature_schedule_enabled: bool = False
+    temperature_initial: float = 0.0
+    temperature_final: float = 0.0
+    temperature_decay_plies: int = 0
 
     def observe(
         self,
@@ -151,10 +161,16 @@ class AISession:
                     f"turn, but this session is configured for seat "
                     f"{self.my_seat}. The caller must have missed an observe()."
                 )
-            result = self._gs.get_ai_action(
-                self.simulations, self.temperature,
+            kwargs = dict(
+                simulations=self.simulations,
+                temperature=self.temperature,
                 opponent_selection=self.opponent_selection,
             )
+            if self.temperature_schedule_enabled:
+                kwargs["temperature_initial"] = self.temperature_initial
+                kwargs["temperature_final"] = self.temperature_final
+                kwargs["temperature_decay_plies"] = self.temperature_decay_plies
+            result = self._gs.get_ai_action(**kwargs)
             action_id = result["action"]
             return {
                 "action_id": action_id,
@@ -256,7 +272,8 @@ class SessionStore:
         if has_public_state_applier and initial_observation is not None:
             gs.apply_initial_observation(my_seat, initial_observation)
 
-        simulations, temperature, opponent_selection = _resolve_strength(game_id)
+        (simulations, temperature, opponent_selection,
+         t_sched_enabled, t_initial, t_final, t_decay) = _resolve_strength(game_id)
 
         session_id = uuid.uuid4().hex[:12]
         sess = AISession(
@@ -268,6 +285,10 @@ class SessionStore:
             temperature=temperature,
             opponent_selection=opponent_selection,
             has_public_state_applier=has_public_state_applier,
+            temperature_schedule_enabled=t_sched_enabled,
+            temperature_initial=t_initial,
+            temperature_final=t_final,
+            temperature_decay_plies=t_decay,
             _gs=gs,
         )
         with self._lock:

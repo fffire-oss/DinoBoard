@@ -346,8 +346,6 @@ viz **不是**单调累积量——槽位内容变化时 rules 主动 `reset_to_
 
 - Love Letter 出牌：`hand[p]` 清空 → `reset_to_base(viz, hand, p)` →
   玩家摸新牌后 hand 重新变 owner-only
-- Coup 出牌（非 reveal）：影响牌槽位换内容时 rules 决定保持
-  `revealed=true` 还是重置 base
 
 下游不依赖单调性：
 
@@ -632,9 +630,11 @@ weighted prior（Coup tracker 已经做了 claim-driven weighting）。不写就
 Hand-craft 加权（Coup 的 claim-driven weighting）能避开"全 uniform"的
 退化均衡，但权重函数的形状仍是作者手工选的。框架另外提供一条**网络
 化 belief 路径**：在 root 处跑一次独立的 belief 网络，得到 `(N-1) × K`
-opp-role 后验 `pi`，把 hand-craft 权重换成 `weight[R] = remaining[R] ×
-pi[opp][R]`（Wallenius noncentral hypergeometric）。当前在 Coup 上启
-用，其它隐藏信息游戏走 §8.2/§8.3 的 hand-craft 路径就够。
+opp-handlabel 后验 `pi`，sim 入口处对每个对手按其 alive 选 `pi` 的对
+应分支，过 deck feasibility mask 后做一次 categorical 抽完整手牌
+（label 空间 = 采样空间 = multiset，无 marginal 拼装）。当前在 Coup
+上启用——`K = 15(二张 multiset) + 5(单张) = 20`；其它隐藏信息游戏走
+§8.2/§8.3 的 hand-craft 路径就够。
 
 三个组件，全部 optional——不注册就走 §8.2/§8.3：
 
@@ -715,8 +715,9 @@ sim_tracker->randomize_unseen(sim_state, observer, sim_rng);
 当前 Coup 2p/3p/4p 都已 ship。`game.json` 里 `belief` 块控制网络形状 +
 训练超参,详见 [CONFIG_REFERENCE §game.json belief 块](guide/CONFIG_REFERENCE.md)。
 
-Coup 上的具体 feature layout / tracker 状态机 / Wallenius 加权采样 / KL
-loss 见 [games/coup/BELIEF_NETWORK.md](../games/coup/BELIEF_NETWORK.md)
+Coup 上的具体 feature layout / tracker 状态机 / multiset categorical
+采样 / one-hot CE loss 见
+[games/coup/BELIEF_NETWORK.md](../games/coup/BELIEF_NETWORK.md)
 ——其它隐藏信息游戏要接 belief 网络时拿这个做范本。
 
 ---

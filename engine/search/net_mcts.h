@@ -154,6 +154,12 @@ struct NetMctsStats {
   // and reused it instead of creating. Useful for observing how much DAG
   // sharing saves relative to the total descent steps.
   std::int64_t dag_reuse_hits = 0;
+  // Number of sims that ran to max_depth without finding a terminal or
+  // unexpanded leaf — the descent looped through expanded nodes only.
+  // Treated as a zero-value leaf (draw equivalent) so the sim still backs
+  // up. Non-zero values usually indicate policy-collapse / mutual-block
+  // deadlock (e.g. Coup steal-block stalemate); see KNOWN_ISSUES.
+  std::int64_t depth_out_hits = 0;
 };
 
 ActionId select_action_from_visits(

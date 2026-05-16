@@ -119,6 +119,10 @@ def create_session(
         tail_solve_enabled = live_profile.tail_solve_enabled
         tail_solve_depth = live_profile.tail_solve_depth_limit
         tail_solve_budget = live_profile.tail_solve_node_budget
+        t_sched_enabled = live_profile.temperature_schedule_enabled
+        t_initial = live_profile.temperature_initial
+        t_final = live_profile.temperature_final
+        t_decay = live_profile.temperature_decay_plies
         # Only `simulations` is consumed from the analysis profile. The
         # analysis pipeline (pipeline.py) hard-codes temperature=0.0,
         # cover_root_edges=True, opponent_selection="puct" — see the
@@ -134,6 +138,10 @@ def create_session(
         tail_solve_depth = 10
         tail_solve_budget = 200000
         analysis_sims = 0
+        t_sched_enabled = False
+        t_initial = 0.0
+        t_final = 0.0
+        t_decay = 0
 
     # Live web session uses no filter (filter is for training only); analysis
     # / precompute paths construct their own isolated sessions in pipeline.py.
@@ -175,6 +183,10 @@ def create_session(
         "tail_solve_enabled": tail_solve_enabled,
         "tail_solve_depth_limit": tail_solve_depth,
         "tail_solve_node_budget": tail_solve_budget,
+        "temperature_schedule_enabled": t_sched_enabled,
+        "temperature_initial": t_initial,
+        "temperature_final": t_final,
+        "temperature_decay_plies": t_decay,
         "action_history": [],
         "replay_frames": [],
         "pipeline": _make_pipeline_state(),

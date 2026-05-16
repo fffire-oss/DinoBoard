@@ -13,6 +13,8 @@ from typing import Optional, Sequence
 
 import dinoboard_engine as engine
 
+from model_paths import find_belief_model_path
+
 
 @dataclass(frozen=True)
 class SessionConfig:
@@ -58,7 +60,20 @@ class SessionFactory:
         cfg: SessionConfig,
         history: Optional[Sequence[int]] = None,
     ) -> engine.GameSession:
-        gs = engine.GameSession(cfg.game_id, cfg.seed, cfg.model_path, cfg.use_action_filter)
+        # Belief-net path mirrors PV model. Only games registering a
+        # belief_feature_extractor consult a learned posterior; for the
+        # rest we leave the param "" so the bundle keeps its (no-op)
+        # default. File missing for a game that DOES register an extractor
+        # is a real configuration bug — let the C++ load throw.
+        meta = engine.game_metadata(cfg.game_id)
+        belief_path = (
+            find_belief_model_path(cfg.game_id)
+            if meta["has_belief_extractor"] else ""
+        )
+        gs = engine.GameSession(
+            cfg.game_id, cfg.seed, cfg.model_path, cfg.use_action_filter,
+            belief_path,
+        )
         if cfg.tail_solve_enabled:
             gs.configure_tail_solve(
                 True,

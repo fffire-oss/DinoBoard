@@ -119,20 +119,25 @@ DinoBoard is built on the AlphaZero / ISMCTS paradigm. Don't try to
 force-fit the following (see
 [FEATURES_OVERVIEW.md § Framework limitations](FEATURES_OVERVIEW.md)):
 
-1. Games requiring mixed-strategy equilibria (poker variants) — use
-   OpenSpiel CFR / Deep CFR / NFSP
-2. Combinatorially exploded action spaces (DouDizhu) — use
-   OpenSpiel `dou_dizhu` or DouZero
-3. Deck construction (Magic: The Gathering) — the framework can't
-   absorb it
-4. Non-zero-sum / cooperative games (Diplomacy, Hanabi) — use
-   OpenSpiel `hanabi` / `bargaining`
-5. Single-player games (Solitaire, 2048) — use intrinsic-motivation
-   algorithms
-6. Closed-eye phases (Werewolf nights, secret-write actions) —
-   visibility nested on top of hidden state is a higher-order
-   uncertainty that collides head-on with this framework's
-   "visibility is a public rule" assumption
+1. Games requiring mixed-strategy equilibria (Texas Hold'em) —
+   AlphaZero trains a deterministic policy, can't converge to a
+   precise mixed Nash
+2. Combinatorially exploded action spaces (DouDizhu, MTG-style deck
+   construction) — the fixed `action_space` slot is too sparse and
+   inefficient at this scale; deck construction additionally is a
+   meta-game the framework doesn't model at all
+3. Cooperative games (Hanabi, Overcooked) — self-play assumes
+   "partner is sampled from the same distribution as me," so two
+   seats co-converge to a private convention that only works against
+   the training-time self; an independent run or a human partner is
+   incompatible. Needs other-play / population-based training, not an
+   AlphaZero knob
+4. Single-player games (Solitaire, 2048) — selfplay bootstrap needs
+   "two equally bad sides" producing wins/losses; with no opponent
+   the network sits at `z=-1` forever
+5. Closed-eye phases (Werewolf) — visibility nested on top of hidden
+   state is a higher-order uncertainty that collides with the "viz is
+   a public rule" assumption
 
 ---
 
@@ -267,7 +272,7 @@ Shipped ONNX models per variant:
 | Quoridor | trained | — | — |
 | Splendor | trained | **untrained (random init)** | **untrained (random init)** |
 | Azul | trained | **untrained (random init)** | **untrained (random init)** |
-| Love Letter | trained | trained | **untrained (random init)** |
+| Love Letter | trained | trained | trained |
 | Coup | trained | **untrained (random init)** | **untrained (random init)** |
 
 *Untrained* variants ship a randomly-initialized network — playable

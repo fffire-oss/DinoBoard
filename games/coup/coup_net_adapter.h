@@ -58,26 +58,43 @@ class CoupBeliefTracker final : public IBeliefTracker {
   AnyMap serialize() const override;
 
   // Belief-net softmax temperature. Default matches game.json
-  // `belief.temperature: 2.0` (Plan §1.4/§1.5); per-game.json injection
+  // `belief.temperature: 0.5` (Plan §1.4/§1.5); per-game.json injection
   // is a Phase-3 follow-up. Per-row softmax along the role axis (Plan §1.2).
-  static constexpr float kBeliefTemperature = 2.0f;
+  static constexpr float kBeliefTemperature = 0.5f;
 
-  // Cached per-opp posterior pi[i][R] from prepare_for_root.
-  // i ∈ [0, N-2] — opp_to_player(observer, i, N) (Plan §1.2.1).
+  // Cached per-opp posterior from prepare_for_root.
+  // pi_hand_[i] is a length-20 vector: indices [0..14] are the two-card
+  // multiset categorical (alive=2 branch), indices [15..19] are the
+  // single-card categorical (alive=1 branch). Each branch is independently
+  // softmax'd along its own axis (sum within branch == 1).
   // pi_valid_ is false when no belief net has been installed for this
-  // decision; randomize_unseen falls back to uniform sampling.
+  // decision; randomize_unseen falls back to per-slot hand-craft sampling.
   bool pi_valid() const { return pi_valid_; }
-  float pi(int opp_idx, int role) const {
-    return pi_[opp_idx][role];
+  float pi_hand(int opp_idx, int idx) const {
+    return pi_hand_[opp_idx][idx];
   }
   int pi_observer() const { return pi_observer_; }
 
-  // For tests / encoder: expose signal counts and pending-claim state.
-  int signal_count(int player, int role) const {
-    if (player < 0 || player >= NPlayers) return 0;
-    if (role < 0 || role >= kCharacterCount) return 0;
-    return signals_[player][role];
-  }
+  // Two-card multiset enumeration (Plan §5.1). Index 0..14 is the
+  // canonical (R_a, R_b) order with R_a ≤ R_b in role-id order
+  // (D=0, As=1, Cap=2, Amb=3, Con=4). need_2card_[m][R] = number of R
+  // copies in multiset m (0/1/2). multiset_id_2card_(a,b) returns m for
+  // any (a,b) regardless of order. Both are static — populated once from
+  // the canonical enumeration.
+  static constexpr int kTwoCardMultisets = 15;
+  static constexpr int kBeliefBranch2 = 0;
+  static constexpr int kBeliefBranch2Size = 15;
+  static constexpr int kBeliefBranch1 = 15;
+  static constexpr int kBeliefBranch1Size = kCharacterCount;  // 5
+  static constexpr int kBeliefHandDim =
+      kBeliefBranch2Size + kBeliefBranch1Size;  // 20
+  static const std::array<std::array<int, kCharacterCount>,
+                          kTwoCardMultisets>& need_2card();
+  // Lookup table: id_2card[a][b] for any 0 ≤ a, b < kCharacterCount.
+  // Symmetric: id_2card[a][b] == id_2card[b][a].
+  static int multiset_id_2card(int a, int b);
+
+  // For tests / encoder: expose pending-claim state.
   int pending_claimer() const { return pending_claimer_; }
   int pending_claim_role() const { return pending_claim_role_; }
   bool pending_challenged() const { return pending_challenged_; }
@@ -124,11 +141,6 @@ class CoupBeliefTracker final : public IBeliefTracker {
 
   int perspective_player_ = -1;
 
-  // Non-negative count of "evidence that opp p may hold role R". Bumped on
-  // claim/challenge signals; reset to 0 when the evidence is invalidated
-  // (reveal, successful challenge reshuffling the card back to deck, etc.).
-  std::array<std::array<int, kCharacterCount>, NPlayers> signals_{};
-
   // v0.2 raw-event accumulators (per opponent × role). On any reshuffle
   // event (Exchange complete / claim_resolved_truthful), we promote
   // post → pre and zero post for that opp; the pair therefore encodes
@@ -147,12 +159,18 @@ class CoupBeliefTracker final : public IBeliefTracker {
   // visible inside the inline initializer of a template member.)
   std::array<std::int8_t, NPlayers> last_revealed_role_{};
 
-  // Cached belief-net posterior. Filled by prepare_for_root, read by
-  // randomize_unseen. clone() copies these by value, so each sim's
-  // sim_tracker carries the cached posterior — extractor + evaluator
-  // run only once per decision at the root (Plan §2.1).
-  // pi_[i][R] is a per-row softmax: Σ_R pi_[i][R] == 1 for each i.
-  std::array<std::array<float, kCharacterCount>, NPlayers - 1> pi_{};
+  // Cached belief-net posterior — multiset categorical (Plan §5).
+  // pi_hand_[i] is length 20: [0..14] is a softmax over two-card
+  // multisets (alive=2 branch), [15..19] is a softmax over single roles
+  // (alive=1 branch). Each branch is independently normalized; the two
+  // branches are NOT a single 20-way distribution. randomize_unseen
+  // selects the branch per opponent based on that opp's current alive
+  // count, then categorically samples within the selected branch under
+  // the deck feasibility mask. Filled by prepare_for_root, read in sim.
+  // clone() copies these by value, so each sim's sim_tracker carries
+  // the cached posterior — extractor + evaluator run only once per
+  // decision at the root (Plan §2.1).
+  std::array<std::array<float, kBeliefHandDim>, NPlayers - 1> pi_hand_{};
   bool pi_valid_ = false;
   int pi_observer_ = -1;
 
@@ -195,7 +213,10 @@ class CoupBeliefFeatureExtractor final : public IBeliefFeatureExtractor {
   static constexpr int kPerOppDim = 28;
   static constexpr int kGlobalDim = 6;
   static constexpr int kFeatureDim = kGlobalDim + kPerOppDim * (NPlayers - 1);
-  static constexpr int kLogitCount = (NPlayers - 1) * kCharacterCount;
+  // Output: per opp [15-way two-card multiset | 5-way single-card] = 20.
+  // Two independent softmax branches selected at sample time by alive count.
+  static constexpr int kLogitCount =
+      (NPlayers - 1) * CoupBeliefTracker<NPlayers>::kBeliefHandDim;
 
   int feature_dim() const override { return kFeatureDim; }
   int output_logit_count() const override { return kLogitCount; }
@@ -217,17 +238,26 @@ extern template class CoupBeliefFeatureExtractor<2>;
 extern template class CoupBeliefFeatureExtractor<3>;
 extern template class CoupBeliefFeatureExtractor<4>;
 
-// Belief-net label extractor (Plan §2.2). GT-side counterpart to
-// CoupBeliefFeatureExtractor — reads truth CoupState and emits the
-// per-observer (hand_counts, remaining, alive_per_opp) tuple consumed
-// by the Python training loop. Never reachable from the AI session.
+// Belief-net label extractor (multiset variant, Plan §7). GT-side
+// counterpart to CoupBeliefFeatureExtractor — reads truth CoupState and
+// emits the per-observer (hand_counts, remaining, alive_per_opp) tuple
+// consumed by the Python training loop. Never reachable from the AI
+// session.
 //
-// Shape per call:
+// Shape per call (all fields plumb to BeliefSample):
 //   hand_counts[i][R] = count of unrevealed R-cards in opp i's hand,
 //                       opp i = (observer + 1 + i) mod NPlayers.
+//                       Sums to alive_per_opp[i] (==1 or ==2 for
+//                       multiset training).
 //   remaining[R]      = kCardsPerCharacter(3) − own unrevealed R
 //                       − publicly revealed R across all seats.
-//   alive_per_opp[i]  = 1 iff opp i has ≥ 1 unrevealed slot, else 0.
+//   alive_per_opp[i]  = exact count of unrevealed slots opp i still
+//                       has (0/1/2). The Python trainer uses this to
+//                       pick the multiset branch (alive==2 → 15-way
+//                       two-card head, alive==1 → 5-way single-card
+//                       head) and to skip dead rows in the loss; the
+//                       multiset id itself is derived from hand_counts
+//                       inside the trainer.
 template <int NPlayers>
 class CoupBeliefLabelExtractor final : public IBeliefLabelExtractor {
  public:

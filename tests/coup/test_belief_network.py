@@ -38,9 +38,11 @@ def _ensure_models_exist():
 
 class TestMetadata:
     @pytest.mark.parametrize("game_id,expected_feat,expected_logits", [
-        ("coup",    34, 5),    # 6 + 1*28, (2-1)*5
-        ("coup_3p", 62, 10),   # 6 + 2*28, (3-1)*5
-        ("coup_4p", 90, 15),   # 6 + 3*28, (4-1)*5
+        # Multiset belief head: 20 logits/opp = 15 two-card multisets +
+        # 5 single cards (BELIEF_NETWORK.md §5).
+        ("coup",    34, 20),   # 6 + 1*28, (2-1)*20
+        ("coup_3p", 62, 40),   # 6 + 2*28, (3-1)*20
+        ("coup_4p", 90, 60),   # 6 + 3*28, (4-1)*20
     ])
     def test_belief_dims_in_metadata(self, game_id, expected_feat, expected_logits):
         meta = dinoboard_engine.game_metadata(game_id)
