@@ -22,17 +22,31 @@ from session_factory import SessionConfig, SessionFactory  # noqa: E402
 from training.mcts_profile import resolve_profile  # noqa: E402
 
 
-def _resolve_strength(game_id: str) -> tuple[int, float, str, bool, float, float, int]:
-    """Read AI strength from the `web_expert` MCTS profile.
+_STRENGTH_TO_PROFILE = {
+    "easy": "web_casual",
+    "balanced": "web_balanced",
+    "expert": "web_expert",
+}
 
-    AI API contract: strength = web_expert difficulty, never client-supplied.
+
+def _resolve_strength(game_id: str, strength: str = "expert") -> tuple[int, float, str, bool, float, float, int]:
+    """Read AI strength from a server-approved web MCTS profile.
+
+    AI API contract: raw MCTS knobs are never client-supplied. Clients may
+    request only a coarse strength alias, which maps to a server-owned profile.
     Resolver raises if the profile is missing or malformed.
 
     Returns (simulations, temperature, opponent_selection, schedule_enabled,
              temperature_initial, temperature_final, temperature_decay_plies).
     """
     base = _base_game_id(game_id)
-    p = resolve_profile(base, "web_expert")
+    profile_name = _STRENGTH_TO_PROFILE.get(strength, "web_expert")
+    try:
+        p = resolve_profile(base, profile_name)
+    except KeyError:
+        if profile_name != "web_balanced":
+            raise
+        p = resolve_profile(base, "web_expert")
     return (p.simulations, p.temperature, p.opponent_selection,
             p.temperature_schedule_enabled,
             p.temperature_initial, p.temperature_final,
@@ -219,6 +233,7 @@ class SessionStore:
         game_id: str,
         seed: int,
         my_seat: int,
+        strength: str = "expert",
         model_path_override: Optional[str] = None,
         initial_observation: Optional[dict] = None,
     ) -> AISession:
@@ -273,7 +288,7 @@ class SessionStore:
             gs.apply_initial_observation(my_seat, initial_observation)
 
         (simulations, temperature, opponent_selection,
-         t_sched_enabled, t_initial, t_final, t_decay) = _resolve_strength(game_id)
+         t_sched_enabled, t_initial, t_final, t_decay) = _resolve_strength(game_id, strength)
 
         session_id = uuid.uuid4().hex[:12]
         sess = AISession(

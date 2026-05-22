@@ -16,10 +16,11 @@ action_id alone is not enough. Fully-public no-tracker games
 (tictactoe / quoridor) only need `action_id`.
 
 AI strength is server-controlled — `simulations` / `temperature` /
-`opponent_selection` are not wire fields. The server resolves them per-game
-via `resolve_profile(game_id, "web_expert")` against the unified six-profile
-config (selfplay / arena / eval in `game.json`; web_expert / web_casual /
-analysis in `web.json`); see `training/mcts_profile.py` and
+`opponent_selection` are not wire fields. Clients may choose only the coarse
+`strength` alias; the server resolves it per-game against approved web
+profiles in the unified config (selfplay / arena / eval in `game.json`;
+web_expert / web_balanced / web_casual / analysis in `web.json`); see
+`training/mcts_profile.py` and
 `docs/guide/CONFIG_REFERENCE.md`. `seed` is optional; omitting it lets the
 server pick a fresh `secrets.randbits(64)` value, which is the default for
 production clients. Tests may pass an explicit `seed` for reproducibility.
@@ -27,7 +28,7 @@ production clients. Tests may pass an explicit `seed` for reproducibility.
 from __future__ import annotations
 
 import secrets
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -39,6 +40,12 @@ router = APIRouter(prefix="/ai/sessions", tags=["ai"])
 
 class CreateSessionRequest(BaseModel):
     game_id: str = Field(..., description="e.g. 'quoridor', 'splendor'")
+    strength: Literal["easy", "balanced", "expert"] = Field(
+        "expert",
+        description="Server-approved strength alias. This selects an MCTS web "
+                    "profile; raw simulations / temperature / profile names "
+                    "are intentionally not accepted from clients.",
+    )
     seed: Optional[int] = Field(
         None,
         description="Optional RNG seed for the AI session's internal RNG, used "
@@ -141,6 +148,7 @@ def create_session(req: CreateSessionRequest):
             game_id=req.game_id,
             seed=seed,
             my_seat=req.my_seat,
+            strength=req.strength,
             initial_observation=req.initial_observation,
         )
     except (ValueError, FileNotFoundError) as e:
