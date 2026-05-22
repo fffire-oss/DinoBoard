@@ -1,0 +1,17 @@
+[Unit]
+Description=DinoBoard AI API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dinoboard
+Group=dinoboard
+WorkingDirectory=/opt/dinoboard-ai/DinoBoard/platform
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/dinoboard-ai/DinoBoard/.venv/bin/uvicorn app:app --host 127.0.0.1 --port 8001 --workers 1 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

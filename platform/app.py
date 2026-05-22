@@ -14,6 +14,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from game_service.routes import router as game_router, replay_router  # noqa: E402
 from game_service.pipeline import shutdown_executors  # noqa: E402
+from ai_service.rate_limit import rate_limit_middleware  # noqa: E402
 from ai_service.routes import router as ai_router  # noqa: E402
 
 
@@ -31,6 +32,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def ai_rate_limit(request: Request, call_next):
+    return await rate_limit_middleware(request, call_next)
 
 
 # Dev mode: disable browser caching for all responses so CSS / JS / HTML

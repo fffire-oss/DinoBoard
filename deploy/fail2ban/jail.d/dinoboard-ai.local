@@ -1,0 +1,10 @@
+[dinoboard-ai]
+enabled = true
+filter = dinoboard-ai
+journalmatch = _SYSTEMD_UNIT=dinoboard-ai.service
+backend = systemd
+findtime = 10m
+maxretry = 30
+bantime = 30m
+port = 80,443
+action = %(action_)s

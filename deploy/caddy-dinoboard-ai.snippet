@@ -1,0 +1,4 @@
+# Add this before file_server in each zephyrlabs.cloud / IP site block.
+handle_path /api/dinoboard/* {
+    reverse_proxy 127.0.0.1:8001
+}
