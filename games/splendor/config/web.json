@@ -18,12 +18,12 @@
     },
     "web_casual": {
       "inherits": "web_expert",
-      "simulations": 10,
+      "simulations": 800,
       "tail_solve_enabled": false
     },
     "web_balanced": {
       "inherits": "web_expert",
-      "simulations": 800
+      "simulations": 5000
     },
     "analysis": {
       "inherits": "web_expert",
