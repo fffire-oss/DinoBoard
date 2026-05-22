@@ -71,6 +71,9 @@ DEFAULT_RULES = [
 ]
 
 LIMITER = SlidingWindowRateLimiter(DEFAULT_RULES)
+HIGH_COST_DECIDE_LIMITER = SlidingWindowRateLimiter([
+    RateLimitRule("ai_decide_expert", 600, 20, lambda method, path: _is_decide(method, path)),
+])
 
 
 def client_ip(request) -> str:
@@ -79,6 +82,10 @@ def client_ip(request) -> str:
     if forwarded_for and host in {"127.0.0.1", "::1", "testclient", ""}:
         return forwarded_for.split(",", 1)[0].strip()
     return host or "unknown"
+
+
+def check_high_cost_decide_limit(ip: str, path: str) -> tuple[RateLimitRule, int] | None:
+    return HIGH_COST_DECIDE_LIMITER.check(ip, "POST", path)
 
 
 async def rate_limit_middleware(request, call_next):

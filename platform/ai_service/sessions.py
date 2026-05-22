@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import sys
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,6 +28,24 @@ _STRENGTH_TO_PROFILE = {
     "balanced": "web_balanced",
     "expert": "web_expert",
 }
+
+_HIGH_COST_SIM_THRESHOLD = 20_000
+_HIGH_COST_DECIDE_QUEUE_TIMEOUT_SECONDS = 600.0
+_HIGH_COST_DECIDE_START_SPACING_SECONDS = 1.5
+_HIGH_COST_DECIDE_SEMAPHORE = threading.BoundedSemaphore(value=1)
+_HIGH_COST_DECIDE_START_LOCK = threading.Lock()
+_LAST_HIGH_COST_DECIDE_START = 0.0
+
+
+def _pace_high_cost_decision_start() -> None:
+    global _LAST_HIGH_COST_DECIDE_START
+    with _HIGH_COST_DECIDE_START_LOCK:
+        now = time.monotonic()
+        wait_seconds = _HIGH_COST_DECIDE_START_SPACING_SECONDS - (now - _LAST_HIGH_COST_DECIDE_START)
+        if wait_seconds > 0:
+            time.sleep(wait_seconds)
+            now = time.monotonic()
+        _LAST_HIGH_COST_DECIDE_START = now
 
 
 def _resolve_strength(game_id: str, strength: str = "expert") -> tuple[int, float, str, bool, float, float, int]:
@@ -162,35 +181,54 @@ class AISession:
         from the message stream only, never from speculative rule execution
         on a sampled-hidden world.
         """
-        with self._lock:
-            if self._closed:
-                raise RuntimeError(f"AISession {self.session_id} is closed")
-            if self._gs.is_terminal:
-                raise RuntimeError(
-                    f"AISession {self.session_id}: game is already terminal")
-            current = self._gs.current_player
-            if current != self.my_seat:
-                raise RuntimeError(
-                    f"AISession {self.session_id}: it is player {current}'s "
-                    f"turn, but this session is configured for seat "
-                    f"{self.my_seat}. The caller must have missed an observe()."
-                )
-            kwargs = dict(
-                simulations=self.simulations,
-                temperature=self.temperature,
-                opponent_selection=self.opponent_selection,
+        high_cost = self.simulations >= _HIGH_COST_SIM_THRESHOLD
+        acquired_high_cost_slot = False
+        if high_cost:
+            acquired_high_cost_slot = _HIGH_COST_DECIDE_SEMAPHORE.acquire(
+                timeout=_HIGH_COST_DECIDE_QUEUE_TIMEOUT_SECONDS,
             )
-            if self.temperature_schedule_enabled:
-                kwargs["temperature_initial"] = self.temperature_initial
-                kwargs["temperature_final"] = self.temperature_final
-                kwargs["temperature_decay_plies"] = self.temperature_decay_plies
-            result = self._gs.get_ai_action(**kwargs)
-            action_id = result["action"]
-            return {
-                "action_id": action_id,
-                "action_info": result["action_info"],
-                "stats": result.get("stats", {}),
-            }
+            if not acquired_high_cost_slot:
+                raise RuntimeError(
+                    "High-strength AI decide queue is busy; retry later.")
+            _pace_high_cost_decision_start()
+
+        try:
+            with self._lock:
+                return self._decide_locked()
+        finally:
+            if acquired_high_cost_slot:
+                _HIGH_COST_DECIDE_SEMAPHORE.release()
+
+    def _decide_locked(self) -> dict:
+        """Run one decision while the caller holds any required queue slot."""
+        if self._closed:
+            raise RuntimeError(f"AISession {self.session_id} is closed")
+        if self._gs.is_terminal:
+            raise RuntimeError(
+                f"AISession {self.session_id}: game is already terminal")
+        current = self._gs.current_player
+        if current != self.my_seat:
+            raise RuntimeError(
+                f"AISession {self.session_id}: it is player {current}'s "
+                f"turn, but this session is configured for seat "
+                f"{self.my_seat}. The caller must have missed an observe()."
+            )
+        kwargs = dict(
+            simulations=self.simulations,
+            temperature=self.temperature,
+            opponent_selection=self.opponent_selection,
+        )
+        if self.temperature_schedule_enabled:
+            kwargs["temperature_initial"] = self.temperature_initial
+            kwargs["temperature_final"] = self.temperature_final
+            kwargs["temperature_decay_plies"] = self.temperature_decay_plies
+        result = self._gs.get_ai_action(**kwargs)
+        action_id = result["action"]
+        return {
+            "action_id": action_id,
+            "action_info": result["action_info"],
+            "stats": result.get("stats", {}),
+        }
 
     def status(self) -> dict:
         """Return lightweight status. Never returns game-state fields."""

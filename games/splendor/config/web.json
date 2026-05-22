@@ -1,7 +1,7 @@
 {
   "mcts_profiles": {
     "web_expert": {
-      "simulations": 5000,
+      "simulations": 20000,
       "c_puct": 1.4,
       "temperature": 0.0,
       "temperature_schedule": {"enabled": false, "initial": 0.0, "final": 0.0, "decay_plies": 0},

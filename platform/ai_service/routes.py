@@ -30,9 +30,11 @@ from __future__ import annotations
 import secrets
 from typing import Literal, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from .rate_limit import LOGGER as RATE_LIMIT_LOGGER
+from .rate_limit import check_high_cost_decide_limit, client_ip
 from .sessions import get_store
 
 router = APIRouter(prefix="/ai/sessions", tags=["ai"])
@@ -192,11 +194,28 @@ def observe(session_id: str, req: ObserveRequest):
 
 
 @router.post("/{session_id}/decide", response_model=DecideResponse)
-def decide(session_id: str):
+def decide(session_id: str, request: Request):
     try:
         sess = get_store().get(session_id)
     except KeyError as e:
         raise HTTPException(404, str(e))
+
+    if sess.simulations >= 20_000:
+        ip = client_ip(request)
+        limited = check_high_cost_decide_limit(ip, request.url.path)
+        if limited is not None:
+            rule, retry_after = limited
+            RATE_LIMIT_LOGGER.warning(
+                "RATE_LIMIT ip=%s route=%s limit=%s",
+                ip,
+                request.url.path,
+                rule.name,
+            )
+            raise HTTPException(
+                429,
+                "Too many high-strength AI requests",
+                headers={"Retry-After": str(retry_after)},
+            )
 
     try:
         result = sess.decide()
