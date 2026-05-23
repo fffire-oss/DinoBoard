@@ -76,8 +76,9 @@ const TwoCardTable& two_card_table() {
 }  // namespace
 
 template <int NPlayers>
-const std::array<std::array<int, kCharacterCount>, 15>&
-CoupBeliefTracker<NPlayers>::need_2card() {
+auto CoupBeliefTracker<NPlayers>::need_2card()
+    -> const std::array<std::array<int, kCharacterCount>,
+                        kTwoCardMultisets>& {
   return two_card_table().need;
 }
 
