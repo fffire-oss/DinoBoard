@@ -29,6 +29,7 @@ compile_commands.json
 *.dll
 *.lib
 build-capi/
+target/
 *.a
 # Bundled ONNX Runtime libs (see third_party section below) must be committed.
 !third_party/onnxruntime-linux-x64-*/lib/*.so
