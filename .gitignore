@@ -23,9 +23,12 @@ CMakeCache.txt
 cmake-build-*/
 compile_commands.json
 *.o
+*.obj
+*.exp
 *.so
 *.dll
 *.lib
+build-capi/
 *.a
 # Bundled ONNX Runtime libs (see third_party section below) must be committed.
 !third_party/onnxruntime-linux-x64-*/lib/*.so
